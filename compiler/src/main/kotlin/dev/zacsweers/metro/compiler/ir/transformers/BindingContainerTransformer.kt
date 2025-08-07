@@ -671,7 +671,9 @@ internal class BindingContainerTransformer(context: IrMetroContext) : IrMetroCon
       graphProto.provider_factory_classes
         .map { ClassId.fromString(it) }
         .associate { classId ->
-          val factoryClass = pluginContext.referenceClass(classId)!!.owner
+          val factoryClassSymbol = pluginContext.referenceClass(classId)
+            ?: error("Could not find provider factory class $classId")
+          val factoryClass = factoryClassSymbol.owner
           val providerFactory = externalProviderFactoryFor(factoryClass)
           providerFactory.callableId to providerFactory
         }

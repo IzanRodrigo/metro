@@ -287,8 +287,10 @@ internal class MembersInjectorTransformer(context: IrMetroContext) : IrMetroCont
         if (injectedMembers.isEmpty()) continue
 
         // This is what generates supertypes lazily as needed
+        val classSymbol = pluginContext.referenceClass(classId)
+          ?: error("Could not find class $classId for members injection")
         val functions =
-          requireInjector(pluginContext.referenceClass(classId)!!.owner).declaredInjectFunctions
+          requireInjector(classSymbol.owner).declaredInjectFunctions
 
         putAll(functions)
       }

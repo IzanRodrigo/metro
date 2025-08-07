@@ -900,9 +900,12 @@ internal class IrGraphGenerator(
             val wrappedType =
               typeKey.copy(typeKey.type.expectAs<IrSimpleType>().arguments[0].typeOrFail)
 
+            val targetClassSymbol = pluginContext.referenceClass(binding.targetClassId)
+            if (targetClassSymbol == null) {
+              error("Could not find class ${binding.targetClassId} for MembersInjected binding parameters")
+            }
             for (type in
-              pluginContext
-                .referenceClass(binding.targetClassId)!!
+              targetClassSymbol
                 .owner
                 .getAllSuperTypes(excludeSelf = false, excludeAny = true)) {
               val clazz = type.rawType()
