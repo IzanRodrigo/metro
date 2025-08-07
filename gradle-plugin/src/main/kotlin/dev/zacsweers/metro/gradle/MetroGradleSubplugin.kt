@@ -140,6 +140,9 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
             extension.enableTopLevelFunctionInjection,
           )
         )
+        add(lazyOption("bindings-per-graph-shard", extension.bindingsPerGraphShard))
+        add(lazyOption("enable-parallel-shard-generation", extension.enableParallelShardGeneration))
+        add(lazyOption("shard-generation-parallelism", extension.shardGenerationParallelism))
         reportsDir.orNull
           ?.let { FilesSubpluginOption("reports-destination", listOf(it.asFile)) }
           ?.let(::add)
@@ -290,6 +293,10 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
 
 @JvmName("booleanPluginOptionOf")
 private fun lazyOption(key: String, value: Provider<Boolean>): SubpluginOption =
+  lazyOption(key, value.map { it.toString() })
+
+@JvmName("intPluginOptionOf")
+private fun lazyOption(key: String, value: Provider<Int>): SubpluginOption =
   lazyOption(key, value.map { it.toString() })
 
 @JvmName("enumPluginOptionOf")

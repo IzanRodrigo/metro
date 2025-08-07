@@ -114,6 +114,27 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     objects.property(Boolean::class.javaObjectType).convention(true)
 
   /**
+   * Maximum number of bindings per graph shard. When a graph exceeds this limit, bindings will be
+   * distributed across multiple shards to avoid class size limits. Default is 100.
+   */
+  public val bindingsPerGraphShard: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(100)
+
+  /**
+   * Enable/disable parallel generation of graph shards to reduce build times. When enabled,
+   * independent shards will be generated concurrently. Enabled by default.
+   */
+  public val enableParallelShardGeneration: Property<Boolean> =
+    objects.property(Boolean::class.javaObjectType).convention(true)
+
+  /**
+   * Maximum number of threads to use for parallel shard generation. 0 means use all available
+   * processors. Default is 0.
+   */
+  public val shardGenerationParallelism: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(0)
+
+  /**
    * If set, the Metro compiler will dump report diagnostics about resolved dependency graphs to the
    * given destination.
    *

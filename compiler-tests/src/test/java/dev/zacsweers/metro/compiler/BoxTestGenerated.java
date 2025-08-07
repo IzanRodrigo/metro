@@ -892,6 +892,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     }
 
     @Test
+    @TestMetadata("ParallelShardingTest.kt")
+    public void testParallelShardingTest() {
+      runTest("compiler-tests/src/test/data/box/sharding/ParallelShardingTest.kt");
+    }
+
+    @Test
     @TestMetadata("ShardingWithLowThreshold.kt")
     public void testShardingWithLowThreshold() {
       runTest("compiler-tests/src/test/data/box/sharding/ShardingWithLowThreshold.kt");

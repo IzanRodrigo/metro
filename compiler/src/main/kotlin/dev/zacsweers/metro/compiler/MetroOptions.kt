@@ -488,6 +488,27 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
       valueMapper = { it.toInt() },
     )
+  ),
+  ENABLE_PARALLEL_SHARD_GENERATION(
+    RawMetroOption.boolean(
+      name = "enable-parallel-shard-generation",
+      defaultValue = true,
+      valueDescription = "<true | false>",
+      description = "Enable/disable parallel generation of graph shards to reduce build times. When enabled, independent shards will be generated concurrently.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
+  SHARD_GENERATION_PARALLELISM(
+    RawMetroOption(
+      name = "shard-generation-parallelism",
+      defaultValue = 0, // 0 means use available processors
+      valueDescription = "<number>",
+      description = "Maximum number of threads to use for parallel shard generation. 0 means use all available processors.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it.toInt() },
+    )
   );
 
   companion object {
@@ -583,6 +604,10 @@ public data class MetroOptions(
     MetroOption.ENABLE_SCOPED_INJECT_CLASS_HINTS.raw.defaultValue.expectAs(),
   val bindingsPerGraphShard: Int =
     MetroOption.BINDINGS_PER_GRAPH_SHARD.raw.defaultValue.expectAs(),
+  val enableParallelShardGeneration: Boolean =
+    MetroOption.ENABLE_PARALLEL_SHARD_GENERATION.raw.defaultValue.expectAs(),
+  val shardGenerationParallelism: Int =
+    MetroOption.SHARD_GENERATION_PARALLELISM.raw.defaultValue.expectAs(),
 ) {
   internal companion object {
     fun load(configuration: CompilerConfiguration): MetroOptions {
@@ -725,6 +750,12 @@ public data class MetroOptions(
           }
           MetroOption.BINDINGS_PER_GRAPH_SHARD -> {
             options = options.copy(bindingsPerGraphShard = configuration.getAsInt(entry))
+          }
+          MetroOption.ENABLE_PARALLEL_SHARD_GENERATION -> {
+            options = options.copy(enableParallelShardGeneration = configuration.getAsBoolean(entry))
+          }
+          MetroOption.SHARD_GENERATION_PARALLELISM -> {
+            options = options.copy(shardGenerationParallelism = configuration.getAsInt(entry))
           }
         }
       }

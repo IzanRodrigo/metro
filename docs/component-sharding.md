@@ -8,20 +8,32 @@ When a dependency graph has many bindings, the generated class can become too la
 
 ## Configuration
 
-Component sharding is controlled by the `bindings-per-graph-shard` compiler option:
+Component sharding can be configured through the Metro Gradle plugin:
 
 ### Gradle Plugin Configuration
 
 ```kotlin
 metro {
-  bindingsPerGraphShard = 50 // Default: 100
+  // Maximum number of bindings per shard (default: 100)
+  bindingsPerGraphShard = 50
+  
+  // Enable parallel shard generation (default: true)
+  enableParallelShardGeneration = true
+  
+  // Number of threads for parallel generation (default: 0 = auto)
+  shardGenerationParallelism = 4
 }
 ```
 
+See [Component Sharding Gradle Configuration](component-sharding-gradle-config.md) for detailed configuration options.
+
 ### Command Line
 
+Individual options can also be set via command line:
 ```
 -P metro.bindings-per-graph-shard=50
+-P metro.enable-parallel-shard-generation=true
+-P metro.shard-generation-parallelism=4
 ```
 
 ## How It Works
@@ -103,11 +115,28 @@ Metro will log when sharding is applied:
 Graph com.example.MyGraph has 150 bindings, which exceeds the sharding threshold of 100. Implementing component sharding.
 ```
 
+## Implementation Details
+
+### Dependency-Aware Distribution
+
+Metro now uses an intelligent sharding algorithm that:
+
+- **Strongly Connected Components (SCC)**: Keeps circular dependencies together in the same shard using Tarjan's algorithm
+- **Topological Sorting**: Ensures proper initialization order across shards
+- **Parallel Generation**: Identifies independent shard groups that can be generated concurrently
+
+### Parallel Shard Generation
+
+When enabled (default), Metro generates independent shards in parallel:
+
+- Uses thread pools for concurrent shard generation
+- Automatically detects shard dependencies and parallel groups
+- Falls back to sequential generation for small graphs or when disabled
+
 ## Future Enhancements
 
-The current implementation uses simple chunking. Future versions may include:
+Potential future improvements:
 
-- **Dependency-aware distribution**: Use topological sorting to ensure proper initialization order
-- **Cycle detection**: Keep strongly connected components in the same shard
 - **Size-based optimization**: Consider actual bytecode size rather than just binding count
 - **Custom sharding strategies**: Allow users to provide custom distribution logic
+- **Adaptive sharding**: Dynamically adjust shard size based on compilation metrics

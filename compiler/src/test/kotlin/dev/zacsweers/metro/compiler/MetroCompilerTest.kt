@@ -249,6 +249,12 @@ abstract class MetroCompilerTest {
               MetroOption.BINDINGS_PER_GRAPH_SHARD -> {
                 processor.option(entry.raw.cliOption, bindingsPerGraphShard)
               }
+              MetroOption.ENABLE_PARALLEL_SHARD_GENERATION -> {
+                processor.option(entry.raw.cliOption, enableParallelShardGeneration)
+              }
+              MetroOption.SHARD_GENERATION_PARALLELISM -> {
+                processor.option(entry.raw.cliOption, shardGenerationParallelism)
+              }
             }
           yield(option)
         }

@@ -520,27 +520,20 @@ internal class IrGraphGenerator(
             }
             
             // Create shard classes
-            // Note: In a real parallel implementation, we would process each parallel group concurrently
-            // For now, we still process sequentially but preserve the dependency information
-            // 
-            // Example parallel generation with coroutines (future enhancement):
-            // runBlocking {
-            //   shardingResult.parallelGroups.forEach { group ->
-            //     group.map { shardIndex ->
-            //       async {
-            //         val shardInfo = shardingResult.shards.find { it.index == shardIndex }!!
-            //         generateShard(shardInfo)
-            //       }
-            //     }.awaitAll()
-            //   }
-            // }
-            shardingResult.shards.forEach { shardInfo ->
-              val shard = IrGraphShard(
+            if (options.enableParallelShardGeneration && shardingResult.shards.size > 1) {
+              shardingLogger.log("Using parallel shard generation")
+              val parallelGenerator = ParallelShardGenerator(
                 metroContext = metroContext,
+                parallelism = if (options.shardGenerationParallelism == 0) {
+                  Runtime.getRuntime().availableProcessors()
+                } else {
+                  options.shardGenerationParallelism
+                },
+              )
+              
+              val result = parallelGenerator.generateShardsInParallel(
+                shardingResult = shardingResult,
                 parentGraph = graphClass,
-                shardName = shardInfo.name,
-                shardIndex = shardInfo.index,
-                bindings = shardInfo.bindings,
                 bindingGenerator = { binding, thisReceiver ->
                   createIrBuilder(symbol).run {
                     generateBindingCode(
@@ -551,12 +544,43 @@ internal class IrGraphGenerator(
                   }
                 },
               )
-              shard.generate()
-              shards.add(shard)
+              
+              shards.addAll(result.shards)
+              shardingLogger.log("Parallel generation completed in ${result.generationTimeMs}ms")
               
               // Track which bindings are in which shard
-              shardInfo.bindings.forEach { binding ->
-                bindingToShard[binding] = shard
+              shardingResult.shards.forEachIndexed { index, shardInfo ->
+                val shard = result.shards[index]
+                shardInfo.bindings.forEach { binding ->
+                  bindingToShard[binding] = shard
+                }
+              }
+            } else {
+              // Sequential generation for small graphs or when parallel is disabled
+              shardingResult.shards.forEach { shardInfo ->
+                val shard = IrGraphShard(
+                  metroContext = metroContext,
+                  parentGraph = graphClass,
+                  shardName = shardInfo.name,
+                  shardIndex = shardInfo.index,
+                  bindings = shardInfo.bindings,
+                  bindingGenerator = { binding, thisReceiver ->
+                    createIrBuilder(symbol).run {
+                      generateBindingCode(
+                        binding = binding,
+                        generationContext = GraphGenerationContext(thisReceiver),
+                        fieldInitKey = binding.typeKey,
+                      )
+                    }
+                  },
+                )
+                shard.generate()
+                shards.add(shard)
+                
+                // Track which bindings are in which shard
+                shardInfo.bindings.forEach { binding ->
+                  bindingToShard[binding] = shard
+                }
               }
             }
             
