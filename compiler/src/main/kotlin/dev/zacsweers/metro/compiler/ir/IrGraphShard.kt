@@ -38,7 +38,7 @@ internal class IrGraphShard(
   override val metroContext: IrMetroContext,
   private val parentGraph: IrClass,
   private val shardName: Name,
-  private val shardIndex: Int,
+  internal val shardIndex: Int,
   val bindings: List<IrBinding>,
   private val bindingGenerator: (IrBinding, IrValueParameter) -> IrExpression,
 ) : IrMetroContext by metroContext {

@@ -55,9 +55,16 @@ metro {
 
 ## Performance Considerations
 
-- **Parallel Generation**: Enabled by default, can significantly reduce build times for large graphs
-- **Thread Count**: Default (0) uses all available processors. Consider limiting on CI servers
+- **Parallel Generation**: Currently limited by Kotlin compiler thread-safety constraints. The option prepares for future optimization when the compiler supports it.
+- **Thread Count**: Reserved for future use when true parallel generation is possible
 - **Shard Size**: Smaller shards (lower `bindingsPerGraphShard`) avoid JVM class size limits but may increase overhead
+
+## Current Limitations
+
+Due to Kotlin compiler internals not being thread-safe (specifically the `PerformanceManager` and symbol resolution), actual shard generation must be performed sequentially. However, the parallel infrastructure:
+- Identifies independent shard groups for future optimization
+- Provides better logging and diagnostics
+- Prepares the codebase for true parallel generation when compiler support improves
 
 ## Troubleshooting
 

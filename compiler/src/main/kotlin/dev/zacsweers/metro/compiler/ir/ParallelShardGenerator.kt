@@ -3,12 +3,6 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.MetroLogger
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.Executors
-import java.util.concurrent.Future
-import java.util.concurrent.ThreadFactory
-import java.util.concurrent.atomic.AtomicInteger
-import kotlin.concurrent.thread
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
@@ -38,6 +32,10 @@ internal class ParallelShardGenerator(
   /**
    * Generates shards in parallel based on the dependency groups.
    * 
+   * IMPORTANT: Due to Kotlin compiler thread-safety limitations, we cannot perform
+   * actual IR generation in parallel. Instead, we prepare the shard structure
+   * sequentially but maintain the parallel grouping information for future optimization.
+   * 
    * @param shardingResult The result from GraphShardingStrategy containing shard info and parallel groups
    * @param parentGraph The parent graph class
    * @param bindingGenerator Function to generate binding code for each shard
@@ -55,80 +53,47 @@ internal class ParallelShardGenerator(
       return generateSequentially(shardingResult, parentGraph, bindingGenerator, startTime)
     }
     
-    logger.log("Starting parallel shard generation with ${shardingResult.parallelGroups.size} groups")
+    logger.log("Processing ${shardingResult.parallelGroups.size} shard groups")
+    logger.log("Note: Due to Kotlin compiler constraints, actual generation is sequential")
     
-    // Thread-safe collection for results
-    val generatedShards = ConcurrentHashMap<Int, IrGraphShard>()
-    val errors = ConcurrentHashMap<Int, Throwable>()
-    
-    // Create a thread pool for parallel execution
-    val executor = Executors.newFixedThreadPool(
-      parallelism.coerceAtMost(shardingResult.shards.size),
-      MetroThreadFactory("metro-shard-gen")
-    )
+    // Generate shards sequentially to avoid thread-safety issues with Kotlin compiler internals
+    // We still respect the parallel grouping for logging and future optimization
+    val shards = mutableListOf<IrGraphShard>()
     
     try {
-      // Process each parallel group
       shardingResult.parallelGroups.forEachIndexed { groupIndex, shardIndices ->
-        logger.log("Processing parallel group ${groupIndex + 1} with shards: ${shardIndices.sorted().joinToString(", ")}")
-        
-        // Submit tasks for each shard in the group
-        val futures = mutableListOf<Future<*>>()
+        logger.log("Processing group ${groupIndex + 1} with shards: ${shardIndices.sorted().joinToString(", ")}")
         
         for (shardIndex in shardIndices) {
           val shardInfo = shardingResult.shards.find { it.index == shardIndex }
             ?: error("Shard with index $shardIndex not found")
           
-          val future = executor.submit {
-            try {
-              logger.log("Generating shard ${shardInfo.index} (${shardInfo.name}) on thread ${Thread.currentThread().name}")
-              
-              val shard = IrGraphShard(
-                metroContext = metroContext,
-                parentGraph = parentGraph,
-                shardName = shardInfo.name,
-                shardIndex = shardInfo.index,
-                bindings = shardInfo.bindings,
-                bindingGenerator = bindingGenerator,
-              )
-              
-              // Generate the shard
-              shard.generate()
-              
-              // Store the result
-              generatedShards[shardInfo.index] = shard
-              
-              logger.log("Successfully generated shard ${shardInfo.index}")
-            } catch (e: Exception) {
-              logger.log("Error generating shard ${shardInfo.index}: ${e.message}")
-              errors[shardInfo.index] = e
-            }
-          }
+          logger.log("Generating shard ${shardInfo.index} (${shardInfo.name})")
           
-          futures.add(future)
-        }
-        
-        // Wait for all shards in this group to complete before moving to the next group
-        futures.forEach { it.get() }
-        
-        // Check for errors before proceeding
-        if (errors.isNotEmpty()) {
-          val errorMsg = errors.entries.joinToString("\n") { (index, error) ->
-            "Shard $index: ${error.message}"
-          }
-          throw RuntimeException("Failed to generate ${errors.size} shards:\n$errorMsg", errors.values.first())
+          val shard = IrGraphShard(
+            metroContext = metroContext,
+            parentGraph = parentGraph,
+            shardName = shardInfo.name,
+            shardIndex = shardInfo.index,
+            bindings = shardInfo.bindings,
+            bindingGenerator = bindingGenerator,
+          )
+          
+          // Generate the shard on the main thread
+          shard.generate()
+          shards.add(shard)
+          
+          logger.log("Successfully generated shard ${shardInfo.index}")
         }
       }
       
-      // Convert to sorted list
-      val shards = shardingResult.shards.map { shardInfo ->
-        generatedShards[shardInfo.index] ?: error("Shard ${shardInfo.index} was not generated")
-      }
+      // Sort shards by index to ensure consistent ordering
+      shards.sortBy { it.shardIndex }
       
       val endTime = System.currentTimeMillis()
       val duration = endTime - startTime
       
-      logger.log("Parallel shard generation completed in ${duration}ms")
+      logger.log("Shard generation completed in ${duration}ms")
       
       return GenerationResult(
         shards = shards,
@@ -136,8 +101,9 @@ internal class ParallelShardGenerator(
         parallelGroupsProcessed = shardingResult.parallelGroups.size,
       )
       
-    } finally {
-      executor.shutdown()
+    } catch (e: Exception) {
+      logger.log("Error during shard generation: ${e.message}")
+      throw RuntimeException("Failed to generate shards: ${e.message}", e)
     }
   }
   
@@ -170,19 +136,5 @@ internal class ParallelShardGenerator(
       generationTimeMs = endTime - startTime,
       parallelGroupsProcessed = 1, // Sequential is one group
     )
-  }
-  
-  /**
-   * Custom thread factory for better thread naming
-   */
-  private class MetroThreadFactory(private val prefix: String) : ThreadFactory {
-    private val threadNumber = AtomicInteger(1)
-    
-    override fun newThread(r: Runnable): Thread {
-      return Thread(r, "$prefix-${threadNumber.getAndIncrement()}").apply {
-        isDaemon = true
-        priority = Thread.NORM_PRIORITY
-      }
-    }
   }
 }
