@@ -26,6 +26,7 @@ public interface MetroLogger {
     CycleDetection,
     GraphImplCodeGen,
     GeneratedFactories,
+    ComponentSharding,
   }
 
   public companion object {

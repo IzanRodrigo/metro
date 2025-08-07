@@ -3,6 +3,7 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.METRO_VERSION
+import dev.zacsweers.metro.compiler.MetroLogger
 import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
@@ -47,6 +48,8 @@ import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.parent
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrProperty
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
@@ -63,9 +66,9 @@ import org.jetbrains.kotlin.ir.util.SymbolRemapper
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.companionObject
+import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
-import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.getAnnotation
 import org.jetbrains.kotlin.ir.util.isFromJava
@@ -225,7 +228,7 @@ internal class IrGraphGenerator(
                 val depMetroGraph = graphDep.sourceGraph.metroGraphOrFail
                 constructorStatements.add {
                   irIfThen(
-                    condition = irNotIs(irGet(irParam), depMetroGraph.defaultType),
+                    condition = irNotIs(irGet(irParam), depMetroGraph.symbol.typeWith()),
                     type = irBuiltIns.unitType,
                     thenPart =
                       irThrow(
@@ -353,7 +356,7 @@ internal class IrGraphGenerator(
                       // across compilation boundaries
                       if (rawType?.name == Symbols.Names.MetroGraph) {
                         // if it's a $$MetroGraph, we actually want the parent type
-                        rawType.parentAsClass.defaultType
+                        rawType.parentAsClass.symbol.typeWith()
                       } else {
                         it
                       }
@@ -470,13 +473,29 @@ internal class IrGraphGenerator(
           
           // Check if sharding is needed
           if (fieldBindings.size > options.bindingsPerGraphShard) {
+            val shardingLogger = loggerFor(MetroLogger.Type.ComponentSharding)
+            shardingLogger.log("Graph ${graphClass.kotlinFqName} requires component sharding")
+            shardingLogger.log("  Total bindings: ${fieldBindings.size}")
+            shardingLogger.log("  Sharding threshold: ${options.bindingsPerGraphShard}")
+            shardingLogger.log("  Bindings over threshold: ${fieldBindings.size - options.bindingsPerGraphShard}")
+            
             log("Graph ${graphClass.kotlinFqName} has ${fieldBindings.size} bindings, " +
                 "which exceeds the sharding threshold of ${options.bindingsPerGraphShard}. " +
                 "Implementing component sharding.")
             
+            // Generate pre-sharding report if debug mode is enabled
+            if (debug) {
+              generatePreShardingReport(graphClass, fieldBindings, options.bindingsPerGraphShard)
+            }
+            
             // Implement sharding
             val shardingStrategy = GraphShardingStrategy(options.bindingsPerGraphShard)
             val shardInfos = shardingStrategy.distributeBindings(fieldBindings)
+            
+            shardingLogger.log("Created ${shardInfos.size} shards for distribution")
+            shardInfos.forEachIndexed { index, shardInfo ->
+              shardingLogger.log("  Shard ${index + 1}: '${shardInfo.name}' with ${shardInfo.bindings.size} bindings")
+            }
             
             // Create shard classes
             shardInfos.forEach { shardInfo ->
@@ -797,6 +816,11 @@ internal class IrGraphGenerator(
                 }
             metadataDeclarationRegistrar.registerFunctionAsMetadataVisible(getter)
           }
+      }
+      
+      // Generate complete graph report for debugging if debug mode is enabled
+      if (debug) {
+        generateCompleteGraphReport(graphClass)
       }
     }
 
@@ -1288,7 +1312,8 @@ internal class IrGraphGenerator(
 
       is IrBinding.MembersInjected -> {
         val injectedClass = referenceClass(binding.targetClassId)!!.owner
-        val injectedType = injectedClass.defaultType
+        // Use symbol.typeWith() instead of defaultType to avoid NPE
+        val injectedType = injectedClass.symbol.typeWith()
         val injectorClass = membersInjectorTransformer.getOrGenerateInjector(injectedClass)?.ir
 
         if (injectorClass == null) {
@@ -1753,4 +1778,194 @@ internal class GraphGenerationContext(val thisReceiver: IrValueParameter) {
   //  accessors/injectors
   fun withReceiver(receiver: IrValueParameter): GraphGenerationContext =
     GraphGenerationContext(receiver)
+}
+
+context(_: IrMetroContext)
+private fun generatePreShardingReport(
+  graphClass: IrClass,
+  bindings: List<IrBinding>,
+  threshold: Int
+) {
+  val reportContent = buildString {
+    appendLine("=== Pre-Sharding Analysis Report ===")
+    appendLine("Graph: ${graphClass.kotlinFqName}")
+    appendLine("Total Bindings: ${bindings.size}")
+    appendLine("Sharding Threshold: $threshold")
+    appendLine("Bindings Over Threshold: ${bindings.size - threshold}")
+    appendLine("Estimated Shards: ${(bindings.size + threshold - 1) / threshold}")
+    appendLine()
+    
+    appendLine("Bindings by Type:")
+    bindings.groupBy { it::class.simpleName }.forEach { (type, bindingList) ->
+      appendLine("  $type: ${bindingList.size}")
+    }
+    appendLine()
+    
+    appendLine("Scoped Bindings:")
+    val scopedBindings = bindings.filter { it.scope != null }
+    appendLine("  Count: ${scopedBindings.size}")
+    scopedBindings.groupBy { it.scope?.toString() }.forEach { (scope, bindingList) ->
+      appendLine("    $scope: ${bindingList.size}")
+    }
+    appendLine()
+    
+    appendLine("All Bindings:")
+    bindings.forEachIndexed { index, binding ->
+      val scopeInfo = binding.scope?.let { " (${it})" } ?: ""
+      appendLine("  ${index + 1}. ${binding.typeKey}${scopeInfo}")
+    }
+    
+    appendLine()
+    appendLine("=== End Pre-Sharding Analysis ===")
+  }
+  
+  writeDiagnostic("pre-sharding-${graphClass.name.asString()}.txt") {
+    reportContent
+  }
+}
+
+context(_: IrMetroContext)
+private fun generatePostShardingReport(
+  graphClass: IrClass,
+  shards: List<IrGraphShard>,
+  totalBindings: List<IrBinding>
+) {
+  val reportContent = buildString {
+    appendLine("=== Post-Sharding Implementation Report ===")
+    appendLine("Graph: ${graphClass.kotlinFqName}")
+    appendLine("Total Bindings: ${totalBindings.size}")
+    appendLine("Shards Created: ${shards.size}")
+    appendLine()
+    
+    appendLine("Shard Distribution:")
+    shards.forEachIndexed { index, shard ->
+      appendLine("  Shard ${index + 1}: ${shard.name} (${shard.bindings.size} bindings)")
+      shard.bindings.forEach { binding ->
+        appendLine("    - ${binding.typeKey}")
+      }
+      appendLine()
+    }
+    
+    appendLine("Shard Field Names in Parent Graph:")
+    shards.forEach { shard ->
+      try {
+        appendLine("  ${shard.shardField.name} -> ${shard.name}")
+      } catch (e: Exception) {
+        appendLine("  Shard field not initialized for ${shard.name}")
+      }
+    }
+    
+    appendLine()
+    appendLine("=== End Post-Sharding Report ===")
+  }
+  
+  writeDiagnostic("post-sharding-${graphClass.name.asString()}.txt") {
+    reportContent
+  }
+}
+
+/**
+ * Generates a comprehensive report of the complete root graph implementation after IR work is complete
+ */
+context(context: IrMetroContext)
+private fun generateCompleteGraphReport(graphClass: IrClass) {
+  val reportContent = buildString {
+    appendLine("=== Complete Graph Implementation Report ===")
+    appendLine("Graph Class: ${graphClass.kotlinFqName}")
+    appendLine("Generated at: ${java.time.LocalDateTime.now()}")
+    appendLine("Symbol: ${graphClass.symbol}")
+    appendLine("Symbol Bound: ${graphClass.symbol.isBound}")
+    appendLine()
+    
+    appendLine("Class Structure:")
+    appendLine("  Name: ${graphClass.name}")
+    appendLine("  Kind: ${graphClass.kind}")
+    appendLine("  Visibility: ${graphClass.visibility}")
+    appendLine("  Modality: ${graphClass.modality}")
+    appendLine("  SuperTypes: ${graphClass.superTypes.joinToString { it.toString() }}")
+    appendLine("  Annotations: ${graphClass.annotations.size}")
+    appendLine()
+    
+    appendLine("Declarations (${graphClass.declarations.size} total):")
+    graphClass.declarations.forEachIndexed { index, declaration ->
+      try {
+        val declarationName = when (declaration) {
+          is IrDeclarationWithName -> declaration.name.asString()
+          else -> "Unknown"
+        }
+        appendLine("  ${index + 1}. ${declaration::class.simpleName}: $declarationName")
+        
+        when (declaration) {
+          is IrField -> {
+            appendLine("     Type: ${declaration.type}")
+            appendLine("     Visibility: ${declaration.visibility}")
+            appendLine("     IsFinal: ${declaration.isFinal}")
+            appendLine("     HasInitializer: ${declaration.initializer != null}")
+          }
+          is IrFunction -> {
+            appendLine("     ReturnType: ${declaration.returnType}")
+            appendLine("     HasBody: ${declaration.body != null}")
+          }
+          is IrClass -> {
+            appendLine("     Kind: ${declaration.kind}")
+            appendLine("     Nested Declarations: ${declaration.declarations.size}")
+          }
+        }
+      } catch (e: Exception) {
+        appendLine("  ${index + 1}. <Error rendering declaration: ${e.message}>")
+      }
+      appendLine()
+    }
+    
+    if (graphClass.thisReceiver != null) {
+      try {
+        appendLine("This Receiver:")
+        appendLine("  Name: ${graphClass.thisReceiver!!.name}")
+        appendLine("  Type: ${graphClass.thisReceiver!!.type}")
+        appendLine()
+      } catch (e: Exception) {
+        appendLine("This Receiver: <Error: ${e.message}>")
+      }
+    }
+    
+    try {
+      appendLine("Properties and Fields:")
+      val properties = graphClass.declarations.filterIsInstance<IrProperty>()
+      val fields = graphClass.declarations.filterIsInstance<IrField>()
+      
+      appendLine("  Properties: ${properties.size}")
+      properties.forEach { property ->
+        appendLine("    - ${property.name}: ${property.getter?.returnType ?: "Unknown type"}")
+      }
+      
+      appendLine("  Fields: ${fields.size}")
+      fields.forEach { field ->
+        appendLine("    - ${field.name}: ${field.type} (${field.visibility})")
+        if (field.initializer != null) {
+          appendLine("      Initializer: Present")
+        }
+      }
+      appendLine()
+    } catch (e: Exception) {
+      appendLine("Properties and Fields: <Error: ${e.message}>")
+      appendLine()
+    }
+    
+    appendLine("=== End Complete Graph Report ===")
+  }
+  
+  writeDiagnostic("complete-graph-${graphClass.name.asString()}.txt") {
+    reportContent
+  }
+  
+  // Also generate a Kotlin-like dump of the IR if debug is enabled
+  if (context.debug) {
+    try {
+      context.run {
+        graphClass.dumpToMetroLog()
+      }
+    } catch (e: Exception) {
+      context.loggerFor(MetroLogger.Type.ComponentSharding).log("Failed to dump IR for graph ${graphClass.name}: ${e.message}")
+    }
+  }
 }
