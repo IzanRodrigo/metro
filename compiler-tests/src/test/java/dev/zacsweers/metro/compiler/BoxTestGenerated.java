@@ -875,4 +875,32 @@ public class BoxTestGenerated extends AbstractBoxTest {
       runTest("compiler-tests/src/test/data/box/provides/TransitiveSuccessorScope.kt");
     }
   }
+
+  @Nested
+  @TestMetadata("compiler-tests/src/test/data/box/sharding")
+  @TestDataPath("$PROJECT_ROOT")
+  public class Sharding {
+    @Test
+    public void testAllFilesPresentInSharding() {
+      KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/box/sharding"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
+    }
+
+    @Test
+    @TestMetadata("LargeGraphTest.kt")
+    public void testLargeGraphTest() {
+      runTest("compiler-tests/src/test/data/box/sharding/LargeGraphTest.kt");
+    }
+
+    @Test
+    @TestMetadata("ShardingWithLowThreshold.kt")
+    public void testShardingWithLowThreshold() {
+      runTest("compiler-tests/src/test/data/box/sharding/ShardingWithLowThreshold.kt");
+    }
+
+    @Test
+    @TestMetadata("SimpleShardingTest.kt")
+    public void testSimpleShardingTest() {
+      runTest("compiler-tests/src/test/data/box/sharding/SimpleShardingTest.kt");
+    }
+  }
 }

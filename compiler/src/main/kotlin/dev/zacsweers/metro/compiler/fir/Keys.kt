@@ -132,4 +132,8 @@ internal object Keys {
   data object BindingMirrorClassDeclaration : GeneratedDeclarationKey() {
     override fun toString() = "BindingMirrorClassDeclaration"
   }
+
+  data object GraphShard : GeneratedDeclarationKey() {
+    override fun toString() = "GraphShard"
+  }
 }

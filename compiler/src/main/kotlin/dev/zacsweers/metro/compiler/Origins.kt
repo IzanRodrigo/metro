@@ -51,4 +51,6 @@ internal object Origins {
     IrDeclarationOrigin.GeneratedByPlugin(Keys.ContributedGraph)
   val BindingMirrorClassDeclaration: IrDeclarationOrigin =
     IrDeclarationOrigin.GeneratedByPlugin(Keys.BindingMirrorClassDeclaration)
+  val GraphShard: IrDeclarationOrigin =
+    IrDeclarationOrigin.GeneratedByPlugin(Keys.GraphShard)
 }

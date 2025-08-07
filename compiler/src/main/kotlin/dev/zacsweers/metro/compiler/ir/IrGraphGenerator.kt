@@ -133,6 +133,10 @@ internal class IrGraphGenerator(
    */
   private val fieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
+  
+  // Sharding support
+  private val shards = mutableListOf<IrGraphShard>()
+  private val bindingToShard = mutableMapOf<IrBinding, IrGraphShard>()
 
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
     fieldsToTypeKeys[this] = typeKey
@@ -463,47 +467,109 @@ internal class IrGraphGenerator(
           writeDiagnostic("keys-scopedProviderFields-${parentTracer.tag}.txt") {
             fieldBindings.filter { it.scope != null }.joinToString("\n") { it.typeKey.toString() }
           }
+          
+          // Check if sharding is needed
+          if (fieldBindings.size > options.bindingsPerGraphShard) {
+            log("Graph ${graphClass.kotlinFqName} has ${fieldBindings.size} bindings, " +
+                "which exceeds the sharding threshold of ${options.bindingsPerGraphShard}. " +
+                "Implementing component sharding.")
+            
+            // Implement sharding
+            val shardingStrategy = GraphShardingStrategy(options.bindingsPerGraphShard)
+            val shardInfos = shardingStrategy.distributeBindings(fieldBindings)
+            
+            // Create shard classes
+            shardInfos.forEach { shardInfo ->
+              val shard = IrGraphShard(
+                metroContext = metroContext,
+                parentGraph = graphClass,
+                shardName = shardInfo.name,
+                shardIndex = shardInfo.index,
+                bindings = shardInfo.bindings,
+              )
+              shard.generate()
+              shards.add(shard)
+              
+              // Track which bindings are in which shard
+              shardInfo.bindings.forEach { binding ->
+                bindingToShard[binding] = shard
+              }
+            }
+            
+            // TODO: Initialize shard fields in constructor
+            // For now, just generating the shard classes without full initialization
+          }
         }
         .forEach { binding ->
           val key = binding.typeKey
-          // Since assisted and member injections don't implement Factory, we can't just type these
-          // as
-          // Provider<*> fields
-          var isProviderType = true
-          val suffix: String
-          val fieldType =
-            when (binding) {
+          
+          // Check if this binding is in a shard
+          val shard = bindingToShard[binding]
+          if (shard != null) {
+            // This binding is in a shard - create a delegating field in the main graph
+            val fieldType = when (binding) {
               is IrBinding.ConstructorInjected if binding.isAssisted -> {
-                isProviderType = false
-                suffix = "Factory"
-                binding.classFactory.factoryClass.typeWith() // TODO generic factories?
+                binding.classFactory.factoryClass.typeWith()
               }
               else -> {
-                suffix = "Provider"
                 symbols.metroProvider.typeWith(key.type)
               }
             }
-
-          val field =
-            addField(
-                fieldName =
-                  fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)),
-                fieldType = fieldType,
-                fieldVisibility = DescriptorVisibilities.PRIVATE,
-              )
-              .withInit(key) { thisReceiver, typeKey ->
-                generateBindingCode(
-                    binding,
-                    baseGenerationContext.withReceiver(thisReceiver),
-                    fieldInitKey = typeKey,
-                  )
-                  .letIf(binding.scope != null && isProviderType) {
-                    // If it's scoped, wrap it in double-check
-                    // DoubleCheck.provider(<provider>)
-                    it.doubleCheck(this@withInit, symbols, binding.typeKey)
-                  }
+            
+            val field = addField(
+              fieldName = fieldNameAllocator.newName(
+                binding.nameHint.decapitalizeUS().suffixIfNot(
+                  if (binding is IrBinding.ConstructorInjected && binding.isAssisted) "Factory" else "Provider"
+                )
+              ),
+              fieldType = fieldType,
+              fieldVisibility = DescriptorVisibilities.PRIVATE,
+            )
+            
+            // Initialize the field to delegate to the shard
+            field.initializer = createIrBuilder(symbol).run {
+              irExprBody(shard.generateAccessorExpression(binding, thisReceiverOrFail))
+            }
+            
+            providerFields[key] = field
+          } else {
+            // Normal binding processing (not sharded)
+            var isProviderType = true
+            val suffix: String
+            val fieldType =
+              when (binding) {
+                is IrBinding.ConstructorInjected if binding.isAssisted -> {
+                  isProviderType = false
+                  suffix = "Factory"
+                  binding.classFactory.factoryClass.typeWith() // TODO generic factories?
+                }
+                else -> {
+                  suffix = "Provider"
+                  symbols.metroProvider.typeWith(key.type)
+                }
               }
-          providerFields[key] = field
+
+            val field =
+              addField(
+                  fieldName =
+                    fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)),
+                  fieldType = fieldType,
+                  fieldVisibility = DescriptorVisibilities.PRIVATE,
+                )
+                .withInit(key) { thisReceiver, typeKey ->
+                  generateBindingCode(
+                      binding,
+                      baseGenerationContext.withReceiver(thisReceiver),
+                      fieldInitKey = typeKey,
+                    )
+                    .letIf(binding.scope != null && isProviderType) {
+                      // If it's scoped, wrap it in double-check
+                      // DoubleCheck.provider(<provider>)
+                      it.doubleCheck(this@withInit, symbols, binding.typeKey)
+                    }
+                }
+            providerFields[key] = field
+          }
         }
 
       // Add statements to our constructor's deferred fields _after_ we've added all provider

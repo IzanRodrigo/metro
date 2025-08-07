@@ -14,6 +14,12 @@ See @README.md, @docs, and @.github/CONTRIBUTING.md for project overview.
 ### Code Quality
 Don't bother running code formatting, I'll handle that in commits.
 
+### Component Sharding
+- Metro supports component sharding to avoid "class too large" errors
+- Configure with `bindingsPerGraphShard` compiler option (default: 100)
+- When graphs exceed the threshold, bindings are distributed across nested shard classes
+- See `docs/component-sharding.md` for detailed documentation
+
 ### Documentation
 - `./gradlew dokkaHtml` - Generate API documentation
 - `docs/` - Contains all markdown documentation

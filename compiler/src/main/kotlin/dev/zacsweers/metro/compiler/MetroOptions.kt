@@ -477,6 +477,17 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       required = false,
       allowMultipleOccurrences = false,
     )
+  ),
+  BINDINGS_PER_GRAPH_SHARD(
+    RawMetroOption(
+      name = "bindings-per-graph-shard",
+      defaultValue = 100,
+      valueDescription = "<number>",
+      description = "Maximum number of bindings per graph shard. When a graph exceeds this limit, bindings will be distributed across multiple shards to avoid class size limits.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it.toInt() },
+    )
   );
 
   companion object {
@@ -570,6 +581,8 @@ public data class MetroOptions(
     MetroOption.ENABLE_DAGGER_ANVIL_INTEROP.raw.defaultValue.expectAs(),
   val enableScopedInjectClassHints: Boolean =
     MetroOption.ENABLE_SCOPED_INJECT_CLASS_HINTS.raw.defaultValue.expectAs(),
+  val bindingsPerGraphShard: Int =
+    MetroOption.BINDINGS_PER_GRAPH_SHARD.raw.defaultValue.expectAs(),
 ) {
   internal companion object {
     fun load(configuration: CompilerConfiguration): MetroOptions {
@@ -710,6 +723,9 @@ public data class MetroOptions(
           MetroOption.ENABLE_SCOPED_INJECT_CLASS_HINTS -> {
             options = options.copy(enableScopedInjectClassHints = configuration.getAsBoolean(entry))
           }
+          MetroOption.BINDINGS_PER_GRAPH_SHARD -> {
+            options = options.copy(bindingsPerGraphShard = configuration.getAsInt(entry))
+          }
         }
       }
 
@@ -754,6 +770,11 @@ public data class MetroOptions(
 
     private fun CompilerConfiguration.getAsBoolean(option: MetroOption): Boolean {
       @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Boolean>
+      return get(typed.key, typed.defaultValue)
+    }
+
+    private fun CompilerConfiguration.getAsInt(option: MetroOption): Int {
+      @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Int>
       return get(typed.key, typed.defaultValue)
     }
 

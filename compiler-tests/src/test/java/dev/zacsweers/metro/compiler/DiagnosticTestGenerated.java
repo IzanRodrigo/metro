@@ -489,4 +489,20 @@ public class DiagnosticTestGenerated extends AbstractDiagnosticTest {
       runTest("compiler-tests/src/test/data/diagnostic/provides/Provides_Interface_MayNotHaveTypeParameters.kt");
     }
   }
+
+  @Nested
+  @TestMetadata("compiler-tests/src/test/data/diagnostic/sharding")
+  @TestDataPath("$PROJECT_ROOT")
+  public class Sharding {
+    @Test
+    public void testAllFilesPresentInSharding() {
+      KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/diagnostic/sharding"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
+    }
+
+    @Test
+    @TestMetadata("ShardingDiagnostic.kt")
+    public void testShardingDiagnostic() {
+      runTest("compiler-tests/src/test/data/diagnostic/sharding/ShardingDiagnostic.kt");
+    }
+  }
 }
