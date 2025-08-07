@@ -549,8 +549,11 @@ internal class IrGraphGenerator(
               shardingLogger.log("Parallel generation completed in ${result.generationTimeMs}ms")
               
               // Track which bindings are in which shard
-              shardingResult.shards.forEachIndexed { index, shardInfo ->
-                val shard = result.shards[index]
+              // Create a map from shard index to shard for easy lookup
+              val shardsByIndex = result.shards.associateBy { it.shardIndex }
+              shardingResult.shards.forEach { shardInfo ->
+                val shard = shardsByIndex[shardInfo.index]
+                  ?: error("Shard with index ${shardInfo.index} not found in generated shards")
                 shardInfo.bindings.forEach { binding ->
                   bindingToShard[binding] = shard
                 }

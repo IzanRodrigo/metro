@@ -16,6 +16,7 @@ plugins {
 kotlin {
   compilerOptions {
     freeCompilerArgs.add("-Xcontext-parameters")
+    freeCompilerArgs.add("-Xwhen-guards")
     optIn.addAll(
       "dev.drewhamilton.poko.SkipSupport",
       "kotlin.contracts.ExperimentalContracts",
