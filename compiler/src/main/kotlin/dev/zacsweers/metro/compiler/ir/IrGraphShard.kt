@@ -14,8 +14,6 @@ import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irBlockBody
-import org.jetbrains.kotlin.ir.builders.irCall
-import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
@@ -29,6 +27,7 @@ import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.constructors
+import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.name.Name
 
 /**
@@ -94,19 +93,30 @@ internal class IrGraphShard(
         parent = parentGraph
         // Ensure proper supertype setup
         superTypes += irBuiltIns.anyType
+        // Important: Create the this receiver for the class
+        // This is crucial for nested classes
+        createThisReceiverParameter()
       }
       logger.log("Created shard class '${shardClass.name}' with symbol: ${shardClass.symbol}")
       
       // Add the shard class to the parent's declarations  
+      logger.log("About to add shard class to parent graph declarations")
       parentGraph.declarations.add(shardClass)
-      logger.log("Added shard class to parent graph declarations")
+      logger.log("Added shard class to parent graph declarations - parent now has ${parentGraph.declarations.size} declarations")
       
       // Create primary constructor with no parameters for now
-      shardConstructor = shardClass.addConstructor {
-        visibility = DescriptorVisibilities.INTERNAL // Internal so parent can access
-        isPrimary = true
+      try {
+        shardConstructor = shardClass.addConstructor {
+          visibility = DescriptorVisibilities.INTERNAL // Internal so parent can access
+          isPrimary = true
+        }
+        logger.log("Created primary constructor for shard class")
+      } catch (e: Exception) {
+        val errorMsg = "Failed to create constructor for shard class '${shardClass.name}'"
+        logger.log("ERROR: $errorMsg - ${e.message}")
+        logger.log("Shard class details: symbol=${shardClass.symbol}, bound=${shardClass.symbol.isBound}")
+        throw RuntimeException(errorMsg, e)
       }
-      logger.log("Created primary constructor for shard class")
       
       // Generate provider fields for each binding in this shard
       bindings.forEachIndexed { index, binding ->
@@ -263,9 +273,18 @@ internal class IrGraphShard(
   }
   
   private fun setupConstructorBody() {
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    
     // Defensive check for thisReceiver
-    val thisReceiver = shardClass.thisReceiver 
-      ?: error("Shard class ${shardClass.name} has no thisReceiver")
+    logger.log("Setting up constructor body - checking thisReceiver")
+    logger.log("Shard class thisReceiver: ${shardClass.thisReceiver}")
+    
+    // For nested classes, we might need to use the constructor's dispatch receiver
+    val thisReceiver = shardConstructor.dispatchReceiverParameter
+      ?: shardClass.thisReceiver 
+      ?: error("Shard class ${shardClass.name} has no thisReceiver or dispatch receiver")
+    
+    logger.log("Creating constructor body with ${providerFields.size} provider fields")
     
     shardConstructor.body = createIrBuilder(shardConstructor.symbol).irBlockBody {
       // Call super constructor (Any())
