@@ -1311,7 +1311,12 @@ internal class IrGraphGenerator(
       }
 
       is IrBinding.MembersInjected -> {
-        val injectedClass = referenceClass(binding.targetClassId)!!.owner
+        val injectedClassSymbol = referenceClass(binding.targetClassId)
+        if (injectedClassSymbol == null) {
+          error("Could not find class ${binding.targetClassId} for MembersInjected binding. This might be a shard generation ordering issue.")
+        }
+        
+        val injectedClass = injectedClassSymbol.owner
         // Use symbol.typeWith() instead of defaultType to avoid NPE
         val injectedType = injectedClass.symbol.typeWith()
         val injectorClass = membersInjectorTransformer.getOrGenerateInjector(injectedClass)?.ir

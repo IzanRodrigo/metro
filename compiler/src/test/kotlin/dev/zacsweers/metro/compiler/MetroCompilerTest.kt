@@ -246,6 +246,9 @@ abstract class MetroCompilerTest {
               MetroOption.ENABLE_SCOPED_INJECT_CLASS_HINTS -> {
                 processor.option(entry.raw.cliOption, enableScopedInjectClassHints)
               }
+              MetroOption.BINDINGS_PER_GRAPH_SHARD -> {
+                processor.option(entry.raw.cliOption, bindingsPerGraphShard)
+              }
             }
           yield(option)
         }
