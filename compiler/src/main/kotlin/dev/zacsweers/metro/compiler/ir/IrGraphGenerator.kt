@@ -628,18 +628,16 @@ internal class IrGraphGenerator(
               fieldVisibility = DescriptorVisibilities.PRIVATE,
             )
             
-            // Don't initialize the field here - it will be initialized in the constructor
-            // after the shard is created
+            // Don't initialize the field here - defer ALL initialization to constructor
             providerFields[key] = field
+            fieldsToTypeKeys[field] = key
             
-            // Add initialization to constructor statements
-            constructorStatements.add { thisReceiver ->
-              irSetField(
-                receiver = irGet(thisReceiver),
-                field = field,
-                value = shard.generateAccessorExpression(binding, thisReceiver)
-              )
-            }
+            // Store the field and shard mapping for later initialization
+            // We'll initialize these after all shard instances are created
+            val shardBinding = binding to shard
+            fieldInitializers.add(field to { thisReceiver, _ ->
+              shardBinding.second.generateAccessorExpression(shardBinding.first, thisReceiver)
+            })
           } else {
             // Normal binding processing (not sharded)
             var isProviderType = true
@@ -1262,9 +1260,21 @@ internal class IrGraphGenerator(
     // provider for it.
     // This is important for cases like DelegateFactory and breaking cycles.
     if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-      providerFields[binding.typeKey]?.let {
-        return irGetField(irGet(generationContext.thisReceiver), it).let {
-          with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+      // Check if we're initializing within a shard context
+      // In shards, we should not access provider fields during initialization to avoid circular dependencies
+      // The parent graph will handle cross-shard field access after all shards are initialized
+      val isInShardInit = generationContext.thisReceiver.parent.let { parent ->
+        parent is IrFunction && parent.parent.let { grandParent ->
+          grandParent is IrClass && grandParent.name.asString().startsWith("GraphShard")
+        }
+      }
+      
+      if (!isInShardInit) {
+        // Normal provider field access when not in shard initialization
+        providerFields[binding.typeKey]?.let {
+          return irGetField(irGet(generationContext.thisReceiver), it).let {
+            with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+          }
         }
       }
     }

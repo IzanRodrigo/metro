@@ -53,14 +53,15 @@ internal class ParallelShardGenerator(
       return generateSequentially(shardingResult, parentGraph, bindingGenerator, startTime)
     }
     
-    logger.log("Processing ${shardingResult.parallelGroups.size} shard groups")
+    logger.log("Processing ${shardingResult.shards.size} shards in ${shardingResult.parallelGroups.size} groups")
     logger.log("Note: Due to Kotlin compiler constraints, actual generation is sequential")
     
     // Generate shards sequentially to avoid thread-safety issues with Kotlin compiler internals
-    // We still respect the parallel grouping for logging and future optimization
     val shards = mutableListOf<IrGraphShard>()
+    val generatedShardIndices = mutableSetOf<Int>()
     
     try {
+      // First, generate shards that are in parallel groups
       shardingResult.parallelGroups.forEachIndexed { groupIndex, shardIndices ->
         logger.log("Processing group ${groupIndex + 1} with shards: ${shardIndices.sorted().joinToString(", ")}")
         
@@ -82,8 +83,32 @@ internal class ParallelShardGenerator(
           // Generate the shard on the main thread
           shard.generate()
           shards.add(shard)
+          generatedShardIndices.add(shardInfo.index)
           
           logger.log("Successfully generated shard ${shardInfo.index}")
+        }
+      }
+      
+      // Then, generate any shards that weren't in parallel groups
+      // (this can happen if there are isolated shards or circular dependencies)
+      for (shardInfo in shardingResult.shards) {
+        if (shardInfo.index !in generatedShardIndices) {
+          logger.log("Generating standalone shard ${shardInfo.index} (${shardInfo.name})")
+          
+          val shard = IrGraphShard(
+            metroContext = metroContext,
+            parentGraph = parentGraph,
+            shardName = shardInfo.name,
+            shardIndex = shardInfo.index,
+            bindings = shardInfo.bindings,
+            bindingGenerator = bindingGenerator,
+          )
+          
+          shard.generate()
+          shards.add(shard)
+          generatedShardIndices.add(shardInfo.index)
+          
+          logger.log("Successfully generated standalone shard ${shardInfo.index}")
         }
       }
       

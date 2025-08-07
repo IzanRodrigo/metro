@@ -129,7 +129,8 @@ Metro now uses an intelligent sharding algorithm that:
 
 When enabled (default), Metro identifies independent shard groups for optimization:
 
-- Analyzes shard dependencies and identifies parallel groups
+- Analyzes shard dependencies and identifies parallel groups that could be generated concurrently
+- Handles standalone shards that aren't part of any parallel group (e.g., isolated components)
 - Currently generates sequentially due to Kotlin compiler thread-safety limitations
 - Infrastructure is in place for true parallel generation when compiler support improves
 - Falls back to simple sequential generation when disabled
