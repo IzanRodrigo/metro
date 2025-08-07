@@ -101,9 +101,11 @@ internal class IrGraphShard(
     setupConstructorBody()
     
     // Add field in parent graph to hold this shard instance
+    // Create the field after the shard class is fully set up
     shardField = parentGraph.addField {
       name = Name.identifier(shardName.asString().decapitalizeUS())
-      type = shardClass.defaultType
+      // Use typeWith() to ensure the class symbol is properly resolved
+      type = shardClass.symbol.typeWith()
       visibility = DescriptorVisibilities.PRIVATE
       isFinal = true
     }
