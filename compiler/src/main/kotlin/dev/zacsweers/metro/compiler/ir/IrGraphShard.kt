@@ -308,8 +308,11 @@ internal class IrGraphShard(
   
   private fun generateBindingProvider(binding: IrBinding): IrExpression {
     // Use the binding generator provided by the parent graph
-    val thisReceiver = shardClass.thisReceiver 
+    val thisReceiver = shardConstructor.dispatchReceiverParameter
+      ?: shardClass.thisReceiver 
       ?: error("Shard class ${shardClass.name} has no thisReceiver when generating binding for ${binding.typeKey}")
+    
+    // Important: The binding generator should use the shard's context, not the parent's
     return bindingGenerator(binding, thisReceiver)
   }
   

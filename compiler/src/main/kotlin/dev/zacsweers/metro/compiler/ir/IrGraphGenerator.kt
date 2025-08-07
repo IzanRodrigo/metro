@@ -565,12 +565,18 @@ internal class IrGraphGenerator(
               fieldVisibility = DescriptorVisibilities.PRIVATE,
             )
             
-            // Initialize the field to delegate to the shard
-            field.initializer = createIrBuilder(symbol).run {
-              irExprBody(shard.generateAccessorExpression(binding, thisReceiverOrFail))
-            }
-            
+            // Don't initialize the field here - it will be initialized in the constructor
+            // after the shard is created
             providerFields[key] = field
+            
+            // Add initialization to constructor statements
+            constructorStatements.add { thisReceiver ->
+              irSetField(
+                receiver = irGet(thisReceiver),
+                field = field,
+                value = shard.generateAccessorExpression(binding, thisReceiver)
+              )
+            }
           } else {
             // Normal binding processing (not sharded)
             var isProviderType = true
@@ -1800,7 +1806,9 @@ private fun generatePreShardingReport(
     appendLine("Total Bindings: ${bindings.size}")
     appendLine("Sharding Threshold: $threshold")
     appendLine("Bindings Over Threshold: ${bindings.size - threshold}")
-    appendLine("Estimated Shards: ${(bindings.size + threshold - 1) / threshold}")
+    // Match the actual sharding logic
+    val estimatedShards = if (bindings.size <= threshold) 0 else bindings.chunked(threshold).size
+    appendLine("Estimated Shards: $estimatedShards")
     appendLine()
     
     appendLine("Bindings by Type:")
