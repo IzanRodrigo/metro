@@ -143,7 +143,20 @@ internal class IrGraphShard(
             logger.log("ERROR: $errorMsg")
             throw IllegalStateException(errorMsg)
           }
-          type = shardClass.symbol.typeWith()
+          try {
+            type = shardClass.symbol.typeWith()
+          } catch (e: Exception) {
+            val detailedError = buildString {
+              appendLine("Failed to create type for shard field")
+              appendLine("Shard class: ${shardClass.name}")
+              appendLine("Symbol: ${shardClass.symbol}")
+              appendLine("Symbol bound: ${shardClass.symbol.isBound}")
+              appendLine("Symbol owner: ${shardClass.symbol.owner}")
+              appendLine("Exception: ${e::class.simpleName}: ${e.message}")
+            }
+            logger.log("CRITICAL ERROR: $detailedError")
+            throw RuntimeException(detailedError, e)
+          }
           visibility = DescriptorVisibilities.PRIVATE
           isFinal = true
         }
@@ -184,7 +197,20 @@ internal class IrGraphShard(
             throw IllegalStateException(errorMsg)
           }
           logger.log("Using assisted factory type for ${binding.typeKey}: ${factoryClass.name}")
-          factoryClass.symbol.typeWith()
+          try {
+            factoryClass.symbol.typeWith()
+          } catch (e: Exception) {
+            val detailedError = buildString {
+              appendLine("Failed to create type for assisted factory")
+              appendLine("Binding: ${binding.typeKey}")
+              appendLine("Factory class: ${factoryClass.name}")
+              appendLine("Symbol: ${factoryClass.symbol}")
+              appendLine("Symbol bound: ${factoryClass.symbol.isBound}")
+              appendLine("Exception: ${e::class.simpleName}: ${e.message}")
+            }
+            logger.log("ERROR: $detailedError")
+            throw RuntimeException(detailedError, e)
+          }
         }
         else -> {
           logger.log("Using provider type for ${binding.typeKey}")
@@ -195,7 +221,20 @@ internal class IrGraphShard(
             logger.log("ERROR: $errorMsg")
             throw IllegalStateException(errorMsg)
           }
-          symbols.metroProvider.typeWith(bindingType)
+          try {
+            symbols.metroProvider.typeWith(bindingType)
+          } catch (e: Exception) {
+            val detailedError = buildString {
+              appendLine("Failed to create provider type")
+              appendLine("Binding: ${binding.typeKey}")
+              appendLine("Binding type: $bindingType")
+              appendLine("Provider symbol: ${symbols.metroProvider}")
+              appendLine("Provider symbol bound: ${symbols.metroProvider.isBound}")
+              appendLine("Exception: ${e::class.simpleName}: ${e.message}")
+            }
+            logger.log("ERROR: $detailedError")
+            throw RuntimeException(detailedError, e)
+          }
         }
       }
       
