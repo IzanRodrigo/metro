@@ -486,6 +486,15 @@ internal class IrGraphGenerator(
                 shardName = shardInfo.name,
                 shardIndex = shardInfo.index,
                 bindings = shardInfo.bindings,
+                bindingGenerator = { binding, thisReceiver ->
+                  createIrBuilder(symbol).run {
+                    generateBindingCode(
+                      binding = binding,
+                      generationContext = GraphGenerationContext(thisReceiver),
+                      fieldInitKey = binding.typeKey,
+                    )
+                  }
+                },
               )
               shard.generate()
               shards.add(shard)
@@ -496,8 +505,19 @@ internal class IrGraphGenerator(
               }
             }
             
-            // TODO: Initialize shard fields in constructor
-            // For now, just generating the shard classes without full initialization
+            // Initialize shard fields in constructor
+            shards.forEach { shard ->
+              constructorStatements.add { thisReceiver ->
+                irSetField(
+                  receiver = irGet(thisReceiver),
+                  field = shard.shardField,
+                  value = irCallConstructor(
+                    callee = shard.shardClass.primaryConstructor!!.symbol,
+                    typeArguments = emptyList()
+                  )
+                )
+              }
+            }
           }
         }
         .forEach { binding ->
@@ -538,16 +558,16 @@ internal class IrGraphGenerator(
             val suffix: String
             val fieldType =
               when (binding) {
-                is IrBinding.ConstructorInjected if binding.isAssisted -> {
-                  isProviderType = false
-                  suffix = "Factory"
-                  binding.classFactory.factoryClass.typeWith() // TODO generic factories?
-                }
-                else -> {
-                  suffix = "Provider"
-                  symbols.metroProvider.typeWith(key.type)
-                }
+              is IrBinding.ConstructorInjected if binding.isAssisted -> {
+                isProviderType = false
+                suffix = "Factory"
+                binding.classFactory.factoryClass.typeWith() // TODO generic factories?
               }
+              else -> {
+                suffix = "Provider"
+                symbols.metroProvider.typeWith(key.type)
+              }
+            }
 
             val field =
               addField(
@@ -559,14 +579,14 @@ internal class IrGraphGenerator(
                 .withInit(key) { thisReceiver, typeKey ->
                   generateBindingCode(
                       binding,
-                      baseGenerationContext.withReceiver(thisReceiver),
-                      fieldInitKey = typeKey,
-                    )
-                    .letIf(binding.scope != null && isProviderType) {
-                      // If it's scoped, wrap it in double-check
-                      // DoubleCheck.provider(<provider>)
-                      it.doubleCheck(this@withInit, symbols, binding.typeKey)
-                    }
+                    baseGenerationContext.withReceiver(thisReceiver),
+                    fieldInitKey = typeKey,
+                  )
+                  .letIf(binding.scope != null && isProviderType) {
+                    // If it's scoped, wrap it in double-check
+                    // DoubleCheck.provider(<provider>)
+                    it.doubleCheck(this@withInit, symbols, binding.typeKey)
+                  }
                 }
             providerFields[key] = field
           }

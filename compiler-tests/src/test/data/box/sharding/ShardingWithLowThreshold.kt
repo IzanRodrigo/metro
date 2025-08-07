@@ -3,8 +3,8 @@
 
 import dev.zacsweers.metro.DependencyGraph
 import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.Scope
 import dev.zacsweers.metro.SingleIn
-import dev.zacsweers.metro.Singleton
 import dev.zacsweers.metro.createGraph
 
 // Create more services than the default threshold
@@ -29,7 +29,7 @@ class Service6 @Inject constructor()
 @SingleIn(TestScope::class)
 class Service7 @Inject constructor()
 
-@Singleton
+@Scope
 annotation class TestScope
 
 @DependencyGraph(TestScope::class)

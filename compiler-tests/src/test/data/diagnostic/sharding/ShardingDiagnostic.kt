@@ -3,8 +3,8 @@
 
 import dev.zacsweers.metro.DependencyGraph
 import dev.zacsweers.metro.Inject
+import dev.zacsweers.metro.Scope
 import dev.zacsweers.metro.SingleIn
-import dev.zacsweers.metro.Singleton
 
 // Create many services to trigger sharding
 @SingleIn(TestScope::class) class Service1 @Inject constructor()
@@ -23,7 +23,7 @@ import dev.zacsweers.metro.Singleton
 @SingleIn(TestScope::class) class Service14 @Inject constructor()
 @SingleIn(TestScope::class) class Service15 @Inject constructor()
 
-@Singleton
+@Scope
 annotation class TestScope
 
 @DependencyGraph(TestScope::class)
