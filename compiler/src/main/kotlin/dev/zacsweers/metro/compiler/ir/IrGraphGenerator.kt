@@ -66,6 +66,7 @@ import org.jetbrains.kotlin.ir.util.SymbolRemapper
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.companionObject
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
@@ -304,8 +305,13 @@ internal class IrGraphGenerator(
 
       // Add instance fields for all the parent graphs
       for (parent in node.allExtendedNodes.values) {
-        // TODO make this an error?
-        if (!parent.isExtendable) continue
+        // Skip non-extendable parent graphs - this should be caught during FIR validation
+        if (!parent.isExtendable) {
+          loggerFor(MetroLogger.Type.GraphImplCodeGen).log(
+            "Skipping non-extendable parent graph '${parent.sourceGraph.name}' when generating '${graphClass.name}'"
+          )
+          continue
+        }
         val parentMetroGraph = parent.sourceGraph.metroGraphOrFail
         val instanceAccessors =
           parentMetroGraph.functions
@@ -380,9 +386,10 @@ internal class IrGraphGenerator(
       }
 
       // Collect bindings and their dependencies for provider field ordering
+      val fieldCollector = ProviderFieldCollector(bindingGraph)
       val initOrder =
         parentTracer.traceNested("Collect bindings") {
-          val providerFieldBindings = ProviderFieldCollector(bindingGraph).collect()
+          val providerFieldBindings = fieldCollector.collect()
           buildList(providerFieldBindings.size) {
             for (key in sealResult.sortedKeys) {
               if (key in sealResult.reachableKeys) {
@@ -394,40 +401,41 @@ internal class IrGraphGenerator(
 
       val baseGenerationContext = GraphGenerationContext(thisReceiverParameter)
 
-      // TODO can we consolidate this with regular provider field collection?
-      for ((key, binding) in bindingGraph.bindingsSnapshot()) {
-        if (binding is IrBinding.GraphDependency && key in sealResult.reachableKeys) {
+      // Handle GraphDependency provider field accessors
+      val providerFieldAccessors = fieldCollector.collectProviderFieldAccessors()
+      for ((key, binding) in providerFieldAccessors) {
+        if (key in sealResult.reachableKeys) {
           val getter = binding.getter
-          if (binding.isProviderFieldAccessor) {
-            // Init a provider field pointing at this
-            providerFields[key] =
-              addField(
-                  fieldName =
-                    fieldNameAllocator.newName(
-                      "${getter.name.asString().decapitalizeUS().removeSuffix(Symbols.StringNames.METRO_ACCESSOR_SUFFIX)}Provider"
-                    ),
-                  fieldType = symbols.metroProvider.typeWith(node.typeKey.type),
-                  fieldVisibility = DescriptorVisibilities.PRIVATE,
-                )
-                .withInit(key) { thisReceiver, _ ->
-                  // If this is in instance fields, just do a quick assignment
-                  if (binding.typeKey in instanceFields) {
-                    val field = instanceFields.getValue(binding.typeKey)
-                    instanceFactory(binding.typeKey.type, irGetField(irGet(thisReceiver), field))
-                  } else {
-                    generateBindingCode(
-                      binding = binding,
-                      generationContext = baseGenerationContext.withReceiver(thisReceiver),
-                      fieldInitKey = key,
-                    )
-                  }
+          // Init a provider field pointing at this
+          providerFields[key] =
+            addField(
+                fieldName =
+                  fieldNameAllocator.newName(
+                    "${getter.name.asString().decapitalizeUS().removeSuffix(Symbols.StringNames.METRO_ACCESSOR_SUFFIX)}Provider"
+                  ),
+                fieldType = symbols.metroProvider.typeWith(binding.typeKey.type),
+                fieldVisibility = DescriptorVisibilities.PRIVATE,
+              )
+              .withInit(key) { thisReceiver, _ ->
+                // If this is in instance fields, just do a quick assignment
+                if (binding.typeKey in instanceFields) {
+                  val field = instanceFields.getValue(binding.typeKey)
+                  instanceFactory(binding.typeKey.type, irGetField(irGet(thisReceiver), field))
+                } else {
+                  generateBindingCode(
+                    binding = binding,
+                    generationContext = baseGenerationContext.withReceiver(thisReceiver),
+                    fieldInitKey = key,
+                  )
                 }
-          }
+              }
         }
       }
 
       // For all deferred types, assign them first as factories
-      // TODO For any types that depend on deferred types, they need providers too?
+      // Deferred types are those that participate in dependency cycles broken by
+      // deferrable edges (Provider/Lazy). They need DelegateFactory instances that
+      // are initialized later to break the cycle.
       @Suppress("UNCHECKED_CAST")
       val deferredFields: Map<IrTypeKey, IrField> =
         sealResult.deferredTypes.associateWith { deferredTypeKey ->
@@ -488,17 +496,45 @@ internal class IrGraphGenerator(
               generatePreShardingReport(graphClass, fieldBindings, options.bindingsPerGraphShard)
             }
             
-            // Implement sharding
+            // Implement dependency-aware sharding
             val shardingStrategy = GraphShardingStrategy(options.bindingsPerGraphShard)
-            val shardInfos = shardingStrategy.distributeBindings(fieldBindings)
             
-            shardingLogger.log("Created ${shardInfos.size} shards for distribution")
-            shardInfos.forEachIndexed { index, shardInfo ->
-              shardingLogger.log("  Shard ${index + 1}: '${shardInfo.name}' with ${shardInfo.bindings.size} bindings")
+            // Convert fieldBindings List to Map for the new API
+            val bindingsMap = fieldBindings.associateBy { it.typeKey }
+            // The topological sort has already been done in the binding graph seal process
+            // We pass null to let the sharding strategy recompute dependencies as needed
+            val shardingResult = shardingStrategy.distributeBindings(bindingsMap, bindingGraph = null)
+            
+            shardingLogger.log("Created ${shardingResult.shards.size} shards for distribution")
+            shardingLogger.log("Identified ${shardingResult.parallelGroups.size} parallel generation groups")
+            
+            shardingResult.parallelGroups.forEachIndexed { groupIndex, shardIndices ->
+              shardingLogger.log("  Parallel group ${groupIndex + 1}: shards ${shardIndices.sorted().joinToString(", ")}")
+            }
+            
+            shardingResult.shards.forEach { shardInfo ->
+              shardingLogger.log("  Shard ${shardInfo.index}: '${shardInfo.name}' with ${shardInfo.bindings.size} bindings")
+              if (shardInfo.dependencies.isNotEmpty()) {
+                shardingLogger.log("    Dependencies: ${shardInfo.dependencies.sorted().joinToString(", ")}")
+              }
             }
             
             // Create shard classes
-            shardInfos.forEach { shardInfo ->
+            // Note: In a real parallel implementation, we would process each parallel group concurrently
+            // For now, we still process sequentially but preserve the dependency information
+            // 
+            // Example parallel generation with coroutines (future enhancement):
+            // runBlocking {
+            //   shardingResult.parallelGroups.forEach { group ->
+            //     group.map { shardIndex ->
+            //       async {
+            //         val shardInfo = shardingResult.shards.find { it.index == shardIndex }!!
+            //         generateShard(shardInfo)
+            //       }
+            //     }.awaitAll()
+            //   }
+            // }
+            shardingResult.shards.forEach { shardInfo ->
               val shard = IrGraphShard(
                 metroContext = metroContext,
                 parentGraph = graphClass,
@@ -586,7 +622,9 @@ internal class IrGraphGenerator(
               is IrBinding.ConstructorInjected if binding.isAssisted -> {
                 isProviderType = false
                 suffix = "Factory"
-                binding.classFactory.factoryClass.typeWith() // TODO generic factories?
+                // For now, we don't support generic factories - use raw type
+                // Supporting generics would require type parameter mapping from the injection site
+                binding.classFactory.factoryClass.typeWith()
               }
               else -> {
                 suffix = "Provider"

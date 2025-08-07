@@ -279,9 +279,10 @@ private fun <V : Comparable<V>> findMinimalDeferralSet(
     return emptySet()
   }
 
-  // TODO this is... ugly? It's like we want a hierarchy of deferrable types (whole-node or just
-  //  edge)
-  // Prefer implicitly deferrable types (i.e. assisted factories) over regular types
+  // Prioritize deferrable candidates based on their characteristics:
+  // 1. Implicitly deferrable types (e.g., assisted factories) are preferred because they
+  //    naturally break cycles without requiring explicit Provider/Lazy wrapping
+  // 2. Regular deferrable types are considered next
   val implicitlyDeferrableCandidates = potentialCandidates.filter(isImplicitlyDeferrable)
 
   // Try implicitly deferrable candidates first
