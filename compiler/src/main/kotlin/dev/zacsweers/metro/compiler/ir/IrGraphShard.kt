@@ -26,6 +26,7 @@ import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.name.Name
@@ -77,6 +78,11 @@ internal class IrGraphShard(
     
     try {
       logger.log("Starting generation of shard '${shardName}' for graph '${parentGraph.name}' with ${bindings.size} bindings")
+      
+      // Validate parent graph before proceeding
+      if (!parentGraph.symbol.isBound) {
+        throw IllegalStateException("Parent graph symbol is not bound: ${parentGraph.name}")
+      }
       
       // Create the shard class as a nested class in the graph
       shardClass = pluginContext.irFactory.buildClass {
@@ -182,7 +188,14 @@ internal class IrGraphShard(
         }
         else -> {
           logger.log("Using provider type for ${binding.typeKey}")
-          symbols.metroProvider.typeWith(binding.typeKey.type)
+          val bindingType = binding.typeKey.type
+          // Defensive check to ensure the type is valid
+          if (bindingType !is IrSimpleType || bindingType.classifier == null) {
+            val errorMsg = "Invalid type for binding ${binding.typeKey}: type=$bindingType, classifier=${(bindingType as? IrSimpleType)?.classifier}"
+            logger.log("ERROR: $errorMsg")
+            throw IllegalStateException(errorMsg)
+          }
+          symbols.metroProvider.typeWith(bindingType)
         }
       }
       
