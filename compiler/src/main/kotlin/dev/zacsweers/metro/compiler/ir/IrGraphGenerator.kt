@@ -1433,12 +1433,17 @@ internal class IrGraphGenerator(
         // BoundInstance bindings can appear when the graph itself is used as a dependency
         // In shard context, we need to access the parent graph instance
         if (generationContext.isShardInitialization) {
-          // Access the parent graph field that we stored in the shard
-          val parentFunction = generationContext.thisReceiver.parent as? IrFunction
-          val shardClass = parentFunction?.parent as? IrClass
-              ?: error("Unable to find shard class for BoundInstance binding: $binding. " +
-                  "ParentFunction: $parentFunction, " +
-                  "Receiver parent: ${generationContext.thisReceiver.parent}")
+          // In shard context, the thisReceiver could be either:
+          // 1. The constructor's dispatch receiver (if called from constructor body)
+          // 2. The shard class's thisReceiver (if called during field init)
+          // We need to handle both cases
+          val shardClass = when (val parent = generationContext.thisReceiver.parent) {
+            is IrFunction -> parent.parent as? IrClass
+            is IrClass -> parent
+            else -> null
+          } ?: error("Unable to find shard class for BoundInstance binding: $binding. " +
+                  "Receiver parent: ${generationContext.thisReceiver.parent}, " +
+                  "Parent type: ${generationContext.thisReceiver.parent?.let { it::class.simpleName }}")
 
           if (!shardClass.name.asString().startsWith("GraphShard")) {
             error("Parent class is not a GraphShard for BoundInstance binding: $binding. " +
