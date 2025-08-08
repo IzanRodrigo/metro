@@ -488,7 +488,8 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
       valueMapper = { it.toInt() },
     )
-  );
+  ),
+;
 
   companion object {
     val entriesByOptionName = entries.associateBy { it.raw.name }

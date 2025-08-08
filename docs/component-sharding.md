@@ -95,9 +95,22 @@ Consider enabling sharding with a lower threshold if you:
 If you encounter errors like:
 - "The code for the static initializer is exceeding the 65535 bytes limit"
 - "Too many constants in constant pool" 
-- Method code too large
+- "Method code too large"
 
-Try reducing the `bindingsPerGraphShard` value to distribute bindings across more shards.
+Try these solutions:
+
+1. **Reduce `bindingsPerGraphShard`**: Creates smaller shards with fewer bindings each
+2. **Refactor complex bindings**: Consider breaking up bindings that have many dependencies
+
+Example configuration for projects with very complex bindings:
+
+```kotlin
+metro {
+  bindingsPerGraphShard = 50 // Smaller shards
+}
+```
+
+Note: Metro now automatically handles extremely large multibindings (maps and sets with many entries) by splitting their initialization across multiple statements, so "Method too large" errors from large ViewModelFactories or similar multibindings should no longer occur.
 
 ### Compilation Warnings
 
@@ -116,6 +129,13 @@ Metro uses an intelligent sharding algorithm that:
 - **Strongly Connected Components (SCC)**: Keeps circular dependencies together in the same shard using Tarjan's algorithm
 - **Topological Sorting**: Ensures proper initialization order across shards
 - **Dependency Analysis**: Analyzes dependencies between shards to ensure correct initialization order
+
+### Method Size Considerations
+
+Metro automatically handles method size limitations in two ways:
+
+1. **Chunking**: Bindings within shards are distributed across multiple initialization methods to avoid exceeding JVM method size limits
+2. **Large Multibinding Handling**: Map and set multibindings with many entries (>50) are automatically split into smaller chunks during initialization to prevent any single expression from becoming too large
 
 ## Future Enhancements
 

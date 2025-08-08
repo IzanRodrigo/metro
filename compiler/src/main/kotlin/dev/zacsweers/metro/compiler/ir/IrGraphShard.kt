@@ -11,23 +11,29 @@ import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addField
+import org.jetbrains.kotlin.ir.builders.declarations.addFunction
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irNull
+import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.constructors
+import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
+import org.jetbrains.kotlin.ir.util.dumpKotlinLike
 import org.jetbrains.kotlin.name.Name
 
 /**
@@ -43,6 +49,10 @@ internal class IrGraphShard(
   private val bindingGenerator: (IrBinding, IrValueParameter, Map<IrTypeKey, IrField>) -> IrExpression,
 ) : IrMetroContext by metroContext {
   
+  // Fixed value for chunking - we handle large multibindings separately now
+  // Reduced from 25 to handle cases where individual bindings generate significant bytecode
+  private val STATEMENTS_PER_METHOD = 10
+  
   private val fieldNameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
   private val providerFields = mutableMapOf<IrTypeKey, IrField>()
   
@@ -50,7 +60,8 @@ internal class IrGraphShard(
   private val bindingsByKey = bindings.associateBy { it.typeKey }
   
   // Field to store the parent graph reference
-  private lateinit var parentGraphField: IrField
+  lateinit var parentGraphField: IrField
+    private set
   
   /**
    * Public accessor for shard name
@@ -203,6 +214,7 @@ internal class IrGraphShard(
       // Generate shard report if debug mode is enabled
       if (debug) {
         generateShardReport()
+        generateKotlinSourceReport()
       }
       
     } catch (e: Exception) {
@@ -210,6 +222,16 @@ internal class IrGraphShard(
       logger.log("CRITICAL ERROR: $errorMsg")
       logger.log("Exception details: ${e::class.simpleName}: ${e.message}")
       logger.log("Bindings being processed: ${bindings.map { it.typeKey }.joinToString()}")
+      
+      // Generate emergency diagnostic report
+      try {
+        generateEmergencyShardReport(e)
+        // Always try to generate Kotlin source on error
+        generateKotlinSourceReport()
+      } catch (reportError: Exception) {
+        logger.log("Failed to generate emergency report: ${reportError.message}")
+      }
+      
       throw RuntimeException("$errorMsg: ${e.message}", e)
     }
   }
@@ -307,31 +329,149 @@ internal class IrGraphShard(
     
     logger.log("Creating constructor body with ${providerFields.size} provider fields")
     
-    shardConstructor.body = createIrBuilder(shardConstructor.symbol).irBlockBody {
-      // Call super constructor (Any())
-      +irDelegatingConstructorCall(
-        callee = irBuiltIns.anyClass.owner.constructors.single()
-      )
-      
-      // Initialize parent graph field
-      val parentGraphParam = shardConstructor.regularParameters.first()
-      +irSetField(
-        receiver = irGet(thisReceiver),
-        field = parentGraphField,
-        value = irGet(parentGraphParam)
-      )
-      
-      // IMPORTANT: Initialize fields in topological order to ensure dependencies are available
-      // This prevents recursive generation and improves performance from O(n²) to O(n)
-      val sortedBindings = sortBindingsTopologically()
-      
-      sortedBindings.forEach { binding ->
-        val field = providerFields[binding.typeKey]!!
+    // IMPORTANT: Initialize fields in topological order to ensure dependencies are available
+    // This prevents recursive generation and improves performance from O(n²) to O(n)
+    val sortedBindings = sortBindingsTopologically()
+    
+    // Check if we need to chunk the initialization
+    // For shards, we need very small chunks because each binding can generate significant bytecode
+    // Some bindings with many dependencies can generate thousands of bytecode instructions
+    val needsChunking = sortedBindings.size > STATEMENTS_PER_METHOD
+    
+    if (!needsChunking) {
+      // Small shard, initialize directly in constructor
+      shardConstructor.body = createIrBuilder(shardConstructor.symbol).irBlockBody {
+        // Call super constructor (Any())
+        +irDelegatingConstructorCall(
+          callee = irBuiltIns.anyClass.owner.constructors.single()
+        )
+        
+        // Initialize parent graph field
+        val parentGraphParam = shardConstructor.regularParameters.first()
         +irSetField(
           receiver = irGet(thisReceiver),
-          field = field,
-          value = generateBindingProvider(binding)
+          field = parentGraphField,
+          value = irGet(parentGraphParam)
         )
+        
+        sortedBindings.forEach { binding ->
+          val field = providerFields[binding.typeKey]!!
+          +irSetField(
+            receiver = irGet(thisReceiver),
+            field = field,
+            value = generateBindingProvider(binding)
+          )
+        }
+      }
+    } else {
+      // Large shard, need to chunk initialization across multiple methods
+      logger.log("Shard $shardName requires chunking: ${sortedBindings.size} bindings > $STATEMENTS_PER_METHOD")
+      
+      // Create init functions for chunks
+      val initFunctions = mutableListOf<IrSimpleFunction>()
+      
+      // For very large shards, we need even smaller chunks to avoid method size limits
+      // Analyze binding complexity to determine optimal chunk size
+      val effectiveChunkSize = if (sortedBindings.size > 50) {
+        // For shards with many bindings, use smaller chunks
+        val avgComplexity = sortedBindings.map { analyzeBindingComplexity(it) }.average()
+        when {
+          avgComplexity > 30 -> 3  // Very complex bindings
+          avgComplexity > 20 -> 5  // Complex bindings
+          else -> STATEMENTS_PER_METHOD
+        }
+      } else {
+        STATEMENTS_PER_METHOD
+      }
+      
+      val chunks = sortedBindings.chunked(effectiveChunkSize)
+      logger.log("Creating ${chunks.size} init functions for shard $shardName ($effectiveChunkSize statements per chunk, avg complexity: ${sortedBindings.map { analyzeBindingComplexity(it) }.average()})")
+      
+      chunks.forEachIndexed { index, chunk ->
+        val initFunction = shardClass.addFunction {
+          name = Name.identifier("initChunk$index")
+          visibility = DescriptorVisibilities.PRIVATE
+          returnType = irBuiltIns.unitType
+        }.apply {
+          // Set the dispatch receiver parameter for this member function
+          val localReceiver = shardClass.thisReceiver!!.copyTo(this)
+          setDispatchReceiver(localReceiver)
+        }
+        
+        // We need to generate the body after the function is fully set up
+        initFunction.body = createIrBuilder(initFunction.symbol).irBlockBody {
+          chunk.forEach { binding ->
+            val field = providerFields[binding.typeKey]!!
+            
+            // Check if this is a particularly complex binding that might generate too much bytecode
+            val complexity = analyzeBindingComplexity(binding)
+            if (complexity > 100 && binding is IrBinding.Multibinding && binding.sourceBindings.size > 50) {
+              // For extremely large multibindings, generate a separate helper method
+              logger.log("Binding ${binding.typeKey} has complexity $complexity with ${binding.sourceBindings.size} sources - generating helper method")
+              
+              val helperFunction = shardClass.addFunction {
+                name = Name.identifier("create${binding.nameHint}")
+                visibility = DescriptorVisibilities.PRIVATE
+                returnType = field.type
+              }.apply {
+                val localReceiver = shardClass.thisReceiver!!.copyTo(this)
+                setDispatchReceiver(localReceiver)
+              }
+              
+              helperFunction.body = createIrBuilder(helperFunction.symbol).irBlockBody {
+                val helperValue = generateBindingProvider(binding, helperFunction.dispatchReceiverParameter!!)
+                +irReturn(helperValue)
+              }
+              
+              // Call the helper function
+              val helperCall = irCall(helperFunction).apply {
+                dispatchReceiver = irGet(initFunction.dispatchReceiverParameter!!)
+              }
+              
+              +irSetField(
+                receiver = irGet(initFunction.dispatchReceiverParameter!!),
+                field = field,
+                value = helperCall
+              )
+            } else {
+              // Normal case - generate inline
+              val bindingValue = createIrBuilder(initFunction.symbol).run {
+                val initFunctionReceiver = initFunction.dispatchReceiverParameter!!
+                generateBindingProvider(binding, initFunctionReceiver)
+              }
+              +irSetField(
+                receiver = irGet(initFunction.dispatchReceiverParameter!!),
+                field = field,
+                value = bindingValue
+              )
+            }
+          }
+        }
+        
+        initFunctions.add(initFunction)
+      }
+      
+      // Constructor calls the init functions
+      shardConstructor.body = createIrBuilder(shardConstructor.symbol).irBlockBody {
+        // Call super constructor (Any())
+        +irDelegatingConstructorCall(
+          callee = irBuiltIns.anyClass.owner.constructors.single()
+        )
+        
+        // Initialize parent graph field
+        val parentGraphParam = shardConstructor.regularParameters.first()
+        +irSetField(
+          receiver = irGet(thisReceiver),
+          field = parentGraphField,
+          value = irGet(parentGraphParam)
+        )
+        
+        // Call each init function
+        initFunctions.forEach { initFunction ->
+          +irCall(initFunction).apply {
+            dispatchReceiver = irGet(thisReceiver)
+          }
+        }
       }
     }
   }
@@ -396,9 +536,10 @@ internal class IrGraphShard(
     return sorted
   }
   
-  private fun generateBindingProvider(binding: IrBinding): IrExpression {
-    // Use the binding generator provided by the parent graph
-    val thisReceiver = shardConstructor.dispatchReceiverParameter
+  private fun generateBindingProvider(binding: IrBinding, receiver: IrValueParameter? = null): IrExpression {
+    // Use the provided receiver or fall back to the constructor's receiver
+    val thisReceiver = receiver 
+      ?: shardConstructor.dispatchReceiverParameter
       ?: shardClass.thisReceiver 
       ?: error("Shard class ${shardClass.name} has no thisReceiver when generating binding for ${binding.typeKey}")
     
@@ -434,6 +575,32 @@ internal class IrGraphShard(
   }
   
   /**
+   * Generates a Kotlin source representation of the shard
+   */
+  fun generateKotlinSourceReport() {
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    
+    try {
+      val kotlinSource = shardClass.dumpKotlinLike()
+      
+      writeDiagnostic("kotlin-shard-${parentGraph.name.asString()}-${shardName.asString()}.kt") {
+        buildString {
+          appendLine("// Generated Kotlin representation of ${shardName}")
+          appendLine("// Parent Graph: ${parentGraph.name}")
+          appendLine("// Bindings: ${bindings.size}")
+          appendLine("// Statements Per Method: $STATEMENTS_PER_METHOD")
+          appendLine()
+          append(kotlinSource)
+        }
+      }
+      
+      logger.log("Generated Kotlin source report for '${shardName}'")
+    } catch (e: Exception) {
+      logger.log("Failed to generate Kotlin source report: ${e.message}")
+    }
+  }
+  
+  /**
    * Generates a detailed report of the shard for debugging purposes
    */
   private fun generateShardReport() {
@@ -441,12 +608,13 @@ internal class IrGraphShard(
     
     try {
       val reportContent = buildString {
-        appendLine("=== Component Shard Report ===")
+        appendLine("=== DETAILED Component Shard Report ===")
         appendLine("Shard Name: ${shardName}")
         appendLine("Shard Index: ${shardIndex}")
         appendLine("Parent Graph: ${parentGraph.name}")
         appendLine("Bindings Count: ${bindings.size}")
         appendLine("Provider Fields Count: ${providerFields.size}")
+        appendLine("Statements Per Method: $STATEMENTS_PER_METHOD")
         appendLine()
         
         appendLine("Shard Class Details:")
@@ -456,11 +624,87 @@ internal class IrGraphShard(
         appendLine("  ThisReceiver: ${shardClass.thisReceiver?.let { "Present" } ?: "Missing"}")
         appendLine()
         
-        appendLine("Bindings in this shard:")
+        // Calculate chunking info
+        val sortedBindings = sortBindingsTopologically()
+        val needsChunking = sortedBindings.size > STATEMENTS_PER_METHOD
+        val chunks = if (needsChunking) sortedBindings.chunked(STATEMENTS_PER_METHOD) else listOf(sortedBindings)
+        
+        appendLine("Initialization Chunking:")
+        appendLine("  Needs Chunking: $needsChunking")
+        appendLine("  Number of Init Methods: ${chunks.size}")
+        appendLine("  Bindings per Init Method: ${chunks.map { it.size }.joinToString(", ")}")
+        appendLine()
+        
+        appendLine("=== DETAILED BINDING ANALYSIS ===")
         bindings.forEachIndexed { index, binding ->
-          appendLine("  ${index + 1}. ${binding.typeKey} (${binding::class.simpleName})")
-          if (binding is IrBinding.ConstructorInjected && binding.isAssisted) {
-            appendLine("     Assisted Factory: ${binding.classFactory.factoryClass.name}")
+          appendLine()
+          appendLine("Binding ${index + 1}/${bindings.size}:")
+          appendLine("  Type Key: ${binding.typeKey}")
+          appendLine("  Binding Type: ${binding::class.simpleName}")
+          appendLine("  Name Hint: ${binding.nameHint}")
+          
+          when (binding) {
+            is IrBinding.ConstructorInjected -> {
+              appendLine("  Is Assisted: ${binding.isAssisted}")
+              if (binding.isAssisted) {
+                appendLine("  Factory Class: ${binding.classFactory.factoryClass.name}")
+              }
+              appendLine("  Constructor Parameters: ${binding.parameters.regularParameters.size}")
+              binding.parameters.regularParameters.forEachIndexed { paramIndex, param ->
+                appendLine("    Param $paramIndex: ${param.typeKey} (${param.contextualTypeKey})")
+              }
+            }
+            is IrBinding.Provided -> {
+              appendLine("  Provider Function: ${binding.providerFactory.function.name}")
+              appendLine("  Parameters: ${binding.parameters.regularParameters.size}")
+              binding.parameters.regularParameters.forEachIndexed { paramIndex, param ->
+                appendLine("    Param $paramIndex: ${param.typeKey} (${param.contextualTypeKey})")
+              }
+            }
+            is IrBinding.MembersInjected -> {
+              appendLine("  Target Class: ${binding.targetClassId}")
+              appendLine("  Parameters: ${binding.parameters.regularParameters.size}")
+              binding.parameters.regularParameters.forEachIndexed { paramIndex, param ->
+                appendLine("    Param $paramIndex: ${param.typeKey} (${param.contextualTypeKey})")
+              }
+            }
+            is IrBinding.Multibinding -> {
+              appendLine("  Multibinding Type: ${binding::class.simpleName}")
+              appendLine("  Dependencies: ${binding.dependencies.size}")
+            }
+            is IrBinding.Alias -> {
+              appendLine("  Target Type: Alias")
+            }
+            is IrBinding.BoundInstance -> {
+              appendLine("  Bound Instance Type")
+            }
+            else -> {
+              // Other binding types
+            }
+          }
+          
+          appendLine("  Dependencies: ${binding.dependencies.size}")
+          binding.dependencies.forEachIndexed { depIndex, dep ->
+            appendLine("    Dep $depIndex: ${dep.typeKey}")
+          }
+        }
+        appendLine()
+        
+        // Chunk details
+        appendLine("=== INITIALIZATION CHUNKS ===")
+        chunks.forEachIndexed { chunkIndex, chunk ->
+          appendLine()
+          appendLine("Init Chunk $chunkIndex (initChunk$chunkIndex method):")
+          appendLine("  Bindings in this chunk: ${chunk.size}")
+          chunk.forEachIndexed { bindingIndex, binding ->
+            val totalDeps = binding.dependencies.size
+            val paramCount = when (binding) {
+              is IrBinding.ConstructorInjected -> binding.parameters.regularParameters.size
+              is IrBinding.Provided -> binding.parameters.regularParameters.size
+              is IrBinding.MembersInjected -> binding.parameters.regularParameters.size
+              else -> 0
+            }
+            appendLine("    ${bindingIndex + 1}. ${binding.typeKey} - ${binding::class.simpleName} (${totalDeps} deps, $paramCount params)")
           }
         }
         appendLine()
@@ -481,17 +725,174 @@ internal class IrGraphShard(
         }
         
         appendLine()
-        appendLine("=== End Shard Report ===")
+        appendLine("=== End Detailed Shard Report ===")
       }
       
-      writeDiagnostic("shard-${parentGraph.name.asString()}-${shardName.asString()}.txt") {
+      writeDiagnostic("shard-${parentGraph.name.asString()}-${shardName.asString()}-detailed.txt") {
         reportContent
       }
       
-      logger.log("Generated shard report for '${shardName}'")
+      logger.log("Generated detailed shard report for '${shardName}'")
       
     } catch (e: Exception) {
       logger.log("Failed to generate shard report: ${e.message}")
     }
+  }
+  
+  /**
+   * Generates an emergency diagnostic report when shard generation fails
+   */
+  private fun generateEmergencyShardReport(error: Exception) {
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    
+    try {
+      val reportContent = buildString {
+        appendLine("=== EMERGENCY SHARD DIAGNOSTIC REPORT ===")
+        appendLine("Error Type: ${error::class.simpleName}")
+        appendLine("Error Message: ${error.message}")
+        appendLine("Shard Name: ${shardName}")
+        appendLine("Shard Index: ${shardIndex}")
+        appendLine("Parent Graph: ${parentGraph.name}")
+        appendLine("Bindings Count: ${bindings.size}")
+        appendLine("Statements Per Method: $STATEMENTS_PER_METHOD")
+        appendLine()
+        
+        // Check if this is a "Method too large" error
+        val isMethodTooLarge = error.message?.contains("Method too large") == true || 
+                              error.cause?.message?.contains("Method too large") == true
+        
+        if (isMethodTooLarge) {
+          appendLine("!!! METHOD TOO LARGE ERROR DETECTED !!!")
+          appendLine()
+          
+          // Analyze which method is too large
+          val errorMessage = error.message ?: error.cause?.message ?: ""
+          val methodMatch = Regex("Method too large: .+\\.(.+) \\(\\)V").find(errorMessage)
+          val problemMethod = methodMatch?.groupValues?.getOrNull(1) ?: "unknown"
+          appendLine("Problem Method: $problemMethod")
+          appendLine()
+        }
+        
+        // Analyze bindings in detail
+        appendLine("=== BINDING COMPLEXITY ANALYSIS ===")
+        val sortedBindings = try {
+          sortBindingsTopologically()
+        } catch (e: Exception) {
+          bindings
+        }
+        
+        val chunks = sortedBindings.chunked(STATEMENTS_PER_METHOD)
+        appendLine("Total Chunks: ${chunks.size}")
+        appendLine()
+        
+        chunks.forEachIndexed { chunkIndex, chunk ->
+          appendLine("Chunk $chunkIndex (initChunk$chunkIndex):")
+          chunk.forEach { binding ->
+            val complexity = analyzeBindingComplexity(binding)
+            appendLine("  ${binding.typeKey}:")
+            appendLine("    Type: ${binding::class.simpleName}")
+            appendLine("    Dependencies: ${binding.dependencies.size}")
+            appendLine("    Estimated Complexity: $complexity")
+            
+            if (complexity > 50) {
+              appendLine("    !!! HIGH COMPLEXITY BINDING !!!")
+              // List all dependencies
+              binding.dependencies.forEachIndexed { depIndex, dep ->
+                appendLine("      Dep $depIndex: ${dep.typeKey}")
+              }
+            }
+          }
+          appendLine()
+        }
+        
+        // Try to dump the partial Kotlin source
+        appendLine("=== PARTIAL KOTLIN SOURCE ===")
+        try {
+          if (::shardClass.isInitialized) {
+            val kotlinSource = shardClass.dumpKotlinLike()
+            appendLine(kotlinSource)
+          } else {
+            appendLine("Shard class not yet initialized")
+          }
+        } catch (dumpError: Exception) {
+          appendLine("Failed to dump Kotlin source: ${dumpError.message}")
+        }
+        appendLine()
+        
+        // Stack trace
+        appendLine("=== STACK TRACE ===")
+        error.printStackTrace(java.io.PrintWriter(java.io.StringWriter().also { sw ->
+          append(sw.toString())
+        }))
+        
+        appendLine()
+        appendLine("=== RECOMMENDATIONS ===")
+        if (isMethodTooLarge) {
+          appendLine("1. Check for extremely large multibindings (this should be handled automatically)")
+          appendLine("2. Reduce bindingsPerGraphShard to create smaller shards")
+          appendLine("3. Consider refactoring bindings with many dependencies")
+          
+          val highComplexityBindings = bindings.filter { analyzeBindingComplexity(it) > 50 }
+          if (highComplexityBindings.isNotEmpty()) {
+            appendLine()
+            appendLine("High complexity bindings that should be refactored:")
+            highComplexityBindings.forEach { binding ->
+              appendLine("  - ${binding.typeKey} (${binding.dependencies.size} dependencies)")
+            }
+          }
+        }
+        
+        appendLine()
+        appendLine("=== End Emergency Report ===")
+      }
+      
+      writeDiagnostic("EMERGENCY-shard-${parentGraph.name.asString()}-${shardName.asString()}.txt") {
+        reportContent
+      }
+      
+      logger.log("Generated emergency shard diagnostic report")
+      
+    } catch (e: Exception) {
+      logger.log("Failed to generate emergency report: ${e.message}")
+    }
+  }
+  
+  /**
+   * Estimates the complexity of a binding based on its dependencies and type
+   */
+  private fun analyzeBindingComplexity(binding: IrBinding): Int {
+    var complexity = 0
+    
+    // Base complexity by type
+    complexity += when (binding) {
+      is IrBinding.ConstructorInjected -> {
+        10 + (binding.parameters.regularParameters.size * 5)
+      }
+      is IrBinding.Provided -> {
+        10 + (binding.parameters.regularParameters.size * 5)
+      }
+      is IrBinding.MembersInjected -> {
+        15 + (binding.parameters.regularParameters.size * 5)
+      }
+      is IrBinding.Multibinding -> {
+        20 + (binding.dependencies.size * 3)
+      }
+      is IrBinding.Assisted -> 15
+      is IrBinding.Alias -> 5
+      is IrBinding.BoundInstance -> 3
+      is IrBinding.ObjectClass -> 3
+      is IrBinding.Absent -> 0
+      is IrBinding.GraphDependency -> 5
+    }
+    
+    // Add complexity for dependencies
+    complexity += binding.dependencies.size * 5
+    
+    // Add extra complexity for deep dependency chains
+    if (binding.dependencies.size > 10) {
+      complexity += (binding.dependencies.size - 10) * 3
+    }
+    
+    return complexity
   }
 }

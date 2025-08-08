@@ -412,6 +412,19 @@ internal class Symbols(
       }
   }
 
+  val listOf by lazy {
+    pluginContext
+      .referenceFunctions(CallableId(stdlibCollections.packageFqName, "listOf".asName()))
+      .first { it.owner.parameters[0].varargElementType != null }
+  }
+
+  val mutableSetAddAll by lazy {
+    pluginContext.irBuiltIns.mutableSetClass.owner.declarations
+      .filterIsInstance<IrSimpleFunction>()
+      .single { it.name.asString() == "addAll" && it.parameters.size == 2 }
+      .symbol
+  }
+
   val buildSetWithCapacity by lazy {
     pluginContext
       .referenceFunctions(CallableId(stdlibCollections.packageFqName, "buildSet".asName()))

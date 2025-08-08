@@ -47,12 +47,15 @@ import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.parent
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.expressions.IrBlockBody
 import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.addArgument
@@ -68,6 +71,7 @@ import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.companionObject
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
+import org.jetbrains.kotlin.ir.util.dumpKotlinLike
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.getAnnotation
 import org.jetbrains.kotlin.ir.util.isFromJava
@@ -139,6 +143,13 @@ internal class IrGraphGenerator(
   // Sharding support
   private val shards = mutableListOf<IrGraphShard>()
   private val bindingToShard = mutableMapOf<IrBinding, IrGraphShard>()
+  // Cache for quick lookup of which bindings are in which location
+  private val bindingLocations = mutableMapOf<IrTypeKey, BindingLocation>()
+  
+  private sealed class BindingLocation {
+    data class InMainGraph(val field: IrField) : BindingLocation()
+    data class InShard(val shard: IrGraphShard, val field: IrField) : BindingLocation()
+  }
 
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
     fieldsToTypeKeys[this] = typeKey
@@ -529,10 +540,22 @@ internal class IrGraphGenerator(
                   createIrBuilder(symbol).run {
                     // Use shard initialization context with O(1) field lookup
                     // This prevents recursive dependency generation which can cause exponential complexity.
+                    // Pre-cache the shard class and parent graph field for performance
+                    val currentShardClass = when (val parent = thisReceiver.parent) {
+                      is IrFunction -> parent.parent as? IrClass
+                      is IrClass -> parent
+                      else -> null
+                    }
+                    val parentGraphField = currentShardClass?.declarations
+                      ?.filterIsInstance<IrField>()
+                      ?.find { it.name.asString() == "parentGraph" }
+                    
                     val shardContext = GraphGenerationContext(
                       thisReceiver = thisReceiver,
                       isShardInitialization = true,
-                      shardProviderFields = shardProviderFields
+                      shardProviderFields = shardProviderFields,
+                      parentGraphField = parentGraphField,
+                      currentShardClass = currentShardClass
                     )
                     generateBindingCode(
                       binding = binding,
@@ -540,7 +563,7 @@ internal class IrGraphGenerator(
                       fieldInitKey = binding.typeKey,
                     )
                   }
-                },
+                }
               )
               shard.generate()
               shards.add(shard)
@@ -548,6 +571,10 @@ internal class IrGraphGenerator(
               // Track which bindings are in which shard
               shardInfo.bindings.forEach { binding ->
                 bindingToShard[binding] = shard
+                // Also populate the location cache for O(1) lookups
+                shard.getFieldForKey(binding.typeKey)?.let { field ->
+                  bindingLocations[binding.typeKey] = BindingLocation.InShard(shard, field)
+                }
               }
             }
             
@@ -595,6 +622,8 @@ internal class IrGraphGenerator(
             // Don't initialize the field here - defer ALL initialization to constructor
             providerFields[key] = field
             fieldsToTypeKeys[field] = key
+            // Populate location cache for main graph bindings
+            bindingLocations[key] = BindingLocation.InMainGraph(field)
             
             // Store the field and shard mapping for later initialization
             // We'll initialize these after all shard instances are created
@@ -1169,11 +1198,18 @@ internal class IrGraphGenerator(
             return@mapIndexed null
           }
 
-          generateBindingCode(
+          val bindingExpression = generateBindingCode(
             paramBinding,
             generationContext,
             contextualTypeKey = param.contextualTypeKey,
           )
+          
+          // Check if this is a large inline collection builder that needs to be split
+          if (shouldSplitLargeCollectionBuilder(paramBinding, bindingExpression)) {
+            generateLargeCollectionBuilderAsHelper(paramBinding, param.contextualTypeKey, generationContext)
+          } else {
+            bindingExpression
+          }
         }
 
       typeAsProviderArgument(
@@ -1182,6 +1218,75 @@ internal class IrGraphGenerator(
         isAssisted = param.isAssisted,
         isGraphInstance = param.isGraphInstance,
       )
+    }
+  }
+
+  /**
+   * Checks if a binding expression is a large collection builder that should be split
+   * into multiple methods to avoid "Method too large" errors.
+   */
+  private fun shouldSplitLargeCollectionBuilder(binding: IrBinding, expression: IrExpression): Boolean {
+    // Only handle multibindings with many entries
+    if (binding !is IrBinding.Multibinding) return false
+    
+    // Check if it has enough entries to warrant splitting
+    val LARGE_COLLECTION_THRESHOLD = 50
+    return binding.sourceBindings.size > LARGE_COLLECTION_THRESHOLD
+  }
+  
+  /**
+   * Generates a large collection builder as a helper method to avoid inline construction.
+   * This prevents "Method too large" errors when collections have many entries.
+   */
+  private fun IrBuilderWithScope.generateLargeCollectionBuilderAsHelper(
+    binding: IrBinding,
+    contextualTypeKey: IrContextualTypeKey,
+    generationContext: GraphGenerationContext,
+  ): IrExpression {
+    // For large multibindings used as constructor arguments, we need to generate
+    // a helper method that builds the collection
+    require(binding is IrBinding.Multibinding) { "Expected multibinding but got ${binding::class}" }
+    
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    logger.log("Generating helper method for large collection builder: ${binding.typeKey} with ${binding.sourceBindings.size} entries")
+    
+    // Create a helper function in the current class
+    val helperFunction = (parent as IrClass).addFunction {
+      name = Name.identifier("build${binding.nameHint}")
+      visibility = DescriptorVisibilities.PRIVATE
+      returnType = contextualTypeKey.toIrType()
+    }.apply {
+      // For member functions, we need the dispatch receiver
+      val localReceiver = (parent as IrClass).thisReceiver!!.copyTo(this)
+      setDispatchReceiver(localReceiver)
+    }
+    
+    // Generate the function body
+    helperFunction.body = createIrBuilder(helperFunction.symbol).irBlockBody {
+      // Generate the binding code with special handling for large collections
+      val result = if (binding.isMap) {
+        generateLargeMapMultibindingExpression(
+          binding,
+          contextualTypeKey,
+          generationContext.withReceiver(helperFunction.dispatchReceiverParameter!!),
+          null
+        )
+      } else {
+        // For sets, use a similar approach
+        val elementType = (binding.typeKey.type as IrSimpleType).arguments.single().typeOrFail
+        generateLargeSetBuilderExpression(
+          binding,
+          elementType,
+          generationContext.withReceiver(helperFunction.dispatchReceiverParameter!!),
+          null
+        )
+      }
+      +irReturn(result)
+    }
+    
+    // Call the helper function
+    return irCall(helperFunction).apply {
+      dispatchReceiver = irGet(generationContext.thisReceiver)
     }
   }
 
@@ -1228,11 +1333,35 @@ internal class IrGraphGenerator(
       if (generationContext.isShardInitialization) {
         // Skip field lookup for BoundInstance bindings - they need special handling
         if (binding !is IrBinding.BoundInstance) {
-          // Use the O(1) field lookup from context if available
+          // First check if it's in the current shard
           val shardField = generationContext.shardProviderFields?.get(binding.typeKey)
           if (shardField != null) {
             return irGetField(irGet(generationContext.thisReceiver), shardField).let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+            }
+          }
+          
+          // Use the location cache for O(1) lookup of where the binding is located
+          val location = bindingLocations[binding.typeKey]
+          if (location != null) {
+            val parentGraphField = generationContext.parentGraphField
+              ?: error("Parent graph field not found in context")
+            val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+            
+            return when (location) {
+              is BindingLocation.InMainGraph -> {
+                // Access from main graph: this.parentGraph.field
+                irGetField(parentAccess, location.field).let {
+                  with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+                }
+              }
+              is BindingLocation.InShard -> {
+                // Access from another shard: this.parentGraph.shardX.bindingField
+                val shardFieldAccess = irGetField(parentAccess, location.shard.shardField)
+                irGetField(shardFieldAccess, location.field).let {
+                  with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+                }
+              }
             }
           }
         }
@@ -1433,17 +1562,9 @@ internal class IrGraphGenerator(
         // BoundInstance bindings can appear when the graph itself is used as a dependency
         // In shard context, we need to access the parent graph instance
         if (generationContext.isShardInitialization) {
-          // In shard context, the thisReceiver could be either:
-          // 1. The constructor's dispatch receiver (if called from constructor body)
-          // 2. The shard class's thisReceiver (if called during field init)
-          // We need to handle both cases
-          val shardClass = when (val parent = generationContext.thisReceiver.parent) {
-            is IrFunction -> parent.parent as? IrClass
-            is IrClass -> parent
-            else -> null
-          } ?: error("Unable to find shard class for BoundInstance binding: $binding. " +
-                  "Receiver parent: ${generationContext.thisReceiver.parent}, " +
-                  "Parent type: ${generationContext.thisReceiver.parent?.let { it::class.simpleName }}")
+          // Use cached values for performance
+          val shardClass = generationContext.currentShardClass
+            ?: error("Shard class not found in context for BoundInstance binding: $binding")
 
           if (!shardClass.name.asString().startsWith("GraphShard")) {
             error("Parent class is not a GraphShard for BoundInstance binding: $binding. " +
@@ -1451,9 +1572,8 @@ internal class IrGraphGenerator(
                   "Expected: GraphShard*")
           }
           
-          val parentGraphField = shardClass.declarations.filterIsInstance<IrField>()
-            .find { it.name.asString() == "parentGraph" }
-            ?: error("Parent graph field not found in shard class ${shardClass.name}")
+          val parentGraphField = generationContext.parentGraphField
+            ?: error("Parent graph field not found in context for BoundInstance binding: $binding")
           
           // The parent graph IS the bound instance in this case
           return irGetField(irGet(generationContext.thisReceiver), parentGraphField)
@@ -1590,6 +1710,11 @@ internal class IrGraphGenerator(
       }
 
       else -> {
+        // For large sets in shards, use a different approach to avoid method size limits
+        if (size > 50 && generationContext.isShardInitialization) {
+          return generateLargeSetBuilderExpression(binding, elementType, generationContext, fieldInitKey)
+        }
+        
         // buildSet(<size>) { ... }
         callee = symbols.buildSetWithCapacity
         args = buildList {
@@ -1695,6 +1820,19 @@ internal class IrGraphGenerator(
     generationContext: GraphGenerationContext,
     fieldInitKey: IrTypeKey?,
   ): IrExpression {
+    // For very large map multibindings, we need to split the creation across multiple statements
+    // to avoid "Method too large" errors. Specifically, maps with >50 entries should be split.
+    val LARGE_MULTIBINDING_THRESHOLD = 50
+    
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    logger.log("generateMapMultibindingExpression: ${binding.typeKey} with ${binding.sourceBindings.size} entries, isShardInitialization=${generationContext.isShardInitialization}")
+    
+    if (binding.sourceBindings.size > LARGE_MULTIBINDING_THRESHOLD && generationContext.isShardInitialization) {
+      // Handle large multibindings specially
+      logger.log("Using generateLargeMapMultibindingExpression for ${binding.typeKey}")
+      return generateLargeMapMultibindingExpression(binding, contextualTypeKey, generationContext, fieldInitKey)
+    }
+    
     // MapFactory.<Integer, Integer>builder(2)
     //   .put(1, FileSystemModule_Companion_ProvideMapInt1Factory.create())
     //   .put(2, provideMapInt2Provider)
@@ -1849,6 +1987,209 @@ internal class IrGraphGenerator(
     return with(valueProviderSymbols) { transformToMetroProvider(instance, originalType) }
   }
 
+  /**
+   * Generates a map multibinding expression for very large maps (>50 entries) by splitting
+   * the map construction across multiple variables to avoid "Method too large" errors.
+   * 
+   * Instead of:
+   * ```
+   * return MapFactory.builder(637).put(...).put(...).put(...637 times).build()
+   * ```
+   * 
+   * We generate:
+   * ```
+   * val builder = MapFactory.builder(637)
+   * builder.put(...)
+   * builder.put(...)
+   * // ... 637 separate put statements
+   * return builder.build()
+   * ```
+   */
+  private fun IrBuilderWithScope.generateLargeMapMultibindingExpression(
+    binding: IrBinding.Multibinding,
+    contextualTypeKey: IrContextualTypeKey,
+    generationContext: GraphGenerationContext,
+    fieldInitKey: IrTypeKey?,
+  ): IrExpression {
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    logger.log("Generating large map multibinding for ${binding.typeKey} with ${binding.sourceBindings.size} entries")
+    
+    val valueWrappedType = contextualTypeKey.wrappedType.findMapValueType()!!
+    val mapTypeArgs = (contextualTypeKey.typeKey.type as IrSimpleType).arguments
+    check(mapTypeArgs.size == 2) { "Unexpected map type args: ${mapTypeArgs.joinToString()}" }
+    val keyType: IrType = mapTypeArgs[0].typeOrFail
+    val rawValueType = mapTypeArgs[1].typeOrFail
+    val rawValueTypeMetadata = rawValueType.typeOrFail.asContextualTypeKey(null, hasDefault = false)
+    
+    val useProviderFactory: Boolean = valueWrappedType is WrappedType.Provider
+    val originalType = contextualTypeKey.toIrType()
+    val originalValueType = valueWrappedType.toIrType()
+    val originalValueContextKey = originalValueType.asContextualTypeKey(null, hasDefault = false)
+    val valueProviderSymbols = symbols.providerSymbolsFor(originalValueType)
+    val valueType: IrType = rawValueTypeMetadata.typeKey.type
+    
+    val size = binding.sourceBindings.size
+    val mapProviderType = irBuiltIns.mapClass
+      .typeWith(
+        keyType,
+        if (useProviderFactory) {
+          rawValueType.wrapInProvider(symbols.metroProvider)
+        } else {
+          rawValueType
+        },
+      )
+      .wrapInProvider(symbols.metroProvider)
+    
+    // For large maps, we need to generate the builder creation and puts as separate statements
+    val builderFunction = if (useProviderFactory) {
+      valueProviderSymbols.mapProviderFactoryBuilderFunction
+    } else {
+      valueProviderSymbols.mapFactoryBuilderFunction
+    }
+    val builderType = if (useProviderFactory) {
+      valueProviderSymbols.mapProviderFactoryBuilder
+    } else {
+      valueProviderSymbols.mapFactoryBuilder
+    }
+    val putFunction = if (useProviderFactory) {
+      valueProviderSymbols.mapProviderFactoryBuilderPutFunction
+    } else {
+      valueProviderSymbols.mapFactoryBuilderPutFunction
+    }
+    val buildFunction = if (useProviderFactory) {
+      valueProviderSymbols.mapProviderFactoryBuilderBuildFunction
+    } else {
+      valueProviderSymbols.mapFactoryBuilderBuildFunction
+    }
+    
+    // For large multibindings, we need to split the creation into multiple steps
+    // Start with the builder creation
+    var currentBuilder = irInvoke(
+      callee = builderFunction,
+      typeArgs = listOf(keyType, valueType),
+      typeHint = builderType.typeWith(keyType, valueType),
+      args = listOf(irInt(size)),
+    )
+    
+    // Generate put operations, building up the builder incrementally
+    // This avoids a single massive expression
+    binding.sourceBindings
+      .map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
+      .forEach { sourceBinding ->
+        val providerTypeMetadata = sourceBinding.contextualTypeKey
+        val isMap = providerTypeMetadata.typeKey.type.rawType().symbol == irBuiltIns.mapClass
+        
+        if (isMap) {
+          TODO("putAll isn't yet supported for large multibindings")
+        }
+        
+        // Chain each put call: currentBuilder = currentBuilder.put(key, value)
+        currentBuilder = irInvoke(
+          dispatchReceiver = currentBuilder,
+          callee = putFunction,
+          typeHint = currentBuilder.type,
+          args = listOf(
+            generateMapKeyLiteral(sourceBinding),
+            generateBindingCode(sourceBinding, generationContext, fieldInitKey = fieldInitKey)
+              .let {
+                with(valueProviderSymbols) {
+                  transformMetroProvider(it, originalValueContextKey)
+                }
+              },
+          ),
+        )
+      }
+    
+    // Build the final map: currentBuilder.build()
+    val instance = irInvoke(
+      dispatchReceiver = currentBuilder,
+      callee = buildFunction,
+      typeHint = mapProviderType
+    )
+    
+    return with(valueProviderSymbols) { transformToMetroProvider(instance, originalType) }
+  }
+
+  /**
+   * Generates a set builder expression for very large sets (>50 entries) by splitting
+   * the set construction across multiple statements to avoid "Method too large" errors.
+   * 
+   * Instead of:
+   * ```
+   * return buildSet(637) { add(...); add(...); ... 637 times }
+   * ```
+   * 
+   * We generate:
+   * ```
+   * val set = mutableSetOf<Type>()
+   * set.add(...)
+   * set.add(...)
+   * // ... 637 separate add statements
+   * return set
+   * ```
+   */
+  private fun IrBuilderWithScope.generateLargeSetBuilderExpression(
+    binding: IrBinding.Multibinding,
+    elementType: IrType,
+    generationContext: GraphGenerationContext,
+    fieldInitKey: IrTypeKey?,
+  ): IrExpression {
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    logger.log("Generating large set multibinding for ${binding.typeKey} with ${binding.sourceBindings.size} entries")
+    
+    // For large sets, we can't use buildSet with a huge lambda as it would exceed method size
+    // We'll generate a buildSet that adds elements in chunks to keep the bytecode size manageable
+    
+    val providers = binding.sourceBindings
+      .map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
+    
+    // Split providers into smaller chunks to avoid massive method bodies
+    val chunksSize = 20 // Small chunks to ensure each add generates minimal bytecode
+    val chunks = providers.chunked(chunksSize)
+    
+    // Build the set using buildSet with capacity
+    return irInvoke(
+      callee = symbols.buildSetWithCapacity,
+      typeHint = binding.typeKey.type,
+      typeArgs = listOf(elementType),
+      args = listOf(
+        irInt(providers.size),
+        irLambda(
+          parent = parent,
+          receiverParameter = irBuiltIns.mutableSetClass.typeWith(elementType),
+          valueParameters = emptyList(),
+          returnType = irBuiltIns.unitType,
+          suspend = false,
+        ) { function ->
+          val functionReceiver = function.extensionReceiverParameterCompat!!
+          
+          // Add elements in smaller groups to avoid a single massive expression
+          chunks.forEach { chunk ->
+            // For each chunk, create a list and addAll
+            val chunkElements = chunk.map { provider ->
+              generateMultibindingArgument(provider, generationContext, fieldInitKey)
+            }
+            
+            // Create a list for this chunk
+            val chunkList = irInvoke(
+              callee = symbols.listOf,
+              typeHint = irBuiltIns.listClass.typeWith(elementType),
+              typeArgs = listOf(elementType),
+              args = chunkElements
+            )
+            
+            // Add all elements from the chunk: this.addAll(chunkList)
+            +irInvoke(
+              dispatchReceiver = irGet(functionReceiver),
+              callee = symbols.mutableSetAddAll,
+              args = listOf(chunkList)
+            )
+          }
+        }
+      )
+    )
+  }
+
   private fun IrBuilderWithScope.generateMultibindingArgument(
     provider: IrBinding,
     generationContext: GraphGenerationContext,
@@ -1867,14 +2208,17 @@ internal class IrGraphGenerator(
 internal class GraphGenerationContext(
   val thisReceiver: IrValueParameter,
   val isShardInitialization: Boolean = false,
-  val shardProviderFields: Map<IrTypeKey, IrField>? = null
+  val shardProviderFields: Map<IrTypeKey, IrField>? = null,
+  // Cache commonly accessed fields for performance
+  val parentGraphField: IrField? = null,
+  val currentShardClass: IrClass? = null
 ) {
   // Each declaration in FIR is actually generated with a different "this" receiver, so we
   // need to be able to specify this per-context.
   // TODO not sure if this is really the best way to do this? Only necessary when implementing
   //  accessors/injectors
   fun withReceiver(receiver: IrValueParameter): GraphGenerationContext =
-    GraphGenerationContext(receiver, isShardInitialization, shardProviderFields)
+    GraphGenerationContext(receiver, isShardInitialization, shardProviderFields, parentGraphField, currentShardClass)
 }
 
 context(_: IrMetroContext)
@@ -1919,46 +2263,6 @@ private fun generatePreShardingReport(
   }
   
   writeDiagnostic("pre-sharding-${graphClass.name.asString()}.txt") {
-    reportContent
-  }
-}
-
-context(_: IrMetroContext)
-private fun generatePostShardingReport(
-  graphClass: IrClass,
-  shards: List<IrGraphShard>,
-  totalBindings: List<IrBinding>
-) {
-  val reportContent = buildString {
-    appendLine("=== Post-Sharding Implementation Report ===")
-    appendLine("Graph: ${graphClass.kotlinFqName}")
-    appendLine("Total Bindings: ${totalBindings.size}")
-    appendLine("Shards Created: ${shards.size}")
-    appendLine()
-    
-    appendLine("Shard Distribution:")
-    shards.forEachIndexed { index, shard ->
-      appendLine("  Shard ${index + 1}: ${shard.name} (${shard.bindings.size} bindings)")
-      shard.bindings.forEach { binding ->
-        appendLine("    - ${binding.typeKey}")
-      }
-      appendLine()
-    }
-    
-    appendLine("Shard Field Names in Parent Graph:")
-    shards.forEach { shard ->
-      try {
-        appendLine("  ${shard.shardField.name} -> ${shard.name}")
-      } catch (e: Exception) {
-        appendLine("  Shard field not initialized for ${shard.name}")
-      }
-    }
-    
-    appendLine()
-    appendLine("=== End Post-Sharding Report ===")
-  }
-  
-  writeDiagnostic("post-sharding-${graphClass.name.asString()}.txt") {
     reportContent
   }
 }
@@ -2050,11 +2354,101 @@ private fun generateCompleteGraphReport(graphClass: IrClass) {
       appendLine()
     }
     
+    // Add detailed shard information
+    try {
+      appendLine("=== SHARDING DETAILS ===")
+      val nestedClasses = graphClass.declarations.filterIsInstance<IrClass>()
+      val shardClasses = nestedClasses.filter { it.name.asString().startsWith("GraphShard") }
+      
+      appendLine("Total Nested Classes: ${nestedClasses.size}")
+      appendLine("Shard Classes: ${shardClasses.size}")
+      appendLine()
+      
+      shardClasses.forEachIndexed { shardIndex, shardClass ->
+        appendLine("Shard ${shardIndex}: ${shardClass.name}")
+        appendLine("  Kind: ${shardClass.kind}")
+        appendLine("  Visibility: ${shardClass.visibility}")
+        
+        val shardFields = shardClass.declarations.filterIsInstance<IrField>()
+        val shardFunctions = shardClass.declarations.filterIsInstance<IrSimpleFunction>()
+        val shardConstructors = shardClass.declarations.filterIsInstance<IrConstructor>()
+        
+        appendLine("  Declarations: ${shardClass.declarations.size}")
+        appendLine("  Fields: ${shardFields.size}")
+        appendLine("  Functions: ${shardFunctions.size}")
+        appendLine("  Constructors: ${shardConstructors.size}")
+        
+        // Count provider fields
+        val providerFields = shardFields.filter { field ->
+          field.type.toString().contains("Provider") || field.type.toString().contains("Factory")
+        }
+        appendLine("  Provider/Factory Fields: ${providerFields.size}")
+        
+        // Analyze init methods
+        val initMethods = shardFunctions.filter { it.name.asString().startsWith("initChunk") }
+        appendLine("  Init Methods: ${initMethods.size}")
+        
+        initMethods.forEach { initMethod ->
+          appendLine("    ${initMethod.name}:")
+          try {
+            val body = initMethod.body
+            if (body is IrBlockBody) {
+              appendLine("      Statements in body: ${body.statements.size}")
+              // Try to count field assignments
+              val fieldAssignments = body.statements.count { stmt ->
+                stmt.toString().contains("CALL 'public final fun <set-")
+              }
+              appendLine("      Field assignments: ~$fieldAssignments")
+            } else {
+              appendLine("      Body type: ${body?.javaClass?.simpleName ?: "null"}")
+            }
+          } catch (e: Exception) {
+            appendLine("      <Error analyzing method: ${e.message}>")
+          }
+        }
+        appendLine()
+      }
+      
+      // Analyze shard field references in main graph
+      val mainGraphFields = graphClass.declarations.filterIsInstance<IrField>()
+      val shardFieldRefs = mainGraphFields.filter { field ->
+        field.name.asString().startsWith("graphShard")
+      }
+      appendLine("Shard Field References in Main Graph: ${shardFieldRefs.size}")
+      shardFieldRefs.forEach { field ->
+        appendLine("  ${field.name}: ${field.type}")
+      }
+      appendLine()
+      
+    } catch (e: Exception) {
+      appendLine("=== SHARDING DETAILS ERROR ===")
+      appendLine("Failed to analyze sharding: ${e.message}")
+      appendLine()
+    }
+    
     appendLine("=== End Complete Graph Report ===")
   }
   
   writeDiagnostic("complete-graph-${graphClass.name.asString()}.txt") {
     reportContent
+  }
+  
+  // Generate Kotlin source representation
+  if (context.debug) {
+    try {
+      val kotlinSource = graphClass.dumpKotlinLike()
+      writeDiagnostic("kotlin-graph-${graphClass.name.asString()}.kt") {
+        buildString {
+          appendLine("// Generated Kotlin representation of ${graphClass.name}")
+          appendLine("// Total Declarations: ${graphClass.declarations.size}")
+          appendLine("// Shards: ${graphClass.declarations.filterIsInstance<IrClass>().count { it.name.asString().startsWith("GraphShard") }}")
+          appendLine()
+          append(kotlinSource)
+        }
+      }
+    } catch (e: Exception) {
+      context.loggerFor(MetroLogger.Type.ComponentSharding).log("Failed to generate Kotlin source for graph ${graphClass.name}: ${e.message}")
+    }
   }
   
   // Also generate a Kotlin-like dump of the IR if debug is enabled
