@@ -30,6 +30,7 @@ import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irBoolean
 import org.jetbrains.kotlin.ir.builders.irCall
@@ -45,6 +46,7 @@ import org.jetbrains.kotlin.ir.builders.irNotIs
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.builders.irString
+import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.builders.parent
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
@@ -1163,7 +1165,15 @@ internal class IrGraphGenerator(
       if (!contextualTypeKey.requiresProviderInstance) {
         // IFF the parameter can take a direct instance, try our instance fields
         instanceFields[typeKey]?.let { instanceField ->
-          return@mapIndexed irGetField(irGet(generationContext.thisReceiver), instanceField).let {
+          val receiver = if (generationContext.isShardInitialization) {
+            // In shard context, access instance fields through parent graph
+            val parentGraphField = generationContext.parentGraphField
+              ?: error("Parent graph field not found in shard context")
+            irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+          } else {
+            irGet(generationContext.thisReceiver)
+          }
+          return@mapIndexed irGetField(receiver, instanceField).let {
             with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
           }
         }
@@ -1182,18 +1192,11 @@ internal class IrGraphGenerator(
             return@mapIndexed null
           }
 
-          val bindingExpression = generateBindingCode(
+          generateBindingCode(
             paramBinding,
             generationContext,
             contextualTypeKey = param.contextualTypeKey,
           )
-          
-          // Check if this is a large inline collection builder that needs to be split
-          if (shouldSplitLargeCollectionBuilder(paramBinding, bindingExpression)) {
-            generateLargeCollectionBuilderAsHelper(paramBinding, param.contextualTypeKey, generationContext)
-          } else {
-            bindingExpression
-          }
         }
 
       typeAsProviderArgument(
@@ -1202,63 +1205,6 @@ internal class IrGraphGenerator(
         isAssisted = param.isAssisted,
         isGraphInstance = param.isGraphInstance,
       )
-    }
-  }
-
-  /**
-   * Checks if a binding expression is a large collection builder that should be split
-   * into multiple methods to avoid "Method too large" errors.
-   */
-  private fun shouldSplitLargeCollectionBuilder(binding: IrBinding, expression: IrExpression): Boolean {
-    // Only handle multibindings with many entries
-    if (binding !is IrBinding.Multibinding) return false
-    
-    // Check if it has enough entries to warrant splitting
-    val LARGE_COLLECTION_THRESHOLD = 50
-    return binding.sourceBindings.size > LARGE_COLLECTION_THRESHOLD
-  }
-  
-  /**
-   * Generates a large collection builder as a helper method to avoid inline construction.
-   * This prevents "Method too large" errors when collections have many entries.
-   */
-  private fun IrBuilderWithScope.generateLargeCollectionBuilderAsHelper(
-    binding: IrBinding,
-    contextualTypeKey: IrContextualTypeKey,
-    generationContext: GraphGenerationContext,
-  ): IrExpression {
-    // For large multibindings used as constructor arguments, we need to generate
-    // a helper method that builds the collection
-    require(binding is IrBinding.Multibinding) { "Expected multibinding but got ${binding::class}" }
-    
-    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
-    logger.log("Generating helper method for large collection builder: ${binding.typeKey} with ${binding.sourceBindings.size} entries")
-    
-    // Create a helper function in the current class
-    val helperFunction = (parent as IrClass).addFunction {
-      name = Name.identifier("build${binding.nameHint}")
-      visibility = DescriptorVisibilities.PRIVATE
-      returnType = contextualTypeKey.toIrType()
-    }.apply {
-      // For member functions, we need the dispatch receiver
-      val localReceiver = (parent as IrClass).thisReceiver!!.copyTo(this)
-      setDispatchReceiver(localReceiver)
-    }
-    
-    // Generate the function body
-    helperFunction.body = createIrBuilder(helperFunction.symbol).irBlockBody {
-      // Generate the binding code
-      val result = generateBindingCode(
-        binding,
-        generationContext.withReceiver(helperFunction.dispatchReceiverParameter!!),
-        contextualTypeKey
-      )
-      +irReturn(result)
-    }
-    
-    // Call the helper function
-    return irCall(helperFunction).apply {
-      dispatchReceiver = irGet(generationContext.thisReceiver)
     }
   }
 
@@ -1567,10 +1513,19 @@ internal class IrGraphGenerator(
 
         val getterContextKey = IrContextualTypeKey.from(binding.getter)
 
+        val receiver = if (generationContext.isShardInitialization) {
+          // In shard context, access instance fields through parent graph
+          val parentGraphField = generationContext.parentGraphField
+            ?: error("Parent graph field not found in shard context")
+          irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+        } else {
+          irGet(generationContext.thisReceiver)
+        }
+
         val invokeGetter =
           irInvoke(
             dispatchReceiver =
-              irGetField(irGet(generationContext.thisReceiver), graphInstanceField),
+              irGetField(receiver, graphInstanceField),
             callee = binding.getter.symbol,
             typeHint = binding.typeKey.type,
           )
@@ -1854,6 +1809,145 @@ internal class IrGraphGenerator(
         // MapFactory.empty()
         irInvoke(callee = valueProviderSymbols.mapFactoryEmptyFunction, typeHint = mapProviderType)
       }
+    }
+
+    // For very large maps, we need to split the building process to avoid method size limits
+    if (size > STATEMENTS_PER_METHOD) {
+      // Generate inline logic for large maps
+      val parentClass = parent as IrClass
+
+      val sourceBindings = binding.sourceBindings.map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
+      val chunks = sourceBindings.chunked(STATEMENTS_PER_METHOD)
+      
+      // Generate a main helper function that creates the builder and calls chunk functions
+      val mainHelper = parentClass.addFunction {
+        name = Name.identifier("build${binding.nameHint}Map")
+        visibility = DescriptorVisibilities.PRIVATE
+        returnType = mapProviderType
+      }.apply {
+        // Set the dispatch receiver parameter for this member function
+        val localReceiver = parentClass.thisReceiver!!.copyTo(this)
+        setDispatchReceiver(localReceiver)
+      }
+      
+      // Generate chunk helper functions
+      val chunkHelpers = chunks.mapIndexed { index, chunk ->
+        parentClass.addFunction {
+          name = Name.identifier("populate${binding.nameHint}MapChunk$index")
+          visibility = DescriptorVisibilities.PRIVATE
+          returnType = irBuiltIns.unitType
+        }.apply {
+          // Set the dispatch receiver parameter for this member function
+          val localReceiver = parentClass.thisReceiver!!.copyTo(this)
+          setDispatchReceiver(localReceiver)
+          
+          // Add builder parameter
+          addValueParameter {
+            name = Name.identifier("builder")
+            type = if (useProviderFactory) {
+              valueProviderSymbols.mapProviderFactoryBuilder.typeWith(keyType, valueType)
+            } else {
+              valueProviderSymbols.mapFactoryBuilder.typeWith(keyType, valueType)
+            }
+          }
+        }
+      }
+      
+      // Generate bodies for chunk helpers
+      chunkHelpers.forEachIndexed { index, chunkHelper ->
+        val chunk = chunks[index]
+        chunkHelper.body = createIrBuilder(chunkHelper.symbol).irBlockBody {
+          val builderParam = chunkHelper.regularParameters[0]
+          val putFunction = if (useProviderFactory) {
+            valueProviderSymbols.mapProviderFactoryBuilderPutFunction
+          } else {
+            valueProviderSymbols.mapFactoryBuilderPutFunction
+          }
+          
+          // Add each entry in the chunk
+          chunk.forEach { sourceBinding ->
+            val isMap = sourceBinding.contextualTypeKey.typeKey.type.rawType().symbol == irBuiltIns.mapClass
+            if (isMap) {
+              TODO("putAll isn't yet supported in large map helpers")
+            }
+            
+            +irInvoke(
+              dispatchReceiver = irGet(builderParam),
+              callee = putFunction,
+              args = listOf(
+                generateMapKeyLiteral(sourceBinding),
+                generateBindingCode(
+                  sourceBinding, 
+                  generationContext.withReceiver(chunkHelper.dispatchReceiverParameter!!), 
+                  fieldInitKey = fieldInitKey
+                ).let {
+                  with(valueProviderSymbols) {
+                    transformMetroProvider(it, originalValueContextKey)
+                  }
+                }
+              )
+            )
+          }
+        }
+      }
+      
+      // Generate body for main helper
+      mainHelper.body = createIrBuilder(mainHelper.symbol).irBlockBody {
+        // Create builder
+        val builderFunction = if (useProviderFactory) {
+          valueProviderSymbols.mapProviderFactoryBuilderFunction
+        } else {
+          valueProviderSymbols.mapFactoryBuilderFunction
+        }
+        
+        val builderVar = irTemporary(
+          irInvoke(
+            callee = builderFunction,
+            typeArgs = listOf(keyType, valueType),
+            typeHint = if (useProviderFactory) {
+              valueProviderSymbols.mapProviderFactoryBuilder.typeWith(keyType, valueType)
+            } else {
+              valueProviderSymbols.mapFactoryBuilder.typeWith(keyType, valueType)
+            },
+            args = listOf(irInt(binding.sourceBindings.size))
+          ),
+          nameHint = "builder"
+        )
+        
+        // Call each chunk helper
+        chunkHelpers.forEach { chunkHelper ->
+          +irInvoke(
+            dispatchReceiver = irGet(mainHelper.dispatchReceiverParameter!!),
+            callee = chunkHelper.symbol,
+            args = listOf(irGet(builderVar))
+          )
+        }
+        
+        // Build and return
+        val buildFunction = if (useProviderFactory) {
+          valueProviderSymbols.mapProviderFactoryBuilderBuildFunction
+        } else {
+          valueProviderSymbols.mapFactoryBuilderBuildFunction
+        }
+        
+        val instance = irInvoke(
+          dispatchReceiver = irGet(builderVar),
+          callee = buildFunction,
+          typeHint = mapProviderType
+        )
+        
+        +irReturn(
+          with(valueProviderSymbols) { 
+            transformToMetroProvider(instance, contextualTypeKey.toIrType()) 
+          }
+        )
+      }
+      
+      // Call the main helper
+      return irInvoke(
+        dispatchReceiver = irGet(generationContext.thisReceiver),
+        callee = mainHelper.symbol
+      )
     }
 
     val builderFunction =
