@@ -16,12 +16,6 @@ Component sharding can be configured through the Metro Gradle plugin:
 metro {
   // Maximum number of bindings per shard (default: 100)
   bindingsPerGraphShard = 50
-  
-  // Enable parallel shard generation (default: true)
-  enableParallelShardGeneration = true
-  
-  // Number of threads for parallel generation (default: 0 = auto)
-  shardGenerationParallelism = 4
 }
 ```
 
@@ -29,11 +23,9 @@ See [Component Sharding Gradle Configuration](component-sharding-gradle-config.m
 
 ### Command Line
 
-Individual options can also be set via command line:
+The option can also be set via command line:
 ```
 -P metro.bindings-per-graph-shard=50
--P metro.enable-parallel-shard-generation=true
--P metro.shard-generation-parallelism=4
 ```
 
 ## How It Works
@@ -119,21 +111,11 @@ Graph com.example.MyGraph has 150 bindings, which exceeds the sharding threshold
 
 ### Dependency-Aware Distribution
 
-Metro now uses an intelligent sharding algorithm that:
+Metro uses an intelligent sharding algorithm that:
 
 - **Strongly Connected Components (SCC)**: Keeps circular dependencies together in the same shard using Tarjan's algorithm
 - **Topological Sorting**: Ensures proper initialization order across shards
-- **Parallel Generation**: Identifies independent shard groups that can be generated concurrently
-
-### Parallel Shard Generation
-
-When enabled (default), Metro identifies independent shard groups for optimization:
-
-- Analyzes shard dependencies and identifies parallel groups that could be generated concurrently
-- Handles standalone shards that aren't part of any parallel group (e.g., isolated components)
-- Currently generates sequentially due to Kotlin compiler thread-safety limitations
-- Infrastructure is in place for true parallel generation when compiler support improves
-- Falls back to simple sequential generation when disabled
+- **Dependency Analysis**: Analyzes dependencies between shards to ensure correct initialization order
 
 ## Future Enhancements
 

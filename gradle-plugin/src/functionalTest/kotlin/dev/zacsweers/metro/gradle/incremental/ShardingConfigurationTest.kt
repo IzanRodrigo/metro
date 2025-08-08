@@ -33,8 +33,6 @@ class ShardingConfigurationTest {
               metro {
                 reportsDestination = file("${'$'}buildDir/metro")
                 bindingsPerGraphShard = 5
-                enableParallelShardGeneration = true
-                shardGenerationParallelism = 2
               }
             """
               .trimIndent()
@@ -52,41 +50,4 @@ class ShardingConfigurationTest {
     // (Note: logs would only appear with debug enabled, but we verify the build succeeds)
   }
 
-  @Test
-  fun `test parallel sharding can be disabled`() {
-    val fixture =
-      object : MetroProject() {
-        override fun sources() = listOf(smallGraph)
-
-        private val smallGraph =
-          source(
-            """
-            @DependencyGraph(Unit::class)
-            interface AppGraph {
-              val service: Service
-            }
-
-            @Inject class Service
-            """
-          )
-
-        override fun StringBuilder.onBuildScript() {
-          // language=kotlin
-          appendLine(
-            """
-              metro {
-                enableParallelShardGeneration = false
-              }
-            """
-              .trimIndent()
-          )
-        }
-      }
-
-    val project = fixture.gradleProject
-
-    // Build should succeed with parallel sharding disabled
-    val buildResult = build(project.rootDir, "compileKotlin")
-    assertThat(buildResult.output).contains("BUILD SUCCESSFUL")
-  }
 }

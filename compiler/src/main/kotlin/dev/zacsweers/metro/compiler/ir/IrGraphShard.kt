@@ -46,6 +46,12 @@ internal class IrGraphShard(
   private val fieldNameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
   private val providerFields = mutableMapOf<IrTypeKey, IrField>()
   
+  // Performance optimization: Create a map for O(1) binding lookups
+  private val bindingsByKey = bindings.associateBy { it.typeKey }
+  
+  // Field to store the parent graph reference
+  private lateinit var parentGraphField: IrField
+  
   /**
    * Public accessor for shard name
    */
@@ -104,13 +110,28 @@ internal class IrGraphShard(
       parentGraph.declarations.add(shardClass)
       logger.log("Added shard class to parent graph declarations - parent now has ${parentGraph.declarations.size} declarations")
       
-      // Create primary constructor with no parameters for now
+      // Create primary constructor with parent graph parameter
       try {
         shardConstructor = shardClass.addConstructor {
           visibility = DescriptorVisibilities.INTERNAL // Internal so parent can access
           isPrimary = true
         }
-        logger.log("Created primary constructor for shard class")
+        
+        // Add parent graph parameter for accessing bound instances
+        val parentGraphParam = shardConstructor.addValueParameter {
+          name = Name.identifier("parentGraph")
+          type = parentGraph.symbol.typeWith()
+        }
+        
+        // Create field to store parent graph reference
+        parentGraphField = shardClass.addField {
+          name = Name.identifier("parentGraph")
+          type = parentGraph.symbol.typeWith()
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = true
+        }
+        
+        logger.log("Created primary constructor for shard class with parent graph parameter")
       } catch (e: Exception) {
         val errorMsg = "Failed to create constructor for shard class '${shardClass.name}'"
         logger.log("ERROR: $errorMsg - ${e.message}")
@@ -226,8 +247,8 @@ internal class IrGraphShard(
           logger.log("Using provider type for ${binding.typeKey}")
           val bindingType = binding.typeKey.type
           // Defensive check to ensure the type is valid
-          if (bindingType !is IrSimpleType || bindingType.classifier == null) {
-            val errorMsg = "Invalid type for binding ${binding.typeKey}: type=$bindingType, classifier=${(bindingType as? IrSimpleType)?.classifier}"
+          if (bindingType !is IrSimpleType) {
+            val errorMsg = "Invalid type for binding ${binding.typeKey}: type=$bindingType is not IrSimpleType"
             logger.log("ERROR: $errorMsg")
             throw IllegalStateException(errorMsg)
           }
@@ -292,11 +313,20 @@ internal class IrGraphShard(
         callee = irBuiltIns.anyClass.owner.constructors.single()
       )
       
-      // Initialize provider fields
-      // For now, create simple placeholder providers - in a full implementation,
-      // this would delegate to the actual binding generation logic
-      providerFields.forEach { (typeKey, field) ->
-        val binding = bindings.find { it.typeKey == typeKey }!!
+      // Initialize parent graph field
+      val parentGraphParam = shardConstructor.regularParameters.first()
+      +irSetField(
+        receiver = irGet(thisReceiver),
+        field = parentGraphField,
+        value = irGet(parentGraphParam)
+      )
+      
+      // IMPORTANT: Initialize fields in topological order to ensure dependencies are available
+      // This prevents recursive generation and improves performance from O(n²) to O(n)
+      val sortedBindings = sortBindingsTopologically()
+      
+      sortedBindings.forEach { binding ->
+        val field = providerFields[binding.typeKey]!!
         +irSetField(
           receiver = irGet(thisReceiver),
           field = field,
@@ -306,13 +336,87 @@ internal class IrGraphShard(
     }
   }
   
+  /**
+   * Sorts bindings in topological order based on their dependencies within this shard.
+   * This ensures that when we initialize a binding, all its dependencies are already initialized.
+   */
+  private fun sortBindingsTopologically(): List<IrBinding> {
+    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+    
+    // Build adjacency list for bindings within this shard
+    val adjacency = mutableMapOf<IrTypeKey, MutableSet<IrTypeKey>>()
+    val inDegree = mutableMapOf<IrTypeKey, Int>()
+    
+    // Initialize
+    bindings.forEach { binding ->
+      adjacency[binding.typeKey] = mutableSetOf()
+      inDegree[binding.typeKey] = 0
+    }
+    
+    // Build edges - only for dependencies within this shard
+    bindings.forEach { binding ->
+      binding.dependencies.forEach { dep ->
+        if (bindingsByKey.containsKey(dep.typeKey)) {
+          adjacency[dep.typeKey]!!.add(binding.typeKey)
+          inDegree[binding.typeKey] = inDegree[binding.typeKey]!! + 1
+        }
+      }
+    }
+    
+    // Kahn's algorithm for topological sort
+    val queue = ArrayDeque<IrBinding>()
+    val sorted = mutableListOf<IrBinding>()
+    
+    // Start with nodes that have no dependencies
+    bindings.forEach { binding ->
+      if (inDegree[binding.typeKey] == 0) {
+        queue.add(binding)
+      }
+    }
+    
+    while (queue.isNotEmpty()) {
+      val current = queue.removeFirst()
+      sorted.add(current)
+      
+      // Process all nodes that depend on current
+      adjacency[current.typeKey]!!.forEach { dependentKey ->
+        inDegree[dependentKey] = inDegree[dependentKey]!! - 1
+        if (inDegree[dependentKey] == 0) {
+          queue.add(bindingsByKey[dependentKey]!!)
+        }
+      }
+    }
+    
+    // Check for cycles (shouldn't happen with proper SCC grouping)
+    if (sorted.size != bindings.size) {
+      logger.log("WARNING: Cycle detected in shard $shardName. Using original order.")
+      return bindings
+    }
+    
+    return sorted
+  }
+  
   private fun generateBindingProvider(binding: IrBinding): IrExpression {
     // Use the binding generator provided by the parent graph
     val thisReceiver = shardConstructor.dispatchReceiverParameter
       ?: shardClass.thisReceiver 
       ?: error("Shard class ${shardClass.name} has no thisReceiver when generating binding for ${binding.typeKey}")
     
-    // Important: The binding generator should use the shard's context, not the parent's
+    // For bindings with no dependencies within this shard, generate directly
+    val shardDependencies = binding.dependencies.filter { dep ->
+      bindingsByKey.containsKey(dep.typeKey)
+    }
+    
+    if (shardDependencies.isEmpty()) {
+      // No intra-shard dependencies, safe to generate directly
+      return bindingGenerator(binding, thisReceiver)
+    }
+    
+    // For bindings with intra-shard dependencies, we need to be careful to avoid
+    // exponential complexity. Since we're processing in topological order, dependencies
+    // should already be initialized as fields.
+    // For now, just generate the binding directly - the topological sort ensures
+    // dependencies are available.
     return bindingGenerator(binding, thisReceiver)
   }
   

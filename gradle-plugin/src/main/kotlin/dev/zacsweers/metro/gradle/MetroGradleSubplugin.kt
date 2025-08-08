@@ -141,8 +141,6 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
           )
         )
         add(lazyOption("bindings-per-graph-shard", extension.bindingsPerGraphShard))
-        add(lazyOption("enable-parallel-shard-generation", extension.enableParallelShardGeneration))
-        add(lazyOption("shard-generation-parallelism", extension.shardGenerationParallelism))
         reportsDir.orNull
           ?.let { FilesSubpluginOption("reports-destination", listOf(it.asFile)) }
           ?.let(::add)

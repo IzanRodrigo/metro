@@ -66,8 +66,6 @@ import org.jetbrains.kotlin.ir.util.SymbolRemapper
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.companionObject
-import org.jetbrains.kotlin.ir.util.defaultType
-import org.jetbrains.kotlin.ir.util.properties
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
 import org.jetbrains.kotlin.ir.util.functions
@@ -520,70 +518,35 @@ internal class IrGraphGenerator(
             }
             
             // Create shard classes
-            if (options.enableParallelShardGeneration && shardingResult.shards.size > 1) {
-              shardingLogger.log("Using parallel shard generation")
-              val parallelGenerator = ParallelShardGenerator(
+            shardingResult.shards.forEach { shardInfo ->
+              val shard = IrGraphShard(
                 metroContext = metroContext,
-                parallelism = if (options.shardGenerationParallelism == 0) {
-                  Runtime.getRuntime().availableProcessors()
-                } else {
-                  options.shardGenerationParallelism
-                },
-              )
-              
-              val result = parallelGenerator.generateShardsInParallel(
-                shardingResult = shardingResult,
                 parentGraph = graphClass,
+                shardName = shardInfo.name,
+                shardIndex = shardInfo.index,
+                bindings = shardInfo.bindings,
                 bindingGenerator = { binding, thisReceiver ->
                   createIrBuilder(symbol).run {
+                    // Use shard initialization context
+                    // This prevents recursive dependency generation which can cause exponential complexity.
+                    val shardContext = GraphGenerationContext(
+                      thisReceiver = thisReceiver,
+                      isShardInitialization = true
+                    )
                     generateBindingCode(
                       binding = binding,
-                      generationContext = GraphGenerationContext(thisReceiver),
+                      generationContext = shardContext,
                       fieldInitKey = binding.typeKey,
                     )
                   }
                 },
               )
-              
-              shards.addAll(result.shards)
-              shardingLogger.log("Parallel generation completed in ${result.generationTimeMs}ms")
+              shard.generate()
+              shards.add(shard)
               
               // Track which bindings are in which shard
-              // Create a map from shard index to shard for easy lookup
-              val shardsByIndex = result.shards.associateBy { it.shardIndex }
-              shardingResult.shards.forEach { shardInfo ->
-                val shard = shardsByIndex[shardInfo.index]
-                  ?: error("Shard with index ${shardInfo.index} not found in generated shards")
-                shardInfo.bindings.forEach { binding ->
-                  bindingToShard[binding] = shard
-                }
-              }
-            } else {
-              // Sequential generation for small graphs or when parallel is disabled
-              shardingResult.shards.forEach { shardInfo ->
-                val shard = IrGraphShard(
-                  metroContext = metroContext,
-                  parentGraph = graphClass,
-                  shardName = shardInfo.name,
-                  shardIndex = shardInfo.index,
-                  bindings = shardInfo.bindings,
-                  bindingGenerator = { binding, thisReceiver ->
-                    createIrBuilder(symbol).run {
-                      generateBindingCode(
-                        binding = binding,
-                        generationContext = GraphGenerationContext(thisReceiver),
-                        fieldInitKey = binding.typeKey,
-                      )
-                    }
-                  },
-                )
-                shard.generate()
-                shards.add(shard)
-                
-                // Track which bindings are in which shard
-                shardInfo.bindings.forEach { binding ->
-                  bindingToShard[binding] = shard
-                }
+              shardInfo.bindings.forEach { binding ->
+                bindingToShard[binding] = shard
               }
             }
             
@@ -593,9 +556,9 @@ internal class IrGraphGenerator(
                 irSetField(
                   receiver = irGet(thisReceiver),
                   field = shard.shardField,
-                  value = irCallConstructor(
+                  value = irInvoke(
                     callee = shard.shardClass.primaryConstructor!!.symbol,
-                    typeArguments = emptyList()
+                    args = listOf(irGet(thisReceiver)) // Pass the parent graph instance to the shard
                   )
                 )
               }
@@ -1260,16 +1223,28 @@ internal class IrGraphGenerator(
     // provider for it.
     // This is important for cases like DelegateFactory and breaking cycles.
     if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-      // Check if we're initializing within a shard context
-      // In shards, we should not access provider fields during initialization to avoid circular dependencies
-      // The parent graph will handle cross-shard field access after all shards are initialized
-      val isInShardInit = generationContext.thisReceiver.parent.let { parent ->
-        parent is IrFunction && parent.parent.let { grandParent ->
-          grandParent is IrClass && grandParent.name.asString().startsWith("GraphShard")
+      // When in shard initialization context, we need special handling
+      if (generationContext.isShardInitialization) {
+        // Skip field lookup for BoundInstance bindings - they need special handling
+        if (binding !is IrBinding.BoundInstance) {
+          // For non-BoundInstance bindings, check fields in the current shard class
+          val parentFunction = generationContext.thisReceiver.parent as? IrFunction
+          val shardClass = parentFunction?.parent as? IrClass
+          if (shardClass != null && shardClass.name.asString().startsWith("GraphShard")) {
+            // Look for the field in the shard's declarations
+            val shardField = shardClass.declarations.filterIsInstance<IrField>().find { field ->
+              // Match by checking if the field type is Provider<BindingType>
+              val fieldType = field.type as? IrSimpleType
+              fieldType?.arguments?.firstOrNull()?.typeOrFail == binding.typeKey.type
+            }
+            if (shardField != null) {
+              return irGetField(irGet(generationContext.thisReceiver), shardField).let {
+                with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+              }
+            }
+          }
         }
-      }
-      
-      if (!isInShardInit) {
+      } else {
         // Normal provider field access when not in shard initialization
         providerFields[binding.typeKey]?.let {
           return irGetField(irGet(generationContext.thisReceiver), it).let {
@@ -1455,7 +1430,31 @@ internal class IrGraphGenerator(
       }
 
       is IrBinding.BoundInstance -> {
-        // Should never happen, this should get handled in the provider/instance fields logic above.
+        // BoundInstance bindings can appear when the graph itself is used as a dependency
+        // In shard context, we need to access the parent graph instance
+        if (generationContext.isShardInitialization) {
+          // Access the parent graph field that we stored in the shard
+          val parentFunction = generationContext.thisReceiver.parent as? IrFunction
+          val shardClass = parentFunction?.parent as? IrClass
+              ?: error("Unable to find shard class for BoundInstance binding: $binding. " +
+                  "ParentFunction: $parentFunction, " +
+                  "Receiver parent: ${generationContext.thisReceiver.parent}")
+
+          if (!shardClass.name.asString().startsWith("GraphShard")) {
+            error("Parent class is not a GraphShard for BoundInstance binding: $binding. " +
+                  "Parent class name: ${shardClass.name}, " +
+                  "Expected: GraphShard*")
+          }
+          
+          val parentGraphField = shardClass.declarations.filterIsInstance<IrField>()
+            .find { it.name.asString() == "parentGraph" }
+            ?: error("Parent graph field not found in shard class ${shardClass.name}")
+          
+          // The parent graph IS the bound instance in this case
+          return irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+        }
+        
+        // In non-shard context, this should have been handled by field access logic
         error("Unable to generate code for unexpected BoundInstance binding: $binding")
       }
 
@@ -1860,13 +1859,16 @@ internal class IrGraphGenerator(
   }
 }
 
-internal class GraphGenerationContext(val thisReceiver: IrValueParameter) {
+internal class GraphGenerationContext(
+  val thisReceiver: IrValueParameter,
+  val isShardInitialization: Boolean = false
+) {
   // Each declaration in FIR is actually generated with a different "this" receiver, so we
   // need to be able to specify this per-context.
   // TODO not sure if this is really the best way to do this? Only necessary when implementing
   //  accessors/injectors
   fun withReceiver(receiver: IrValueParameter): GraphGenerationContext =
-    GraphGenerationContext(receiver)
+    GraphGenerationContext(receiver, isShardInitialization)
 }
 
 context(_: IrMetroContext)
