@@ -47,15 +47,10 @@ import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.parent
 import org.jetbrains.kotlin.ir.declarations.IrClass
-import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
-import org.jetbrains.kotlin.ir.declarations.IrProperty
-import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
-import org.jetbrains.kotlin.ir.expressions.IrBlockBody
 import org.jetbrains.kotlin.ir.expressions.IrConstructorCall
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.addArgument
@@ -71,7 +66,6 @@ import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.companionObject
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
-import org.jetbrains.kotlin.ir.util.dumpKotlinLike
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.getAnnotation
 import org.jetbrains.kotlin.ir.util.isFromJava
@@ -499,12 +493,7 @@ internal class IrGraphGenerator(
             log("Graph ${graphClass.kotlinFqName} has ${fieldBindings.size} bindings, " +
                 "which exceeds the sharding threshold of ${options.bindingsPerGraphShard}. " +
                 "Implementing component sharding.")
-            
-            // Generate pre-sharding report if debug mode is enabled
-            if (debug) {
-              generatePreShardingReport(graphClass, fieldBindings, options.bindingsPerGraphShard)
-            }
-            
+
             // Implement dependency-aware sharding
             val shardingStrategy = GraphShardingStrategy(options.bindingsPerGraphShard)
             
@@ -878,11 +867,6 @@ internal class IrGraphGenerator(
                 }
             metadataDeclarationRegistrar.registerFunctionAsMetadataVisible(getter)
           }
-      }
-      
-      // Generate complete graph report for debugging if debug mode is enabled
-      if (debug) {
-        generateCompleteGraphReport(graphClass)
       }
     }
 
@@ -1263,24 +1247,12 @@ internal class IrGraphGenerator(
     
     // Generate the function body
     helperFunction.body = createIrBuilder(helperFunction.symbol).irBlockBody {
-      // Generate the binding code with special handling for large collections
-      val result = if (binding.isMap) {
-        generateLargeMapMultibindingExpression(
-          binding,
-          contextualTypeKey,
-          generationContext.withReceiver(helperFunction.dispatchReceiverParameter!!),
-          null
-        )
-      } else {
-        // For sets, use a similar approach
-        val elementType = (binding.typeKey.type as IrSimpleType).arguments.single().typeOrFail
-        generateLargeSetBuilderExpression(
-          binding,
-          elementType,
-          generationContext.withReceiver(helperFunction.dispatchReceiverParameter!!),
-          null
-        )
-      }
+      // Generate the binding code
+      val result = generateBindingCode(
+        binding,
+        generationContext.withReceiver(helperFunction.dispatchReceiverParameter!!),
+        contextualTypeKey
+      )
       +irReturn(result)
     }
     
@@ -1710,11 +1682,6 @@ internal class IrGraphGenerator(
       }
 
       else -> {
-        // For large sets in shards, use a different approach to avoid method size limits
-        if (size > 50 && generationContext.isShardInitialization) {
-          return generateLargeSetBuilderExpression(binding, elementType, generationContext, fieldInitKey)
-        }
-        
         // buildSet(<size>) { ... }
         callee = symbols.buildSetWithCapacity
         args = buildList {
@@ -1820,19 +1787,6 @@ internal class IrGraphGenerator(
     generationContext: GraphGenerationContext,
     fieldInitKey: IrTypeKey?,
   ): IrExpression {
-    // For very large map multibindings, we need to split the creation across multiple statements
-    // to avoid "Method too large" errors. Specifically, maps with >50 entries should be split.
-    val LARGE_MULTIBINDING_THRESHOLD = 50
-    
-    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
-    logger.log("generateMapMultibindingExpression: ${binding.typeKey} with ${binding.sourceBindings.size} entries, isShardInitialization=${generationContext.isShardInitialization}")
-    
-    if (binding.sourceBindings.size > LARGE_MULTIBINDING_THRESHOLD && generationContext.isShardInitialization) {
-      // Handle large multibindings specially
-      logger.log("Using generateLargeMapMultibindingExpression for ${binding.typeKey}")
-      return generateLargeMapMultibindingExpression(binding, contextualTypeKey, generationContext, fieldInitKey)
-    }
-    
     // MapFactory.<Integer, Integer>builder(2)
     //   .put(1, FileSystemModule_Companion_ProvideMapInt1Factory.create())
     //   .put(2, provideMapInt2Provider)
@@ -1987,209 +1941,6 @@ internal class IrGraphGenerator(
     return with(valueProviderSymbols) { transformToMetroProvider(instance, originalType) }
   }
 
-  /**
-   * Generates a map multibinding expression for very large maps (>50 entries) by splitting
-   * the map construction across multiple variables to avoid "Method too large" errors.
-   * 
-   * Instead of:
-   * ```
-   * return MapFactory.builder(637).put(...).put(...).put(...637 times).build()
-   * ```
-   * 
-   * We generate:
-   * ```
-   * val builder = MapFactory.builder(637)
-   * builder.put(...)
-   * builder.put(...)
-   * // ... 637 separate put statements
-   * return builder.build()
-   * ```
-   */
-  private fun IrBuilderWithScope.generateLargeMapMultibindingExpression(
-    binding: IrBinding.Multibinding,
-    contextualTypeKey: IrContextualTypeKey,
-    generationContext: GraphGenerationContext,
-    fieldInitKey: IrTypeKey?,
-  ): IrExpression {
-    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
-    logger.log("Generating large map multibinding for ${binding.typeKey} with ${binding.sourceBindings.size} entries")
-    
-    val valueWrappedType = contextualTypeKey.wrappedType.findMapValueType()!!
-    val mapTypeArgs = (contextualTypeKey.typeKey.type as IrSimpleType).arguments
-    check(mapTypeArgs.size == 2) { "Unexpected map type args: ${mapTypeArgs.joinToString()}" }
-    val keyType: IrType = mapTypeArgs[0].typeOrFail
-    val rawValueType = mapTypeArgs[1].typeOrFail
-    val rawValueTypeMetadata = rawValueType.typeOrFail.asContextualTypeKey(null, hasDefault = false)
-    
-    val useProviderFactory: Boolean = valueWrappedType is WrappedType.Provider
-    val originalType = contextualTypeKey.toIrType()
-    val originalValueType = valueWrappedType.toIrType()
-    val originalValueContextKey = originalValueType.asContextualTypeKey(null, hasDefault = false)
-    val valueProviderSymbols = symbols.providerSymbolsFor(originalValueType)
-    val valueType: IrType = rawValueTypeMetadata.typeKey.type
-    
-    val size = binding.sourceBindings.size
-    val mapProviderType = irBuiltIns.mapClass
-      .typeWith(
-        keyType,
-        if (useProviderFactory) {
-          rawValueType.wrapInProvider(symbols.metroProvider)
-        } else {
-          rawValueType
-        },
-      )
-      .wrapInProvider(symbols.metroProvider)
-    
-    // For large maps, we need to generate the builder creation and puts as separate statements
-    val builderFunction = if (useProviderFactory) {
-      valueProviderSymbols.mapProviderFactoryBuilderFunction
-    } else {
-      valueProviderSymbols.mapFactoryBuilderFunction
-    }
-    val builderType = if (useProviderFactory) {
-      valueProviderSymbols.mapProviderFactoryBuilder
-    } else {
-      valueProviderSymbols.mapFactoryBuilder
-    }
-    val putFunction = if (useProviderFactory) {
-      valueProviderSymbols.mapProviderFactoryBuilderPutFunction
-    } else {
-      valueProviderSymbols.mapFactoryBuilderPutFunction
-    }
-    val buildFunction = if (useProviderFactory) {
-      valueProviderSymbols.mapProviderFactoryBuilderBuildFunction
-    } else {
-      valueProviderSymbols.mapFactoryBuilderBuildFunction
-    }
-    
-    // For large multibindings, we need to split the creation into multiple steps
-    // Start with the builder creation
-    var currentBuilder = irInvoke(
-      callee = builderFunction,
-      typeArgs = listOf(keyType, valueType),
-      typeHint = builderType.typeWith(keyType, valueType),
-      args = listOf(irInt(size)),
-    )
-    
-    // Generate put operations, building up the builder incrementally
-    // This avoids a single massive expression
-    binding.sourceBindings
-      .map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
-      .forEach { sourceBinding ->
-        val providerTypeMetadata = sourceBinding.contextualTypeKey
-        val isMap = providerTypeMetadata.typeKey.type.rawType().symbol == irBuiltIns.mapClass
-        
-        if (isMap) {
-          TODO("putAll isn't yet supported for large multibindings")
-        }
-        
-        // Chain each put call: currentBuilder = currentBuilder.put(key, value)
-        currentBuilder = irInvoke(
-          dispatchReceiver = currentBuilder,
-          callee = putFunction,
-          typeHint = currentBuilder.type,
-          args = listOf(
-            generateMapKeyLiteral(sourceBinding),
-            generateBindingCode(sourceBinding, generationContext, fieldInitKey = fieldInitKey)
-              .let {
-                with(valueProviderSymbols) {
-                  transformMetroProvider(it, originalValueContextKey)
-                }
-              },
-          ),
-        )
-      }
-    
-    // Build the final map: currentBuilder.build()
-    val instance = irInvoke(
-      dispatchReceiver = currentBuilder,
-      callee = buildFunction,
-      typeHint = mapProviderType
-    )
-    
-    return with(valueProviderSymbols) { transformToMetroProvider(instance, originalType) }
-  }
-
-  /**
-   * Generates a set builder expression for very large sets (>50 entries) by splitting
-   * the set construction across multiple statements to avoid "Method too large" errors.
-   * 
-   * Instead of:
-   * ```
-   * return buildSet(637) { add(...); add(...); ... 637 times }
-   * ```
-   * 
-   * We generate:
-   * ```
-   * val set = mutableSetOf<Type>()
-   * set.add(...)
-   * set.add(...)
-   * // ... 637 separate add statements
-   * return set
-   * ```
-   */
-  private fun IrBuilderWithScope.generateLargeSetBuilderExpression(
-    binding: IrBinding.Multibinding,
-    elementType: IrType,
-    generationContext: GraphGenerationContext,
-    fieldInitKey: IrTypeKey?,
-  ): IrExpression {
-    val logger = loggerFor(MetroLogger.Type.ComponentSharding)
-    logger.log("Generating large set multibinding for ${binding.typeKey} with ${binding.sourceBindings.size} entries")
-    
-    // For large sets, we can't use buildSet with a huge lambda as it would exceed method size
-    // We'll generate a buildSet that adds elements in chunks to keep the bytecode size manageable
-    
-    val providers = binding.sourceBindings
-      .map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
-    
-    // Split providers into smaller chunks to avoid massive method bodies
-    val chunksSize = 20 // Small chunks to ensure each add generates minimal bytecode
-    val chunks = providers.chunked(chunksSize)
-    
-    // Build the set using buildSet with capacity
-    return irInvoke(
-      callee = symbols.buildSetWithCapacity,
-      typeHint = binding.typeKey.type,
-      typeArgs = listOf(elementType),
-      args = listOf(
-        irInt(providers.size),
-        irLambda(
-          parent = parent,
-          receiverParameter = irBuiltIns.mutableSetClass.typeWith(elementType),
-          valueParameters = emptyList(),
-          returnType = irBuiltIns.unitType,
-          suspend = false,
-        ) { function ->
-          val functionReceiver = function.extensionReceiverParameterCompat!!
-          
-          // Add elements in smaller groups to avoid a single massive expression
-          chunks.forEach { chunk ->
-            // For each chunk, create a list and addAll
-            val chunkElements = chunk.map { provider ->
-              generateMultibindingArgument(provider, generationContext, fieldInitKey)
-            }
-            
-            // Create a list for this chunk
-            val chunkList = irInvoke(
-              callee = symbols.listOf,
-              typeHint = irBuiltIns.listClass.typeWith(elementType),
-              typeArgs = listOf(elementType),
-              args = chunkElements
-            )
-            
-            // Add all elements from the chunk: this.addAll(chunkList)
-            +irInvoke(
-              dispatchReceiver = irGet(functionReceiver),
-              callee = symbols.mutableSetAddAll,
-              args = listOf(chunkList)
-            )
-          }
-        }
-      )
-    )
-  }
-
   private fun IrBuilderWithScope.generateMultibindingArgument(
     provider: IrBinding,
     generationContext: GraphGenerationContext,
@@ -2219,246 +1970,4 @@ internal class GraphGenerationContext(
   //  accessors/injectors
   fun withReceiver(receiver: IrValueParameter): GraphGenerationContext =
     GraphGenerationContext(receiver, isShardInitialization, shardProviderFields, parentGraphField, currentShardClass)
-}
-
-context(_: IrMetroContext)
-private fun generatePreShardingReport(
-  graphClass: IrClass,
-  bindings: List<IrBinding>,
-  threshold: Int
-) {
-  val reportContent = buildString {
-    appendLine("=== Pre-Sharding Analysis Report ===")
-    appendLine("Graph: ${graphClass.kotlinFqName}")
-    appendLine("Total Bindings: ${bindings.size}")
-    appendLine("Sharding Threshold: $threshold")
-    appendLine("Bindings Over Threshold: ${bindings.size - threshold}")
-    // Match the actual sharding logic
-    val estimatedShards = if (bindings.size <= threshold) 0 else bindings.chunked(threshold).size
-    appendLine("Estimated Shards: $estimatedShards")
-    appendLine()
-    
-    appendLine("Bindings by Type:")
-    bindings.groupBy { it::class.simpleName }.forEach { (type, bindingList) ->
-      appendLine("  $type: ${bindingList.size}")
-    }
-    appendLine()
-    
-    appendLine("Scoped Bindings:")
-    val scopedBindings = bindings.filter { it.scope != null }
-    appendLine("  Count: ${scopedBindings.size}")
-    scopedBindings.groupBy { it.scope?.toString() }.forEach { (scope, bindingList) ->
-      appendLine("    $scope: ${bindingList.size}")
-    }
-    appendLine()
-    
-    appendLine("All Bindings:")
-    bindings.forEachIndexed { index, binding ->
-      val scopeInfo = binding.scope?.let { " (${it})" } ?: ""
-      appendLine("  ${index + 1}. ${binding.typeKey}${scopeInfo}")
-    }
-    
-    appendLine()
-    appendLine("=== End Pre-Sharding Analysis ===")
-  }
-  
-  writeDiagnostic("pre-sharding-${graphClass.name.asString()}.txt") {
-    reportContent
-  }
-}
-
-/**
- * Generates a comprehensive report of the complete root graph implementation after IR work is complete
- */
-context(context: IrMetroContext)
-private fun generateCompleteGraphReport(graphClass: IrClass) {
-  val reportContent = buildString {
-    appendLine("=== Complete Graph Implementation Report ===")
-    appendLine("Graph Class: ${graphClass.kotlinFqName}")
-    appendLine("Generated at: ${java.time.LocalDateTime.now()}")
-    appendLine("Symbol: ${graphClass.symbol}")
-    appendLine("Symbol Bound: ${graphClass.symbol.isBound}")
-    appendLine()
-    
-    appendLine("Class Structure:")
-    appendLine("  Name: ${graphClass.name}")
-    appendLine("  Kind: ${graphClass.kind}")
-    appendLine("  Visibility: ${graphClass.visibility}")
-    appendLine("  Modality: ${graphClass.modality}")
-    appendLine("  SuperTypes: ${graphClass.superTypes.joinToString { it.toString() }}")
-    appendLine("  Annotations: ${graphClass.annotations.size}")
-    appendLine()
-    
-    appendLine("Declarations (${graphClass.declarations.size} total):")
-    graphClass.declarations.forEachIndexed { index, declaration ->
-      try {
-        val declarationName = when (declaration) {
-          is IrDeclarationWithName -> declaration.name.asString()
-          else -> "Unknown"
-        }
-        appendLine("  ${index + 1}. ${declaration::class.simpleName}: $declarationName")
-        
-        when (declaration) {
-          is IrField -> {
-            appendLine("     Type: ${declaration.type}")
-            appendLine("     Visibility: ${declaration.visibility}")
-            appendLine("     IsFinal: ${declaration.isFinal}")
-            appendLine("     HasInitializer: ${declaration.initializer != null}")
-          }
-          is IrFunction -> {
-            appendLine("     ReturnType: ${declaration.returnType}")
-            appendLine("     HasBody: ${declaration.body != null}")
-          }
-          is IrClass -> {
-            appendLine("     Kind: ${declaration.kind}")
-            appendLine("     Nested Declarations: ${declaration.declarations.size}")
-          }
-        }
-      } catch (e: Exception) {
-        appendLine("  ${index + 1}. <Error rendering declaration: ${e.message}>")
-      }
-      appendLine()
-    }
-    
-    if (graphClass.thisReceiver != null) {
-      try {
-        appendLine("This Receiver:")
-        appendLine("  Name: ${graphClass.thisReceiver!!.name}")
-        appendLine("  Type: ${graphClass.thisReceiver!!.type}")
-        appendLine()
-      } catch (e: Exception) {
-        appendLine("This Receiver: <Error: ${e.message}>")
-      }
-    }
-    
-    try {
-      appendLine("Properties and Fields:")
-      val properties = graphClass.declarations.filterIsInstance<IrProperty>()
-      val fields = graphClass.declarations.filterIsInstance<IrField>()
-      
-      appendLine("  Properties: ${properties.size}")
-      properties.forEach { property ->
-        appendLine("    - ${property.name}: ${property.getter?.returnType ?: "Unknown type"}")
-      }
-      
-      appendLine("  Fields: ${fields.size}")
-      fields.forEach { field ->
-        appendLine("    - ${field.name}: ${field.type} (${field.visibility})")
-        if (field.initializer != null) {
-          appendLine("      Initializer: Present")
-        }
-      }
-      appendLine()
-    } catch (e: Exception) {
-      appendLine("Properties and Fields: <Error: ${e.message}>")
-      appendLine()
-    }
-    
-    // Add detailed shard information
-    try {
-      appendLine("=== SHARDING DETAILS ===")
-      val nestedClasses = graphClass.declarations.filterIsInstance<IrClass>()
-      val shardClasses = nestedClasses.filter { it.name.asString().startsWith("GraphShard") }
-      
-      appendLine("Total Nested Classes: ${nestedClasses.size}")
-      appendLine("Shard Classes: ${shardClasses.size}")
-      appendLine()
-      
-      shardClasses.forEachIndexed { shardIndex, shardClass ->
-        appendLine("Shard ${shardIndex}: ${shardClass.name}")
-        appendLine("  Kind: ${shardClass.kind}")
-        appendLine("  Visibility: ${shardClass.visibility}")
-        
-        val shardFields = shardClass.declarations.filterIsInstance<IrField>()
-        val shardFunctions = shardClass.declarations.filterIsInstance<IrSimpleFunction>()
-        val shardConstructors = shardClass.declarations.filterIsInstance<IrConstructor>()
-        
-        appendLine("  Declarations: ${shardClass.declarations.size}")
-        appendLine("  Fields: ${shardFields.size}")
-        appendLine("  Functions: ${shardFunctions.size}")
-        appendLine("  Constructors: ${shardConstructors.size}")
-        
-        // Count provider fields
-        val providerFields = shardFields.filter { field ->
-          field.type.toString().contains("Provider") || field.type.toString().contains("Factory")
-        }
-        appendLine("  Provider/Factory Fields: ${providerFields.size}")
-        
-        // Analyze init methods
-        val initMethods = shardFunctions.filter { it.name.asString().startsWith("initChunk") }
-        appendLine("  Init Methods: ${initMethods.size}")
-        
-        initMethods.forEach { initMethod ->
-          appendLine("    ${initMethod.name}:")
-          try {
-            val body = initMethod.body
-            if (body is IrBlockBody) {
-              appendLine("      Statements in body: ${body.statements.size}")
-              // Try to count field assignments
-              val fieldAssignments = body.statements.count { stmt ->
-                stmt.toString().contains("CALL 'public final fun <set-")
-              }
-              appendLine("      Field assignments: ~$fieldAssignments")
-            } else {
-              appendLine("      Body type: ${body?.javaClass?.simpleName ?: "null"}")
-            }
-          } catch (e: Exception) {
-            appendLine("      <Error analyzing method: ${e.message}>")
-          }
-        }
-        appendLine()
-      }
-      
-      // Analyze shard field references in main graph
-      val mainGraphFields = graphClass.declarations.filterIsInstance<IrField>()
-      val shardFieldRefs = mainGraphFields.filter { field ->
-        field.name.asString().startsWith("graphShard")
-      }
-      appendLine("Shard Field References in Main Graph: ${shardFieldRefs.size}")
-      shardFieldRefs.forEach { field ->
-        appendLine("  ${field.name}: ${field.type}")
-      }
-      appendLine()
-      
-    } catch (e: Exception) {
-      appendLine("=== SHARDING DETAILS ERROR ===")
-      appendLine("Failed to analyze sharding: ${e.message}")
-      appendLine()
-    }
-    
-    appendLine("=== End Complete Graph Report ===")
-  }
-  
-  writeDiagnostic("complete-graph-${graphClass.name.asString()}.txt") {
-    reportContent
-  }
-  
-  // Generate Kotlin source representation
-  if (context.debug) {
-    try {
-      val kotlinSource = graphClass.dumpKotlinLike()
-      writeDiagnostic("kotlin-graph-${graphClass.name.asString()}.kt") {
-        buildString {
-          appendLine("// Generated Kotlin representation of ${graphClass.name}")
-          appendLine("// Total Declarations: ${graphClass.declarations.size}")
-          appendLine("// Shards: ${graphClass.declarations.filterIsInstance<IrClass>().count { it.name.asString().startsWith("GraphShard") }}")
-          appendLine()
-          append(kotlinSource)
-        }
-      }
-    } catch (e: Exception) {
-      context.loggerFor(MetroLogger.Type.ComponentSharding).log("Failed to generate Kotlin source for graph ${graphClass.name}: ${e.message}")
-    }
-  }
-  
-  // Also generate a Kotlin-like dump of the IR if debug is enabled
-  if (context.debug) {
-    try {
-      context.run {
-        graphClass.dumpToMetroLog()
-      }
-    } catch (e: Exception) {
-      context.loggerFor(MetroLogger.Type.ComponentSharding).log("Failed to dump IR for graph ${graphClass.name}: ${e.message}")
-    }
-  }
 }
