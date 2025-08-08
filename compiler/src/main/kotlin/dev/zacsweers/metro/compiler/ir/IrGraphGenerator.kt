@@ -525,13 +525,14 @@ internal class IrGraphGenerator(
                 shardName = shardInfo.name,
                 shardIndex = shardInfo.index,
                 bindings = shardInfo.bindings,
-                bindingGenerator = { binding, thisReceiver ->
+                bindingGenerator = { binding, thisReceiver, shardProviderFields ->
                   createIrBuilder(symbol).run {
-                    // Use shard initialization context
+                    // Use shard initialization context with O(1) field lookup
                     // This prevents recursive dependency generation which can cause exponential complexity.
                     val shardContext = GraphGenerationContext(
                       thisReceiver = thisReceiver,
-                      isShardInitialization = true
+                      isShardInitialization = true,
+                      shardProviderFields = shardProviderFields
                     )
                     generateBindingCode(
                       binding = binding,
@@ -1227,20 +1228,11 @@ internal class IrGraphGenerator(
       if (generationContext.isShardInitialization) {
         // Skip field lookup for BoundInstance bindings - they need special handling
         if (binding !is IrBinding.BoundInstance) {
-          // For non-BoundInstance bindings, check fields in the current shard class
-          val parentFunction = generationContext.thisReceiver.parent as? IrFunction
-          val shardClass = parentFunction?.parent as? IrClass
-          if (shardClass != null && shardClass.name.asString().startsWith("GraphShard")) {
-            // Look for the field in the shard's declarations
-            val shardField = shardClass.declarations.filterIsInstance<IrField>().find { field ->
-              // Match by checking if the field type is Provider<BindingType>
-              val fieldType = field.type as? IrSimpleType
-              fieldType?.arguments?.firstOrNull()?.typeOrFail == binding.typeKey.type
-            }
-            if (shardField != null) {
-              return irGetField(irGet(generationContext.thisReceiver), shardField).let {
-                with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
-              }
+          // Use the O(1) field lookup from context if available
+          val shardField = generationContext.shardProviderFields?.get(binding.typeKey)
+          if (shardField != null) {
+            return irGetField(irGet(generationContext.thisReceiver), shardField).let {
+              with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
             }
           }
         }
@@ -1281,9 +1273,17 @@ internal class IrGraphGenerator(
 
       is IrBinding.Alias -> {
         // For binds functions, just use the backing type
-        val aliasedBinding = binding.aliasedBinding(bindingGraph, IrBindingStack.empty())
-        check(aliasedBinding != binding) { "Aliased binding aliases itself" }
-        return generateBindingCode(aliasedBinding, generationContext)
+        // Resolve alias chains iteratively to avoid deep recursion
+        var currentBinding: IrBinding = binding
+        val seen = mutableSetOf<IrBinding>()
+        while (currentBinding is IrBinding.Alias) {
+          if (!seen.add(currentBinding)) {
+            error("Circular alias detected for binding: ${binding.typeKey}")
+          }
+          currentBinding = currentBinding.aliasedBinding(bindingGraph, IrBindingStack.empty())
+        }
+        check(currentBinding != binding) { "Aliased binding aliases itself" }
+        return generateBindingCode(currentBinding, generationContext)
       }
 
       is IrBinding.Provided -> {
@@ -1866,14 +1866,15 @@ internal class IrGraphGenerator(
 
 internal class GraphGenerationContext(
   val thisReceiver: IrValueParameter,
-  val isShardInitialization: Boolean = false
+  val isShardInitialization: Boolean = false,
+  val shardProviderFields: Map<IrTypeKey, IrField>? = null
 ) {
   // Each declaration in FIR is actually generated with a different "this" receiver, so we
   // need to be able to specify this per-context.
   // TODO not sure if this is really the best way to do this? Only necessary when implementing
   //  accessors/injectors
   fun withReceiver(receiver: IrValueParameter): GraphGenerationContext =
-    GraphGenerationContext(receiver, isShardInitialization)
+    GraphGenerationContext(receiver, isShardInitialization, shardProviderFields)
 }
 
 context(_: IrMetroContext)

@@ -40,7 +40,7 @@ internal class IrGraphShard(
   private val shardName: Name,
   internal val shardIndex: Int,
   val bindings: List<IrBinding>,
-  private val bindingGenerator: (IrBinding, IrValueParameter) -> IrExpression,
+  private val bindingGenerator: (IrBinding, IrValueParameter, Map<IrTypeKey, IrField>) -> IrExpression,
 ) : IrMetroContext by metroContext {
   
   private val fieldNameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
@@ -402,22 +402,8 @@ internal class IrGraphShard(
       ?: shardClass.thisReceiver 
       ?: error("Shard class ${shardClass.name} has no thisReceiver when generating binding for ${binding.typeKey}")
     
-    // For bindings with no dependencies within this shard, generate directly
-    val shardDependencies = binding.dependencies.filter { dep ->
-      bindingsByKey.containsKey(dep.typeKey)
-    }
-    
-    if (shardDependencies.isEmpty()) {
-      // No intra-shard dependencies, safe to generate directly
-      return bindingGenerator(binding, thisReceiver)
-    }
-    
-    // For bindings with intra-shard dependencies, we need to be careful to avoid
-    // exponential complexity. Since we're processing in topological order, dependencies
-    // should already be initialized as fields.
-    // For now, just generate the binding directly - the topological sort ensures
-    // dependencies are available.
-    return bindingGenerator(binding, thisReceiver)
+    // Pass the provider fields map for O(1) lookups
+    return bindingGenerator(binding, thisReceiver, providerFields)
   }
   
   /**
