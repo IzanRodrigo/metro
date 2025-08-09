@@ -51,8 +51,9 @@ internal class IrGraphShard(
 ) : IrMetroContext by metroContext {
   
   // Fixed value for chunking - we handle large multibindings separately now
-  // Reduced from 25 to handle cases where individual bindings generate significant bytecode
-  private val STATEMENTS_PER_METHOD = 10
+  // CRITICAL: Even with multibinding handling, we need very small chunks
+  // because each binding can generate massive amounts of bytecode
+  private val STATEMENTS_PER_METHOD = 2
   
   private val fieldNameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
   private val providerFields = mutableMapOf<IrTypeKey, IrField>()
@@ -97,6 +98,10 @@ internal class IrGraphShard(
    * Generates the complete shard class with proper IR initialization
    */
   fun generate() {
+    // Pre-compute binding complexities for optimization
+    bindings.forEach { binding ->
+      getCachedBindingComplexity(binding)
+    }
     generateCore()
   }
   
@@ -379,14 +384,17 @@ internal class IrGraphShard(
       // Create init functions for chunks
       val initFunctions = mutableListOf<IrSimpleFunction>()
       
-      // For very large shards, we need even smaller chunks to avoid method size limits
+      // For very large shards, we need smaller chunks to avoid method size limits
       // Analyze binding complexity to determine optimal chunk size
-      val effectiveChunkSize = if (sortedBindings.size > 50) {
+      val effectiveChunkSize = if (sortedBindings.size > 20) {
         // For shards with many bindings, use smaller chunks
         val avgComplexity = sortedBindings.map { getCachedBindingComplexity(it) }.average()
+        val maxComplexity = sortedBindings.map { getCachedBindingComplexity(it) }.maxOrNull() ?: 0
         when {
-          avgComplexity > 30 -> 3  // Very complex bindings
-          avgComplexity > 20 -> 5  // Complex bindings
+          maxComplexity > 100 -> 1  // Extremely complex binding - one per method
+          avgComplexity > 30 -> 1   // Very complex bindings - one per method
+          avgComplexity > 20 -> 1   // Complex bindings - one per method
+          avgComplexity > 10 -> 2   // Moderate - max 2 per method
           else -> STATEMENTS_PER_METHOD
         }
       } else {
@@ -399,26 +407,62 @@ internal class IrGraphShard(
       logger.log("Creating ${chunks.size} init functions for shard $shardName ($effectiveChunkSize statements per chunk, avg complexity: ${sortedBindings.map { getCachedBindingComplexity(it) }.average()})")
       
       chunks.forEachIndexed { index, chunk ->
-        val initFunction = shardClass.addFunction {
-          name = Name.identifier("initChunk$index")
-          visibility = DescriptorVisibilities.PRIVATE
-          returnType = irBuiltIns.unitType
-        }.apply {
-          // Set the dispatch receiver parameter for this member function
-          val localReceiver = shardClass.thisReceiver!!.copyTo(this)
-          setDispatchReceiver(localReceiver)
-        }
-        
-        // We need to generate the body after the function is fully set up
-        initFunction.body = createIrBuilder(initFunction.symbol).irBlockBody {
+        // For chunks with very complex bindings, we may need to split further
+        val chunkComplexity = chunk.sumOf { getCachedBindingComplexity(it) }
+        // Very low threshold for splitting - be extremely aggressive
+        // Also split single-binding chunks if they're complex
+        if ((chunkComplexity > 50 && chunk.size > 1) || (chunkComplexity > 100)) {
+          // Split this chunk into smaller sub-chunks
+          logger.log("Chunk $index has complexity $chunkComplexity - splitting into sub-chunks")
           chunk.forEach { binding ->
-            val field = providerFields[binding.typeKey]!!
+            val subInitFunction = shardClass.addFunction {
+              name = Name.identifier("initChunk${index}_${binding.nameHint}")
+              visibility = DescriptorVisibilities.PRIVATE
+              returnType = irBuiltIns.unitType
+            }.apply {
+              val localReceiver = shardClass.thisReceiver!!.copyTo(this)
+              setDispatchReceiver(localReceiver)
+            }
+            
+            subInitFunction.body = createIrBuilder(subInitFunction.symbol).irBlockBody {
+              val field = providerFields[binding.typeKey]!!
+              val bindingValue = generateBindingProvider(binding, subInitFunction.dispatchReceiverParameter!!)
+              +irSetField(
+                receiver = irGet(subInitFunction.dispatchReceiverParameter!!),
+                field = field,
+                value = bindingValue
+              )
+            }
+            
+            initFunctions.add(subInitFunction)
+          }
+        } else {
+          // Normal chunk processing
+          val initFunction = shardClass.addFunction {
+            name = Name.identifier("initChunk$index")
+            visibility = DescriptorVisibilities.PRIVATE
+            returnType = irBuiltIns.unitType
+          }.apply {
+            // Set the dispatch receiver parameter for this member function
+            val localReceiver = shardClass.thisReceiver!!.copyTo(this)
+            setDispatchReceiver(localReceiver)
+          }
+          
+          // We need to generate the body after the function is fully set up
+          initFunction.body = createIrBuilder(initFunction.symbol).irBlockBody {
+            chunk.forEach { binding ->
+              val field = providerFields[binding.typeKey]!!
             
             // Check if this is a particularly complex binding that might generate too much bytecode
             val complexity = getCachedBindingComplexity(binding)
-            if (complexity > 100 && binding is IrBinding.Multibinding && binding.sourceBindings.size > 50) {
-              // For extremely large multibindings, generate a separate helper method
-              logger.log("Binding ${binding.typeKey} has complexity $complexity with ${binding.sourceBindings.size} sources - generating helper method")
+            // Generate helper methods for complex bindings - be very aggressive
+            val needsHelper = complexity > 50 || 
+              (binding.dependencies.size > 10) ||
+              (binding is IrBinding.Multibinding)
+              
+            if (needsHelper) {
+              // For complex bindings, generate a separate helper method
+              logger.log("Binding ${binding.typeKey} has complexity $complexity - generating helper method")
               
               val helperFunction = shardClass.addFunction {
                 name = Name.identifier("create${binding.nameHint}")
@@ -460,6 +504,7 @@ internal class IrGraphShard(
         }
         
         initFunctions.add(initFunction)
+        }
       }
       
       // Constructor calls the init functions
@@ -511,11 +556,28 @@ internal class IrGraphShard(
         }
       }
       
+      // Special handling for extremely complex bindings
+      val bindingComplexity = getCachedBindingComplexity(binding)
+      val effectiveChunkSize = if (bindingComplexity > 60) {
+        // Complex binding should be alone in its chunk
+        1
+      } else if (bindingComplexity > 40) {
+        // Moderately complex binding needs smaller chunk
+        maxOf(1, minOf(2, targetChunkSize / 2))
+      } else {
+        targetChunkSize
+      }
+      
       // Try to place in the minimum required chunk, or create a new one if needed
       val targetChunk = if (minChunkIndex < chunks.size) {
         val chunk = chunks[minChunkIndex]
-        // If the chunk is full, we need to use the next chunk
-        if (chunk.size >= targetChunkSize) {
+        // Calculate current chunk complexity to avoid overloading
+        val currentChunkComplexity = chunk.sumOf { getCachedBindingComplexity(it) }
+        // Extremely low complexity threshold per chunk to avoid any method size issues
+        val wouldExceedComplexity = currentChunkComplexity + bindingComplexity > 50
+        
+        // If the chunk is full OR would be too complex, we need to use the next chunk
+        if (chunk.size >= effectiveChunkSize || wouldExceedComplexity) {
           // Create a new chunk
           minChunkIndex = chunks.size
           mutableListOf<IrBinding>().also { chunks.add(it) }
@@ -1010,18 +1072,28 @@ internal class IrGraphShard(
     // Base complexity by type
     complexity += when (binding) {
       is IrBinding.ConstructorInjected -> {
-        10 + (binding.parameters.regularParameters.size * 5)
+        // Constructor calls generate significant bytecode
+        15 + (binding.parameters.regularParameters.size * 8)
       }
       is IrBinding.Provided -> {
-        10 + (binding.parameters.regularParameters.size * 5)
+        // Provider methods also generate substantial bytecode
+        15 + (binding.parameters.regularParameters.size * 8)
       }
       is IrBinding.MembersInjected -> {
-        15 + (binding.parameters.regularParameters.size * 5)
+        // Members injection requires field access for each member
+        20 + (binding.parameters.regularParameters.size * 10)
       }
       is IrBinding.Multibinding -> {
-        20 + (binding.dependencies.size * 3)
+        // Multibindings are especially complex with many dependencies
+        val baseComplexity = 25 + (binding.dependencies.size * 5)
+        // Large multibindings exponentially increase complexity
+        if (binding.dependencies.size > 20) {
+          baseComplexity + ((binding.dependencies.size - 20) * 10)
+        } else {
+          baseComplexity
+        }
       }
-      is IrBinding.Assisted -> 15
+      is IrBinding.Assisted -> 20
       is IrBinding.Alias -> 5
       is IrBinding.BoundInstance -> 3
       is IrBinding.ObjectClass -> 3
@@ -1029,12 +1101,17 @@ internal class IrGraphShard(
       is IrBinding.GraphDependency -> 5
     }
     
-    // Add complexity for dependencies
-    complexity += binding.dependencies.size * 5
+    // Add complexity for dependencies - each requires field access and provider wrapping
+    complexity += binding.dependencies.size * 8
     
     // Add extra complexity for deep dependency chains
     if (binding.dependencies.size > 10) {
-      complexity += (binding.dependencies.size - 10) * 3
+      complexity += (binding.dependencies.size - 10) * 5
+    }
+    
+    // Very large dependency counts indicate potential bytecode explosion
+    if (binding.dependencies.size > 30) {
+      complexity += (binding.dependencies.size - 30) * 10
     }
     
     return complexity

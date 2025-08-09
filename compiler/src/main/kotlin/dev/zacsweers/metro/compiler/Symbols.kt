@@ -437,6 +437,18 @@ internal class Symbols(
       .single { it.name.asString() == "add" }
   }
 
+  val mutableSetOf by lazy {
+    pluginContext
+      .referenceFunctions(CallableId(stdlibCollections.packageFqName, "mutableSetOf".asName()))
+      .first { it.owner.hasShape(regularParameters = 0) }
+  }
+
+  val toSet by lazy {
+    pluginContext
+      .referenceFunctions(CallableId(stdlibCollections.packageFqName, "toSet".asName()))
+      .first()
+  }
+
   val intoMapConstructor by lazy {
     pluginContext
       .referenceClass(ClassId(metroRuntime.packageFqName, StringNames.INTO_MAP.asName()))!!

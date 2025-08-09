@@ -153,8 +153,25 @@ internal class IrGraphGenerator(
     data class InShard(val shard: IrGraphShard, val field: IrField) : BindingLocation()
   }
 
+  // Helper functions to encapsulate map modifications
+  private fun addInstanceField(typeKey: IrTypeKey, field: IrField) {
+    instanceFields[typeKey] = field
+  }
+
+  private fun addBindingToShard(binding: IrBinding, shard: IrGraphShard) {
+    bindingToShard[binding] = shard
+  }
+
+  private fun addBindingLocation(typeKey: IrTypeKey, location: BindingLocation) {
+    bindingLocations[typeKey] = location
+  }
+
+  private fun addFieldToTypeKey(field: IrField, typeKey: IrTypeKey) {
+    fieldsToTypeKeys[field] = typeKey
+  }
+
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
-    fieldsToTypeKeys[this] = typeKey
+    addFieldToTypeKey(this, typeKey)
     fieldInitializers += (this to init)
   }
 
@@ -206,7 +223,7 @@ internal class IrGraphGenerator(
         
         providerFields[typeKey] = field
         // Also add to bindingLocations so shards can find it
-        bindingLocations[typeKey] = BindingLocation.InMainGraph(field)
+        addBindingLocation(typeKey, BindingLocation.InMainGraph(field))
       }
 
       node.creator?.let { creator ->
@@ -239,9 +256,9 @@ internal class IrGraphGenerator(
               ) {
                 irGet(irParam)
               }
-            instanceFields[graphDep.typeKey] = graphDepField
+            addInstanceField(graphDep.typeKey, graphDepField)
             // Add to bindingLocations so shards can find it
-            bindingLocations[graphDep.typeKey] = BindingLocation.InMainGraph(graphDepField)
+            addBindingLocation(graphDep.typeKey, BindingLocation.InMainGraph(graphDepField))
 
             if (graphDep.isExtendable) {
               // Extended graphs
@@ -305,9 +322,9 @@ internal class IrGraphGenerator(
             irGet(thisReceiverParameter)
           }
 
-        instanceFields[node.typeKey] = thisGraphField
+        addInstanceField(node.typeKey, thisGraphField)
         // Add to bindingLocations so shards can find it
-        bindingLocations[node.typeKey] = BindingLocation.InMainGraph(thisGraphField)
+        addBindingLocation(node.typeKey, BindingLocation.InMainGraph(thisGraphField))
 
         // Expose the graph as a provider field
         // TODO this isn't always actually needed but different than the instance field above
@@ -334,7 +351,7 @@ internal class IrGraphGenerator(
               )
             }
         providerFields[node.typeKey] = graphProviderField
-        bindingLocations[node.typeKey] = BindingLocation.InMainGraph(graphProviderField)
+        addBindingLocation(node.typeKey, BindingLocation.InMainGraph(graphProviderField))
       }
 
       // Add instance fields for all the parent graphs
@@ -417,7 +434,7 @@ internal class IrGraphGenerator(
               }
           }
           // Add to bindingLocations so shards can find it
-          bindingLocations[typeKey] = BindingLocation.InMainGraph(field)
+          addBindingLocation(typeKey, BindingLocation.InMainGraph(field))
         }
       }
 
@@ -465,7 +482,7 @@ internal class IrGraphGenerator(
                 }
               }
           providerFields[key] = accessorField
-          bindingLocations[key] = BindingLocation.InMainGraph(accessorField)
+          addBindingLocation(key, BindingLocation.InMainGraph(accessorField))
         }
       }
 
@@ -490,7 +507,7 @@ internal class IrGraphGenerator(
               }
 
           providerFields[deferredTypeKey] = field
-          bindingLocations[deferredTypeKey] = BindingLocation.InMainGraph(field)
+          addBindingLocation(deferredTypeKey, BindingLocation.InMainGraph(field))
           field
         }
 
@@ -554,7 +571,11 @@ internal class IrGraphGenerator(
             
             // Create shard classes - batch creation for better performance
             val startShardGen = System.currentTimeMillis()
+            
+            // Generate shards - could potentially be parallelized in the future
+            // For now, generate them sequentially but with optimized creation
             shardingResult.shards.forEach { shardInfo ->
+              val shardStartTime = System.currentTimeMillis()
               val shard = IrGraphShard(
                 metroContext = metroContext,
                 parentGraph = graphClass,
@@ -596,11 +617,16 @@ internal class IrGraphGenerator(
               
               // Track which bindings are in which shard
               shardInfo.bindings.forEach { binding ->
-                bindingToShard[binding] = shard
+                addBindingToShard(binding, shard)
                 // Also populate the location cache for O(1) lookups
                 shard.getFieldForKey(binding.typeKey)?.let { field ->
-                  bindingLocations[binding.typeKey] = BindingLocation.InShard(shard, field)
+                  addBindingLocation(binding.typeKey, BindingLocation.InShard(shard, field))
                 }
+              }
+              
+              val shardGenTime = System.currentTimeMillis() - shardStartTime
+              if (shardGenTime > 100) {
+                shardingLogger.log("  Shard ${shardInfo.index} generated in ${shardGenTime}ms (${shardInfo.bindings.size} bindings)")
               }
             }
             
@@ -658,9 +684,9 @@ internal class IrGraphGenerator(
             
             // Don't initialize the field here - defer ALL initialization to constructor
             providerFields[key] = field
-            fieldsToTypeKeys[field] = key
+            addFieldToTypeKey(field, key)
             // Populate location cache for main graph bindings
-            bindingLocations[key] = BindingLocation.InMainGraph(field)
+            addBindingLocation(key, BindingLocation.InMainGraph(field))
             
             // Store the field and shard mapping for later initialization
             // These MUST be initialized AFTER shard instances are created
@@ -707,7 +733,7 @@ internal class IrGraphGenerator(
                   }
                 }
             providerFields[key] = field
-            bindingLocations[key] = BindingLocation.InMainGraph(field)
+            addBindingLocation(key, BindingLocation.InMainGraph(field))
           }
         }
 
@@ -728,7 +754,7 @@ internal class IrGraphGenerator(
           // Find the location of the actual binding and map the alias to the same location
           val actualLocation = bindingLocations[currentBinding.typeKey]
           if (actualLocation != null) {
-            bindingLocations[binding.typeKey] = actualLocation
+            addBindingLocation(binding.typeKey, actualLocation)
           }
         }
       }
@@ -1957,34 +1983,161 @@ internal class IrGraphGenerator(
       }
 
       else -> {
-        // buildSet(<size>) { ... }
-        callee = symbols.buildSetWithCapacity
-        args = buildList {
-          add(irInt(size))
-          add(
-            irLambda(
-              parent = parent,
-              receiverParameter = irBuiltIns.mutableSetClass.typeWith(elementType),
-              valueParameters = emptyList(),
-              returnType = irBuiltIns.unitType,
-              suspend = false,
-            ) { function ->
-              // This is the mutable set receiver
-              val functionReceiver = function.extensionReceiverParameterCompat!!
-              binding.sourceBindings
-                .map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
-                .forEach { provider ->
-                  +irInvoke(
-                    dispatchReceiver = irGet(functionReceiver),
-                    callee = symbols.mutableSetAdd.symbol,
-                    args =
-                      listOf(
-                        generateMultibindingArgument(provider, generationContext, fieldInitKey)
-                      ),
+        // For sets larger than 1, we need to split the building process to avoid method size limits
+        val setChunkSize = 3 // Small chunks to avoid method size issues
+        
+        if (size > setChunkSize) {
+          // Generate helper functions for large sets
+          // In shard contexts, parent is the constructor, so we need to get the containing class
+          val parentClass: IrClass = when {
+            generationContext.isShardInitialization && generationContext.currentShardClass != null -> {
+              generationContext.currentShardClass!!
+            }
+            parent is IrClass -> parent
+            parent is IrFunction -> (parent as IrFunction).parentAsClass as IrClass
+            else -> error("Cannot determine parent class in context: parent is ${parent::class.simpleName}")
+          } as IrClass
+          
+          val sourceBindings = binding.sourceBindings.map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
+          val chunks = sourceBindings.chunked(setChunkSize)
+          
+          // Use internal visibility in shard contexts to avoid synthetic accessor issues
+          val helperVisibility = if (generationContext.isShardInitialization) {
+            DescriptorVisibilities.INTERNAL
+          } else {
+            DescriptorVisibilities.PRIVATE
+          }
+          
+          // Generate chunk helper functions that populate the set
+          val chunkHelpers = chunks.mapIndexed { index, chunk ->
+            parentClass.addFunction {
+              name = Name.identifier("populate${binding.nameHint}SetChunk$index")
+              visibility = helperVisibility
+              returnType = irBuiltIns.unitType
+            }.apply {
+              // Set the dispatch receiver parameter for this member function
+              val correctReceiver = parentClass.thisReceiver
+              if (correctReceiver != null) {
+                val localReceiver = correctReceiver.copyTo(this)
+                setDispatchReceiver(localReceiver)
+              }
+              
+              // Add parameter for the mutable set
+              addValueParameter {
+                name = Name.identifier("set")
+                type = irBuiltIns.mutableSetClass.typeWith(elementType)
+              }
+            }
+          }
+          
+          // Generate bodies for chunk helpers
+          chunkHelpers.forEachIndexed { index, chunkHelper ->
+            val chunk = chunks[index]
+            chunkHelper.body = createIrBuilder(chunkHelper.symbol).irBlockBody {
+              val setParam = chunkHelper.regularParameters[0]
+              
+              chunk.forEach { provider ->
+                +irInvoke(
+                  dispatchReceiver = irGet(setParam),
+                  callee = symbols.mutableSetAdd.symbol,
+                  args = listOf(
+                    generateMultibindingArgument(
+                      provider, 
+                      generationContext.withReceiver(chunkHelper.dispatchReceiverParameter!!),
+                      fieldInitKey
+                    )
                   )
-                }
+                )
+              }
+            }
+          }
+          
+          // Generate the main builder helper function
+          val mainHelper = parentClass.addFunction {
+            name = Name.identifier("build${binding.nameHint}Set")
+            visibility = helperVisibility
+            returnType = binding.typeKey.type
+          }.apply {
+            // Set the dispatch receiver parameter for this member function
+            val correctReceiver = parentClass.thisReceiver
+            if (correctReceiver != null) {
+              val localReceiver = correctReceiver.copyTo(this)
+              setDispatchReceiver(localReceiver)
+            }
+          }
+          
+          // Generate the body of the main helper
+          mainHelper.body = createIrBuilder(mainHelper.symbol).irBlockBody {
+            // Create mutable set
+            val mutableSet = irTemporary(
+              irInvoke(
+                callee = symbols.mutableSetOf,
+                typeHint = irBuiltIns.mutableSetClass.typeWith(elementType),
+                typeArgs = listOf(elementType)
+              ),
+              nameHint = "mutableSet"
+            )
+            
+            // Call each chunk helper to populate the set
+            chunkHelpers.forEach { chunkHelper ->
+              +irInvoke(
+                dispatchReceiver = irGet(mainHelper.dispatchReceiverParameter!!),
+                callee = chunkHelper.symbol,
+                args = listOf(irGet(mutableSet))
+              )
+            }
+            
+            // Return as immutable set
+            +irReturn(
+              irInvoke(
+                callee = symbols.toSet,
+                typeHint = binding.typeKey.type,
+                extensionReceiver = irGet(mutableSet)
+              )
+            )
+          }
+          
+          // Return call to the helper function
+          return irInvoke(
+            callee = mainHelper.symbol,
+            typeHint = binding.typeKey.type,
+            dispatchReceiver = if (mainHelper.dispatchReceiverParameter != null) {
+              irGet(generationContext.thisReceiver)
+            } else {
+              null
             }
           )
+        } else {
+          // Small sets can use the lambda approach
+          // buildSet(<size>) { ... }
+          callee = symbols.buildSetWithCapacity
+          args = buildList {
+            add(irInt(size))
+            add(
+              irLambda(
+                parent = parent,
+                receiverParameter = irBuiltIns.mutableSetClass.typeWith(elementType),
+                valueParameters = emptyList(),
+                returnType = irBuiltIns.unitType,
+                suspend = false,
+              ) { function ->
+                // This is the mutable set receiver
+                val functionReceiver = function.extensionReceiverParameterCompat!!
+                binding.sourceBindings
+                  .map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
+                  .forEach { provider ->
+                    +irInvoke(
+                      dispatchReceiver = irGet(functionReceiver),
+                      callee = symbols.mutableSetAdd.symbol,
+                      args =
+                        listOf(
+                          generateMultibindingArgument(provider, generationContext, fieldInitKey)
+                        ),
+                    )
+                  }
+              }
+            )
+          }
         }
       }
     }
@@ -2131,10 +2284,11 @@ internal class IrGraphGenerator(
       }
     }
 
-    // For very large maps, we need to split the building process to avoid method size limits
+    // For maps, we need to split the building process to avoid method size limits
     // Map multibindings generate significantly more bytecode per entry than regular bindings
     // Each put() call can generate hundreds of bytecode instructions if the value is complex
-    val mapChunkSize = 10 // Much smaller chunks for map multibindings
+    // ViewModelFactory maps are especially problematic
+    val mapChunkSize = 2 // Small chunks for map multibindings
     
     if (size > mapChunkSize) {
       // Generate inline logic for large maps
@@ -2173,7 +2327,7 @@ internal class IrGraphGenerator(
         }
       }
       
-      // Generate chunk helper functions
+      // Generate chunk helper functions that populate a MutableMap
       val chunkHelpers = chunks.mapIndexed { index, chunk ->
         parentClass.addFunction {
           name = Name.identifier("populate${binding.nameHint}MapChunk$index")
@@ -2188,14 +2342,17 @@ internal class IrGraphGenerator(
             setDispatchReceiver(localReceiver)
           }
           
-          // Add builder parameter
+          // Add mutable map parameter
           addValueParameter {
-            name = Name.identifier("builder")
-            type = if (useProviderFactory) {
-              valueProviderSymbols.mapProviderFactoryBuilder.typeWith(keyType, valueType)
-            } else {
-              valueProviderSymbols.mapFactoryBuilder.typeWith(keyType, valueType)
-            }
+            name = Name.identifier("map")
+            type = irBuiltIns.mutableMapClass.typeWith(
+              keyType,
+              if (useProviderFactory) {
+                rawValueType.wrapInProvider(symbols.metroProvider)
+              } else {
+                rawValueType
+              }
+            )
           }
         }
       }
@@ -2204,12 +2361,7 @@ internal class IrGraphGenerator(
       chunkHelpers.forEachIndexed { index, chunkHelper ->
         val chunk = chunks[index]
         chunkHelper.body = createIrBuilder(chunkHelper.symbol).irBlockBody {
-          val builderParam = chunkHelper.regularParameters[0]
-          val putFunction = if (useProviderFactory) {
-            valueProviderSymbols.mapProviderFactoryBuilderPutFunction
-          } else {
-            valueProviderSymbols.mapFactoryBuilderPutFunction
-          }
+          val mapParam = chunkHelper.regularParameters[0]
           
           // Add each entry in the chunk
           chunk.forEach { sourceBinding ->
@@ -2218,9 +2370,10 @@ internal class IrGraphGenerator(
               TODO("putAll isn't yet supported in large map helpers")
             }
             
+            // Put directly into the mutable map
             +irInvoke(
-              dispatchReceiver = irGet(builderParam),
-              callee = putFunction,
+              dispatchReceiver = irGet(mapParam),
+              callee = symbols.mutableMapPut.symbol,
               args = listOf(
                 generateMapKeyLiteral(sourceBinding),
                 generateBindingCode(

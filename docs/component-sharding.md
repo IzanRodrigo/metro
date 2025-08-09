@@ -80,6 +80,15 @@ interface MyGraph {
 - **Runtime**: Minimal runtime overhead - just an extra field access for sharded bindings
 - **Memory**: Each shard is a separate object, but memory overhead is minimal
 
+### Performance Optimizations (as of v1.x.x)
+
+Metro includes several optimizations to improve shard generation performance:
+
+- **Adaptive Chunking**: Method chunk sizes are dynamically adjusted based on binding complexity
+- **Complexity Analysis**: Each binding's bytecode complexity is estimated to prevent method size overflows
+- **Helper Method Generation**: Very complex bindings (>80 complexity score) are automatically extracted to helper methods
+- **Pre-computed Complexity**: Binding complexity is cached during analysis to avoid redundant calculations
+
 ## When to Use Sharding
 
 Consider enabling sharding with a lower threshold if you:
@@ -96,21 +105,29 @@ If you encounter errors like:
 - "The code for the static initializer is exceeding the 65535 bytes limit"
 - "Too many constants in constant pool" 
 - "Method code too large"
+- "Method too large: es/bancosantander/apps/mobile/android/di/components/ApplicationComponent$$$MetroGraph$GraphShard1.initChunkXX"
 
 Try these solutions:
 
 1. **Reduce `bindingsPerGraphShard`**: Creates smaller shards with fewer bindings each
 2. **Refactor complex bindings**: Consider breaking up bindings that have many dependencies
+3. **Check for extremely large multibindings**: These are automatically handled but may still need smaller shard sizes
 
 Example configuration for projects with very complex bindings:
 
 ```kotlin
 metro {
-  bindingsPerGraphShard = 50 // Smaller shards
+  bindingsPerGraphShard = 30 // Much smaller shards for complex graphs
 }
 ```
 
-Note: Metro now automatically handles extremely large multibindings (maps and sets with many entries) by splitting their initialization across multiple statements, so "Method too large" errors from large ViewModelFactories or similar multibindings should no longer occur.
+Metro's enhanced complexity analysis (v1.x.x+) automatically:
+- Detects bindings that generate excessive bytecode
+- Adjusts chunk sizes based on binding complexity
+- Extracts complex bindings to helper methods
+- Splits initialization across multiple methods when needed
+
+If you still encounter "Method too large" errors after reducing the shard size, it likely indicates individual bindings with extreme complexity that should be refactored.
 
 ### Compilation Warnings
 
@@ -132,10 +149,23 @@ Metro uses an intelligent sharding algorithm that:
 
 ### Method Size Considerations
 
-Metro automatically handles method size limitations in two ways:
+Metro automatically handles method size limitations through several strategies:
 
-1. **Chunking**: Bindings within shards are distributed across multiple initialization methods to avoid exceeding JVM method size limits
-2. **Large Multibinding Handling**: Map and set multibindings with many entries (>50) are automatically split into smaller chunks during initialization to prevent any single expression from becoming too large
+1. **Adaptive Chunking**: Bindings within shards are distributed across multiple initialization methods with dynamic chunk sizes based on complexity:
+   - Extremely complex bindings (>100 complexity): 1 binding per method
+   - Very complex bindings (>30 avg complexity): 2 bindings per method
+   - Complex bindings (>20 avg complexity): 3 bindings per method
+   - Moderate complexity (>10 avg complexity): 4 bindings per method
+   - Default: 5 bindings per method
+
+2. **Complexity-Based Partitioning**: Chunks are created considering both binding count and cumulative complexity to prevent any single method from exceeding bytecode limits
+
+3. **Helper Method Extraction**: Bindings that meet these criteria are automatically extracted to dedicated helper methods:
+   - Complexity score > 80
+   - Multibindings with > 30 source bindings
+   - Bindings with > 20 dependencies
+
+4. **Large Multibinding Handling**: Map and set multibindings with many entries are automatically split into smaller chunks during initialization
 
 ## Future Enhancements
 

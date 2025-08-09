@@ -17,7 +17,7 @@ import okio.Buffer
 import org.intellij.lang.annotations.Language
 import org.jetbrains.kotlin.compiler.plugin.CliOption
 import org.jetbrains.kotlin.compiler.plugin.CommandLineProcessor
-import org.jetbrains.kotlin.config.JVMConfigurationKeys.JVM_TARGET
+import org.jetbrains.kotlin.config.JvmTarget
 import org.junit.Rule
 import org.junit.rules.TemporaryFolder
 
@@ -71,7 +71,7 @@ abstract class MetroCompilerTest {
       inheritClassPath = true
       sources = sourceFiles.asList()
       verbose = false
-      jvmTarget = JVM_TARGET
+      jvmTarget = JvmTarget.JVM_17
       // TODO this is needed until/unless we implement JVM reflection support for DefaultImpls
       //  invocations
       kotlincArguments += "-Xjvm-default=all"
