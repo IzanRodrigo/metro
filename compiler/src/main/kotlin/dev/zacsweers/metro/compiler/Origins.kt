@@ -53,4 +53,6 @@ internal object Origins {
     IrDeclarationOrigin.GeneratedByPlugin(Keys.BindingMirrorClassDeclaration)
   val GraphShard: IrDeclarationOrigin =
     IrDeclarationOrigin.GeneratedByPlugin(Keys.GraphShard)
+  val SwitchingProvider: IrDeclarationOrigin =
+    IrDeclarationOrigin.GeneratedByPlugin(Keys.SwitchingProvider)
 }

@@ -96,8 +96,11 @@ internal class GraphShardingStrategy(
   }
   
   /**
-   * Distributes SCCs across shards while respecting size constraints.
+   * Distributes SCCs across shards while respecting size constraints AND dependency order.
    * SCCs are kept together to avoid circular dependencies between shards.
+   * 
+   * CRITICAL: Dependencies must be placed in EARLIER shards (lower index) than their dependents.
+   * This ensures that when a shard initializes, all its dependencies in other shards already exist.
    */
   private fun distributeSccsToShards(
     bindingsByScc: Map<Int, List<IrBinding>>,
@@ -107,20 +110,43 @@ internal class GraphShardingStrategy(
     val shards = mutableListOf<ShardInfo>()
     val sccToShard = mutableMapOf<Int, Int>()
     
-    // Sort SCCs by size (largest first) to optimize packing
-    val sortedSccs = bindingsByScc.entries.sortedByDescending { it.value.size }
+    // Build SCC dependency graph
+    val sccAdjacency = mutableMapOf<Int, MutableSet<Int>>()
+    for ((sccId, bindings) in bindingsByScc) {
+      sccAdjacency[sccId] = mutableSetOf()
+      for (binding in bindings) {
+        for (depKey in adjacency[binding.typeKey] ?: emptySet()) {
+          val depSccId = componentOf[depKey] ?: continue
+          if (depSccId != sccId) {
+            sccAdjacency[sccId]!!.add(depSccId)
+          }
+        }
+      }
+    }
+    
+    // Perform topological sort on SCCs
+    val sortedSccs = topologicalSortSccs(bindingsByScc.keys, sccAdjacency)
     
     var currentShardBindings = mutableListOf<IrBinding>()
     var currentShardIndex = 1
     
-    for ((sccId, sccBindings) in sortedSccs) {
-      // If adding this SCC would exceed the limit, create a new shard
-      if (currentShardBindings.isNotEmpty() && 
-          currentShardBindings.size + sccBindings.size > bindingsPerShard) {
-        // Finalize current shard
-        shards.add(createShardInfo(currentShardIndex, currentShardBindings))
-        currentShardBindings = mutableListOf()
-        currentShardIndex++
+    // Process SCCs in REVERSE topological order (dependencies first)
+    for (sccId in sortedSccs.reversed()) {
+      val sccBindings = bindingsByScc[sccId] ?: continue
+      
+      // Check if this SCC must go in a new shard due to dependencies
+      val mustCreateNewShard = needsNewShardForDependencies(sccId, sccAdjacency, sccToShard, currentShardIndex)
+      
+      // If adding this SCC would exceed the limit OR dependencies require it, create a new shard
+      if (mustCreateNewShard || 
+          (currentShardBindings.isNotEmpty() && 
+           currentShardBindings.size + sccBindings.size > bindingsPerShard)) {
+        // Finalize current shard if it has bindings
+        if (currentShardBindings.isNotEmpty()) {
+          shards.add(createShardInfo(currentShardIndex, currentShardBindings))
+          currentShardBindings = mutableListOf()
+          currentShardIndex++
+        }
       }
       
       // Add all bindings from this SCC to current shard
@@ -138,6 +164,97 @@ internal class GraphShardingStrategy(
       val dependencies = calculateShardDependencies(shard, shards, componentOf, adjacency, sccToShard)
       shard.copy(dependencies = dependencies)
     }
+  }
+  
+  /**
+   * Performs topological sort on SCCs to ensure proper ordering
+   * Uses iterative approach to avoid stack overflow with deep recursion
+   */
+  private fun topologicalSortSccs(
+    sccIds: Set<Int>,
+    sccAdjacency: Map<Int, Set<Int>>
+  ): List<Int> {
+    // Use Kahn's algorithm (iterative) instead of DFS to avoid stack overflow
+    val inDegree = mutableMapOf<Int, Int>()
+    val result = mutableListOf<Int>()
+    
+    // Initialize in-degrees
+    for (sccId in sccIds) {
+      inDegree[sccId] = 0
+    }
+    
+    // Calculate in-degrees
+    for (sccId in sccIds) {
+      for (dep in sccAdjacency[sccId] ?: emptySet()) {
+        if (dep in sccIds) {
+          inDegree[dep] = (inDegree[dep] ?: 0) + 1
+        }
+      }
+    }
+    
+    // Find all nodes with no incoming edges
+    val queue = ArrayDeque<Int>()
+    for ((sccId, degree) in inDegree) {
+      if (degree == 0) {
+        queue.add(sccId)
+      }
+    }
+    
+    // Build reverse adjacency for efficient lookup
+    val reverseAdjacency = mutableMapOf<Int, MutableSet<Int>>()
+    for (sccId in sccIds) {
+      for (dep in sccAdjacency[sccId] ?: emptySet()) {
+        if (dep in sccIds) {
+          reverseAdjacency.getOrPut(dep) { mutableSetOf() }.add(sccId)
+        }
+      }
+    }
+    
+    // Process nodes in topological order
+    while (queue.isNotEmpty()) {
+      val current = queue.removeFirst()
+      result.add(current)
+      
+      // For each node that depends on current (using reverse adjacency for O(1) lookup)
+      for (dependent in reverseAdjacency[current] ?: emptySet()) {
+        inDegree[dependent] = inDegree[dependent]!! - 1
+        if (inDegree[dependent] == 0) {
+          queue.add(dependent)
+        }
+      }
+    }
+    
+    // If we couldn't process all SCCs, there's a cycle (shouldn't happen with proper SCC detection)
+    // Return remaining SCCs in arbitrary order
+    if (result.size < sccIds.size) {
+      for (sccId in sccIds) {
+        if (sccId !in result) {
+          result.add(sccId)
+        }
+      }
+    }
+    
+    return result
+  }
+  
+  /**
+   * Checks if an SCC needs to be in a new shard due to its dependencies
+   */
+  private fun needsNewShardForDependencies(
+    sccId: Int,
+    sccAdjacency: Map<Int, Set<Int>>,
+    sccToShard: Map<Int, Int>,
+    currentShardIndex: Int
+  ): Boolean {
+    // Check if any of this SCC's dependencies are in the current or later shards
+    for (dep in sccAdjacency[sccId] ?: emptySet()) {
+      val depShardIndex = sccToShard[dep] ?: continue
+      if (depShardIndex >= currentShardIndex) {
+        // Dependency is in current or later shard - we need a new shard
+        return true
+      }
+    }
+    return false
   }
   
   /**

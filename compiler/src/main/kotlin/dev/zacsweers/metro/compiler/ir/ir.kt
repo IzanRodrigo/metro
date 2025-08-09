@@ -48,6 +48,7 @@ import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.ir.builders.irBoolean
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irVararg
 import org.jetbrains.kotlin.ir.declarations.DelicateIrParameterIndexSetter
@@ -262,6 +263,14 @@ internal fun irType(
 internal fun IrGeneratorContext.createIrBuilder(symbol: IrSymbol): DeclarationIrBuilder {
   return DeclarationIrBuilder(this, symbol, symbol.owner.startOffset, symbol.owner.endOffset)
 }
+
+internal fun IrBuilderWithScope.irEquals(left: IrExpression, right: IrExpression): IrExpression =
+  irCall(context.irBuiltIns.eqeqSymbol.owner).apply {
+    arguments[0] = left
+    arguments[1] = right
+  }
+
+internal fun IrBuilderWithScope.irTrue(): IrExpression = irBoolean(true)
 
 internal fun IrBuilderWithScope.irInvoke(
   /**

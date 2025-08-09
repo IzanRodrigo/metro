@@ -136,6 +136,12 @@ internal class IrGraphGenerator(
   private val fieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
   
+  /**
+   * List of field initializers that depend on shards being created.
+   * These must be initialized AFTER shard instances are created.
+   */
+  private val shardDependentFieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
+  
   // Sharding support
   private val shards = mutableListOf<IrGraphShard>()
   private val bindingToShard = mutableMapOf<IrBinding, IrGraphShard>()
@@ -178,18 +184,29 @@ internal class IrGraphGenerator(
         // Don't add it if it's not used
         if (typeKey !in sealResult.reachableKeys) return
 
-        providerFields[typeKey] =
-          addField(
-              fieldName =
-                fieldNameAllocator.newName(
-                  name.asString().suffixIfNot("Instance").suffixIfNot("Provider").decapitalizeUS()
-                ),
-              fieldType = symbols.metroProvider.typeWith(typeKey.type),
-              fieldVisibility = DescriptorVisibilities.PRIVATE,
-            )
-            .initFinal {
-              instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
-            }
+        // When sharding might be enabled (threshold is set), fields need to be internal so nested shard classes
+        // can access them without synthetic accessors (which cause dispatch receiver type mismatches)
+        val fieldVisibility = if (options.bindingsPerGraphShard < Int.MAX_VALUE) {
+          DescriptorVisibilities.INTERNAL
+        } else {
+          DescriptorVisibilities.PRIVATE
+        }
+
+        val field = addField(
+          fieldName =
+            fieldNameAllocator.newName(
+              name.asString().suffixIfNot("Instance").suffixIfNot("Provider").decapitalizeUS()
+            ),
+          fieldType = symbols.metroProvider.typeWith(typeKey.type),
+          fieldVisibility = fieldVisibility,
+        )
+          .initFinal {
+            instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
+          }
+        
+        providerFields[typeKey] = field
+        // Also add to bindingLocations so shards can find it
+        bindingLocations[typeKey] = BindingLocation.InMainGraph(field)
       }
 
       node.creator?.let { creator ->
@@ -223,6 +240,8 @@ internal class IrGraphGenerator(
                 irGet(irParam)
               }
             instanceFields[graphDep.typeKey] = graphDepField
+            // Add to bindingLocations so shards can find it
+            bindingLocations[graphDep.typeKey] = BindingLocation.InMainGraph(graphDepField)
 
             if (graphDep.isExtendable) {
               // Extended graphs
@@ -287,18 +306,26 @@ internal class IrGraphGenerator(
           }
 
         instanceFields[node.typeKey] = thisGraphField
+        // Add to bindingLocations so shards can find it
+        bindingLocations[node.typeKey] = BindingLocation.InMainGraph(thisGraphField)
 
         // Expose the graph as a provider field
         // TODO this isn't always actually needed but different than the instance field above
         //  would be nice if we could determine if this field is unneeded
-        providerFields[node.typeKey] =
-          addField(
+        // When sharding might be enabled (threshold is set), fields need to be internal so nested shard classes
+        // can access them without synthetic accessors (which cause dispatch receiver type mismatches)
+        val providerFieldVisibility = if (options.bindingsPerGraphShard < Int.MAX_VALUE) {
+          DescriptorVisibilities.INTERNAL
+        } else {
+          DescriptorVisibilities.PRIVATE
+        }
+        val graphProviderField = addField(
               fieldName =
                 fieldNameAllocator.newName(
                   node.sourceGraph.name.asString().decapitalizeUS().suffixIfNot("Provider")
                 ),
               fieldType = symbols.metroProvider.typeWith(node.typeKey.type),
-              fieldVisibility = DescriptorVisibilities.PRIVATE,
+              fieldVisibility = providerFieldVisibility,
             )
             .initFinal {
               instanceFactory(
@@ -306,6 +333,8 @@ internal class IrGraphGenerator(
                 irGetField(irGet(thisReceiverParameter), thisGraphField),
               )
             }
+        providerFields[node.typeKey] = graphProviderField
+        bindingLocations[node.typeKey] = BindingLocation.InMainGraph(graphProviderField)
       }
 
       // Add instance fields for all the parent graphs
@@ -348,7 +377,7 @@ internal class IrGraphGenerator(
           }
 
           val typeKey = contextualTypeKey.typeKey
-          instanceFields.getOrPut(typeKey) {
+          val field = instanceFields.getOrPut(typeKey) {
             addField(
                 fieldName =
                   fieldNameAllocator.newName(
@@ -387,6 +416,8 @@ internal class IrGraphGenerator(
                 )
               }
           }
+          // Add to bindingLocations so shards can find it
+          bindingLocations[typeKey] = BindingLocation.InMainGraph(field)
         }
       }
 
@@ -412,8 +443,7 @@ internal class IrGraphGenerator(
         if (key in sealResult.reachableKeys) {
           val getter = binding.getter
           // Init a provider field pointing at this
-          providerFields[key] =
-            addField(
+          val accessorField = addField(
                 fieldName =
                   fieldNameAllocator.newName(
                     "${getter.name.asString().decapitalizeUS().removeSuffix(Symbols.StringNames.METRO_ACCESSOR_SUFFIX)}Provider"
@@ -434,6 +464,8 @@ internal class IrGraphGenerator(
                   )
                 }
               }
+          providerFields[key] = accessorField
+          bindingLocations[key] = BindingLocation.InMainGraph(accessorField)
         }
       }
 
@@ -458,6 +490,7 @@ internal class IrGraphGenerator(
               }
 
           providerFields[deferredTypeKey] = field
+          bindingLocations[deferredTypeKey] = BindingLocation.InMainGraph(field)
           field
         }
 
@@ -519,7 +552,8 @@ internal class IrGraphGenerator(
               }
             }
             
-            // Create shard classes
+            // Create shard classes - batch creation for better performance
+            val startShardGen = System.currentTimeMillis()
             shardingResult.shards.forEach { shardInfo ->
               val shard = IrGraphShard(
                 metroContext = metroContext,
@@ -527,6 +561,7 @@ internal class IrGraphGenerator(
                 shardName = shardInfo.name,
                 shardIndex = shardInfo.index,
                 bindings = shardInfo.bindings,
+                bindingGraph = bindingGraph,
                 bindingGenerator = { binding, thisReceiver, shardProviderFields ->
                   createIrBuilder(symbol).run {
                     // Use shard initialization context with O(1) field lookup
@@ -569,19 +604,22 @@ internal class IrGraphGenerator(
               }
             }
             
-            // Initialize shard fields in constructor
-            shards.forEach { shard ->
-              constructorStatements.add { thisReceiver ->
-                irSetField(
-                  receiver = irGet(thisReceiver),
-                  field = shard.shardField,
-                  value = irInvoke(
-                    callee = shard.shardClass.primaryConstructor!!.symbol,
-                    args = listOf(irGet(thisReceiver)) // Pass the parent graph instance to the shard
-                  )
-                )
+            val shardGenTime = System.currentTimeMillis() - startShardGen
+            shardingLogger.log("Generated ${shards.size} shard classes in ${shardGenTime}ms")
+            
+            // Generate debug reports for all shards after creation (non-critical path)
+            if (debug) {
+              shardingLogger.log("Generating debug reports for shards...")
+              val debugStart = System.currentTimeMillis()
+              shards.forEach { shard ->
+                shard.generateDebugReports()
               }
+              val debugTime = System.currentTimeMillis() - debugStart
+              shardingLogger.log("Generated debug reports in ${debugTime}ms")
             }
+            
+            // DON'T initialize shards here - they need to be initialized AFTER parent fields
+            // We'll add shard initialization at the end of constructorStatements after all fields are set
           }
         }
         .forEach { binding ->
@@ -600,6 +638,14 @@ internal class IrGraphGenerator(
               }
             }
             
+            // When sharding might be enabled (threshold is set), fields need to be internal so nested shard classes
+            // can access them without synthetic accessors (which cause dispatch receiver type mismatches)
+            val fieldVisibility = if (options.bindingsPerGraphShard < Int.MAX_VALUE) {
+              DescriptorVisibilities.INTERNAL
+            } else {
+              DescriptorVisibilities.PRIVATE
+            }
+            
             val field = addField(
               fieldName = fieldNameAllocator.newName(
                 binding.nameHint.decapitalizeUS().suffixIfNot(
@@ -607,7 +653,7 @@ internal class IrGraphGenerator(
                 )
               ),
               fieldType = fieldType,
-              fieldVisibility = DescriptorVisibilities.PRIVATE,
+              fieldVisibility = fieldVisibility,
             )
             
             // Don't initialize the field here - defer ALL initialization to constructor
@@ -617,9 +663,9 @@ internal class IrGraphGenerator(
             bindingLocations[key] = BindingLocation.InMainGraph(field)
             
             // Store the field and shard mapping for later initialization
-            // We'll initialize these after all shard instances are created
+            // These MUST be initialized AFTER shard instances are created
             val shardBinding = binding to shard
-            fieldInitializers.add(field to { thisReceiver, _ ->
+            shardDependentFieldInitializers.add(field to { thisReceiver, _ ->
               shardBinding.second.generateAccessorExpression(shardBinding.first, thisReceiver)
             })
           } else {
@@ -661,9 +707,32 @@ internal class IrGraphGenerator(
                   }
                 }
             providerFields[key] = field
+            bindingLocations[key] = BindingLocation.InMainGraph(field)
           }
         }
 
+      // After processing all regular bindings, also track alias bindings in bindingLocations
+      // Aliases point to the same field as their underlying binding
+      for (typeKey in sealResult.reachableKeys) {
+        val binding = bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
+        if (binding is IrBinding.Alias) {
+          // Resolve the alias to find the actual binding
+          var currentBinding: IrBinding = binding
+          val seen = mutableSetOf<IrBinding>()
+          while (currentBinding is IrBinding.Alias) {
+            if (!seen.add(currentBinding)) {
+              error("Circular alias detected for binding: ${binding.typeKey}")
+            }
+            currentBinding = currentBinding.aliasedBinding(bindingGraph, IrBindingStack.empty())
+          }
+          // Find the location of the actual binding and map the alias to the same location
+          val actualLocation = bindingLocations[currentBinding.typeKey]
+          if (actualLocation != null) {
+            bindingLocations[binding.typeKey] = actualLocation
+          }
+        }
+      }
+      
       // Add statements to our constructor's deferred fields _after_ we've added all provider
       // fields for everything else. This is important in case they reference each other
       for ((deferredTypeKey, field) in deferredFields) {
@@ -694,15 +763,41 @@ internal class IrGraphGenerator(
         }
       }
 
+      // TWO-PHASE INITIALIZATION:
+      // Phase 1: Create shard instances (constructor only stores parent reference)
+      val shardCreateStatements = mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
+      // Phase 2: Initialize shards (populate all provider fields)
+      val shardInitStatements = mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
+      
+      if (shards.isNotEmpty()) {
+        shards.forEach { shard ->
+          // Phase 1: Create the shard instance
+          shardCreateStatements.add { thisReceiver ->
+            irSetField(
+              receiver = irGet(thisReceiver),
+              field = shard.shardField,
+              value = irInvoke(
+                callee = shard.shardClass.primaryConstructor!!.symbol,
+                args = listOf(irGet(thisReceiver)) // Pass the parent graph instance to the shard
+              )
+            )
+          }
+          
+          // Shard is initialized in its constructor (single-phase init)
+          // No need for separate initialization call
+        }
+      }
+
       if (
         options.chunkFieldInits &&
-          fieldInitializers.size + initStatements.size > STATEMENTS_PER_METHOD
+          fieldInitializers.size + shardDependentFieldInitializers.size + initStatements.size > STATEMENTS_PER_METHOD
       ) {
         // Larger graph, split statements
-        // Chunk our constructor statements and split across multiple init functions
+        
+        // First, chunk the parent field initializers ONLY (not shard-dependent stuff)
         val chunks =
           buildList<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement> {
-              // Add field initializers first
+              // Add regular field initializers first
               for ((field, init) in fieldInitializers) {
                 add { thisReceiver ->
                   irSetField(
@@ -715,6 +810,7 @@ internal class IrGraphGenerator(
               for (statement in initStatements) {
                 add { thisReceiver -> statement(thisReceiver) }
               }
+              // DO NOT add shardDependentFieldInitializers here - they need shards to exist first
             }
             .chunked(STATEMENTS_PER_METHOD)
 
@@ -732,6 +828,8 @@ internal class IrGraphGenerator(
                 }
               }
           }
+        
+        // STEP 1: Initialize ALL parent graph fields first
         constructorStatements += buildList {
           for (initFunction in initFunctionsToCall) {
             add { dispatchReceiver ->
@@ -739,8 +837,30 @@ internal class IrGraphGenerator(
             }
           }
         }
+        
+        // STEP 2: Create ALL shard instances (Phase 1 of two-phase init)
+        // Constructors only store parent references, no field initialization
+        constructorStatements += shardCreateStatements
+        
+        // STEP 3: Initialize ALL shards (Phase 2 of two-phase init)
+        // Now that all shards exist, they can safely reference each other
+        constructorStatements += shardInitStatements
+        
+        // STEP 4: Initialize shard-dependent fields in parent (delegates to shards)
+        // Now safe to access shard fields since all shards are fully initialized
+        for ((field, init) in shardDependentFieldInitializers) {
+          constructorStatements.add { thisReceiver ->
+            irSetField(
+              irGet(thisReceiver),
+              field,
+              init(thisReceiver, fieldsToTypeKeys.getValue(field)),
+            )
+          }
+        }
       } else {
         // Small graph, just do it in the constructor
+        
+        // STEP 1: Initialize parent graph regular fields first
         // Assign those initializers directly to their fields and mark them as final
         for ((field, init) in fieldInitializers) {
           field.initFinal {
@@ -749,6 +869,21 @@ internal class IrGraphGenerator(
           }
         }
         constructorStatements += initStatements
+        
+        // STEP 2: Create ALL shard instances (Phase 1 of two-phase init)
+        constructorStatements += shardCreateStatements
+        
+        // STEP 3: Initialize ALL shards (Phase 2 of two-phase init) 
+        constructorStatements += shardInitStatements
+        
+        // STEP 4: Initialize shard-dependent fields in parent (delegates to shards)
+        // Now safe to access shard fields since all shards are fully initialized
+        for ((field, init) in shardDependentFieldInitializers) {
+          field.initFinal {
+            val typeKey = fieldsToTypeKeys.getValue(field)
+            init(thisReceiverParameter, typeKey)
+          }
+        }
       }
 
       // Add extra constructor statements
@@ -759,6 +894,7 @@ internal class IrGraphGenerator(
           for (statement in constructorStatements) {
             +statement(thisReceiverParameter)
           }
+          // Shards are now initialized as part of constructorStatements above
         }
       }
 
@@ -877,13 +1013,21 @@ internal class IrGraphGenerator(
     name: String,
     typeKey: IrTypeKey,
     initializerExpression: IrBuilderWithScope.() -> IrExpression,
-  ): IrField =
-    addField(
+  ): IrField {
+    // When sharding might be enabled (threshold is set), fields need to be internal so nested shard classes
+    // can access them without synthetic accessors (which cause dispatch receiver type mismatches)
+    val fieldVisibility = if (options.bindingsPerGraphShard < Int.MAX_VALUE) {
+      DescriptorVisibilities.INTERNAL
+    } else {
+      DescriptorVisibilities.PRIVATE
+    }
+    return addField(
         fieldName = name,
         fieldType = typeKey.type,
-        fieldVisibility = DescriptorVisibilities.PRIVATE,
+        fieldVisibility = fieldVisibility,
       )
       .initFinal { initializerExpression() }
+  }
 
   private fun DependencyGraphNode.implementOverrides(
     context: GraphGenerationContext,
@@ -1158,13 +1302,50 @@ internal class IrGraphGenerator(
     return params.regularParameters.mapIndexed { i, param ->
       val contextualTypeKey = paramsToMap[i].contextualTypeKey
       val typeKey = contextualTypeKey.typeKey
+      
+      // Resolve alias to actual binding if needed
+      val actualTypeKey = run {
+        val binding = try {
+          bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+        } catch (e: Exception) {
+          null
+        }
+        if (binding is IrBinding.Alias) {
+          // Resolve the alias to find the actual binding's type key
+          var currentBinding: IrBinding = binding
+          val seen = mutableSetOf<IrBinding>()
+          while (currentBinding is IrBinding.Alias) {
+            if (!seen.add(currentBinding)) {
+              error("Circular alias detected for binding: ${binding.typeKey}")
+            }
+            currentBinding = currentBinding.aliasedBinding(bindingGraph, IrBindingStack.empty())
+          }
+          currentBinding.typeKey
+        } else {
+          typeKey
+        }
+      }
+      
+      // Debug logging for dependency resolution in shards
+      if (generationContext.isShardInitialization) {
+        val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+        logger.log("=== Resolving dependency in shard: $typeKey ===")
+        logger.log("  - Parameter name: ${param.name}")
+        logger.log("  - ContextualTypeKey: $contextualTypeKey")
+        logger.log("  - Original TypeKey: $typeKey")
+        logger.log("  - Actual TypeKey (after alias resolution): $actualTypeKey")
+        logger.log("  - In instanceFields: ${actualTypeKey in instanceFields}")
+        logger.log("  - In providerFields: ${actualTypeKey in providerFields}")
+        logger.log("  - In bindingLocations: ${bindingLocations[actualTypeKey]}")
+        logger.log("  - In shardProviderFields: ${generationContext.shardProviderFields?.containsKey(actualTypeKey) ?: false}")
+      }
 
       val metroProviderSymbols = symbols.providerSymbolsFor(contextualTypeKey)
 
       // TODO consolidate this logic with generateBindingCode
       if (!contextualTypeKey.requiresProviderInstance) {
         // IFF the parameter can take a direct instance, try our instance fields
-        instanceFields[typeKey]?.let { instanceField ->
+        instanceFields[actualTypeKey]?.let { instanceField ->
           val receiver = if (generationContext.isShardInitialization) {
             // In shard context, access instance fields through parent graph
             val parentGraphField = generationContext.parentGraphField
@@ -1180,18 +1361,83 @@ internal class IrGraphGenerator(
       }
 
       val providerInstance =
-        if (typeKey in providerFields) {
-          // If it's in provider fields, invoke that field
-          irGetField(irGet(generationContext.thisReceiver), providerFields.getValue(typeKey))
-        } else {
-          // Generate binding code for each param
-          val paramBinding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
-
-          if (paramBinding is IrBinding.Absent) {
-            // Null argument expressions get treated as absent in the final call
-            return@mapIndexed null
+        // First check bindingLocations - this handles both regular fields and aliases
+        if (actualTypeKey in bindingLocations) {
+          val location = bindingLocations[actualTypeKey]!!
+          if (generationContext.isShardInitialization) {
+            val parentGraphField = generationContext.parentGraphField
+              ?: error("Parent graph field not found in shard context for accessing $typeKey")
+            when (location) {
+              is BindingLocation.InMainGraph -> {
+                // Access from main graph
+                val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+                irGetField(parentAccess, location.field)
+              }
+              is BindingLocation.InShard -> {
+                // Check if it's in the current shard
+                val currentShardField = generationContext.shardProviderFields?.get(actualTypeKey)
+                if (currentShardField != null && currentShardField == location.field) {
+                  // It's in the current shard
+                  irGetField(irGet(generationContext.thisReceiver), location.field)
+                } else {
+                  // It's in a different shard, access through parent
+                  val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+                  val shardAccess = irGetField(parentAccess, location.shard.shardField)
+                  irGetField(shardAccess, location.field)
+                }
+              }
+            }
+          } else {
+            // Normal context - use the field from location
+            when (location) {
+              is BindingLocation.InMainGraph -> {
+                irGetField(irGet(generationContext.thisReceiver), location.field)
+              }
+              is BindingLocation.InShard -> {
+                // Should not happen in normal context
+                error("Shard binding accessed in non-shard context: $actualTypeKey")
+              }
+            }
           }
-
+        } else if (actualTypeKey in providerFields) {
+          // Fallback for fields not in bindingLocations (shouldn't happen if everything is tracked)
+          if (generationContext.isShardInitialization) {
+            // Check if field is in current shard
+            val shardField = generationContext.shardProviderFields?.get(actualTypeKey)
+            if (shardField != null) {
+              // Field is in current shard
+              irGetField(irGet(generationContext.thisReceiver), shardField)
+            } else {
+              // Field must be in parent graph - access through parent graph reference
+              val parentGraphField = generationContext.parentGraphField
+                ?: error("Parent graph field not found in shard context for accessing $actualTypeKey")
+              val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+              irGetField(parentAccess, providerFields.getValue(actualTypeKey))
+            }
+          } else {
+            // Normal context - direct field access
+            irGetField(irGet(generationContext.thisReceiver), providerFields.getValue(actualTypeKey))
+          }
+        } else {
+          // Not in provider fields or bindingLocations - need to generate the binding
+          val paramBinding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+          
+          if (paramBinding is IrBinding.Absent) {
+            val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+            logger.log("WARNING: Absent binding found for $contextualTypeKey")
+            
+            error(
+              "Cannot resolve binding for parameter '${param.name}' of type $contextualTypeKey." +
+              " The binding appears to be absent - it may not be provided, contributed, or bound in the dependency graph." +
+              if (generationContext.isShardInitialization) {
+                " This occurred while generating shard '${generationContext.currentShardClass?.name ?: "unknown"}'."
+              } else {
+                ""
+              } +
+              " If this type is provided via @ContributesBinding, ensure the contributing module is included in the graph."
+            )
+          }
+          
           generateBindingCode(
             paramBinding,
             generationContext,
@@ -1199,12 +1445,49 @@ internal class IrGraphGenerator(
           )
         }
 
-      typeAsProviderArgument(
+      // Check if providerInstance is null before passing to typeAsProviderArgument
+      if (providerInstance == null) {
+        val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+        logger.log("ERROR: providerInstance is null for $typeKey (actual: $actualTypeKey)!")
+        
+        // Try to provide a helpful error message
+        val bindingInfo = try {
+          val binding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+          when (binding) {
+            is IrBinding.Absent -> " The binding is absent - it may be missing or not contributed to the graph."
+            else -> " Binding type: ${binding::class.simpleName}"
+          }
+        } catch (e: Exception) {
+          " Could not determine binding status: ${e.message}"
+        }
+        
+        error(
+          "Failed to resolve dependency for parameter '${param.name}' of type $typeKey" +
+          " (resolved as: $actualTypeKey) when generating factory arguments." +
+          bindingInfo +
+          if (generationContext.isShardInitialization) {
+            " This occurred in shard '${generationContext.currentShardClass?.name ?: "unknown"}' initialization."
+          } else {
+            ""
+          }
+        )
+      }
+      
+      val result = typeAsProviderArgument(
         param.contextualTypeKey,
         providerInstance,
         isAssisted = param.isAssisted,
         isGraphInstance = param.isGraphInstance,
       )
+      
+      if (generationContext.isShardInitialization) {
+        val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+        logger.log("  - Final result type: ${result.type}")
+        logger.log("  - Result class: ${result::class.simpleName}")
+        logger.log("=== End resolving dependency: $typeKey (actual: $actualTypeKey) ===")
+      }
+      
+      result
     }
   }
 
@@ -1249,36 +1532,36 @@ internal class IrGraphGenerator(
     if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
       // When in shard initialization context, we need special handling
       if (generationContext.isShardInitialization) {
-        // Skip field lookup for BoundInstance bindings - they need special handling
+        // First check if it's in the current shard (not for BoundInstance - they're always in main graph)
         if (binding !is IrBinding.BoundInstance) {
-          // First check if it's in the current shard
           val shardField = generationContext.shardProviderFields?.get(binding.typeKey)
           if (shardField != null) {
             return irGetField(irGet(generationContext.thisReceiver), shardField).let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
             }
           }
+        }
+        
+        // Use the location cache for O(1) lookup of where the binding is located
+        // This works for all bindings including BoundInstance
+        val location = bindingLocations[binding.typeKey]
+        if (location != null) {
+          val parentGraphField = generationContext.parentGraphField
+            ?: error("Parent graph field not found in context")
+          val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
           
-          // Use the location cache for O(1) lookup of where the binding is located
-          val location = bindingLocations[binding.typeKey]
-          if (location != null) {
-            val parentGraphField = generationContext.parentGraphField
-              ?: error("Parent graph field not found in context")
-            val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
-            
-            return when (location) {
-              is BindingLocation.InMainGraph -> {
-                // Access from main graph: this.parentGraph.field
-                irGetField(parentAccess, location.field).let {
-                  with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
-                }
+          return when (location) {
+            is BindingLocation.InMainGraph -> {
+              // Access from main graph: this.parentGraph.field
+              irGetField(parentAccess, location.field).let {
+                with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
               }
-              is BindingLocation.InShard -> {
-                // Access from another shard: this.parentGraph.shardX.bindingField
-                val shardFieldAccess = irGetField(parentAccess, location.shard.shardField)
-                irGetField(shardFieldAccess, location.field).let {
-                  with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
-                }
+            }
+            is BindingLocation.InShard -> {
+              // Access from another shard: this.parentGraph.shardX.bindingField
+              val shardFieldAccess = irGetField(parentAccess, location.shard.shardField)
+              irGetField(shardFieldAccess, location.field).let {
+                with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
               }
             }
           }
@@ -1477,10 +1760,34 @@ internal class IrGraphGenerator(
       }
 
       is IrBinding.BoundInstance -> {
-        // BoundInstance bindings can appear when the graph itself is used as a dependency
-        // In shard context, we need to access the parent graph instance
+        // BoundInstance bindings can be from Factory parameters or the graph itself
         if (generationContext.isShardInitialization) {
-          // Use cached values for performance
+          // Debug logging for BoundInstance access
+          val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+          logger.log("BoundInstance access in shard: ${binding.typeKey}, location in cache: ${bindingLocations[binding.typeKey]}")
+          
+          // First check if this bound instance is tracked in bindingLocations (Factory parameters)
+          val location = bindingLocations[binding.typeKey]
+          if (location != null) {
+            val parentGraphField = generationContext.parentGraphField
+              ?: error("Parent graph field not found in context for BoundInstance binding: $binding")
+            val parentAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+            
+            return when (location) {
+              is BindingLocation.InMainGraph -> {
+                // Access bound instance from main graph: this.parentGraph.field
+                irGetField(parentAccess, location.field).let {
+                  with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+                }
+              }
+              is BindingLocation.InShard -> {
+                // Should not happen for bound instances - they're always in main graph
+                error("Bound instance should not be in a shard: $binding")
+              }
+            }
+          }
+          
+          // If not found in bindingLocations, it might be the graph itself as a dependency
           val shardClass = generationContext.currentShardClass
             ?: error("Shard class not found in context for BoundInstance binding: $binding")
 
@@ -1506,29 +1813,42 @@ internal class IrGraphGenerator(
         val graphInstanceField =
           instanceFields[ownerKey]
             ?: run {
-              error(
-                "No matching included type instance found for type $ownerKey while processing ${node.typeKey}. Available instance fields ${instanceFields.keys}"
-              )
+              // In shard context, instance fields from parent graph may not be directly available
+              // This is expected - the field will be accessed through the parent graph reference
+              if (!generationContext.isShardInitialization) {
+                error(
+                  "No matching included type instance found for type $ownerKey while processing ${node.typeKey}. Available instance fields ${instanceFields.keys}"
+                )
+              }
+              null
             }
 
         val getterContextKey = IrContextualTypeKey.from(binding.getter)
 
-        val receiver = if (generationContext.isShardInitialization) {
-          // In shard context, access instance fields through parent graph
+        // For GraphDependency bindings in shards, we need to access the instance field
+        // through the parent graph, as the field exists in the parent graph, not the shard
+        val invokeGetter = if (generationContext.isShardInitialization) {
+          // In shard context, access the graph dependency through the parent graph
           val parentGraphField = generationContext.parentGraphField
             ?: error("Parent graph field not found in shard context")
-          irGetField(irGet(generationContext.thisReceiver), parentGraphField)
-        } else {
-          irGet(generationContext.thisReceiver)
-        }
-
-        val invokeGetter =
+          val parentGraphAccess = irGetField(irGet(generationContext.thisReceiver), parentGraphField)
+          
+          // Now we need to find the instance field in the parent graph
+          // The field should be accessible directly from the parent graph instance
           irInvoke(
-            dispatchReceiver =
-              irGetField(receiver, graphInstanceField),
+            dispatchReceiver = parentGraphAccess,
             callee = binding.getter.symbol,
             typeHint = binding.typeKey.type,
           )
+        } else {
+          // In main graph context, access the field normally
+          val receiver = irGet(generationContext.thisReceiver)
+          irInvoke(
+            dispatchReceiver = irGetField(receiver, graphInstanceField!!),
+            callee = binding.getter.symbol,
+            typeHint = binding.typeKey.type,
+          )
+        }
 
         if (getterContextKey.isLazyWrappedInProvider) {
           // TODO FIR this
@@ -1812,34 +2132,61 @@ internal class IrGraphGenerator(
     }
 
     // For very large maps, we need to split the building process to avoid method size limits
-    if (size > STATEMENTS_PER_METHOD) {
+    // Map multibindings generate significantly more bytecode per entry than regular bindings
+    // Each put() call can generate hundreds of bytecode instructions if the value is complex
+    val mapChunkSize = 10 // Much smaller chunks for map multibindings
+    
+    if (size > mapChunkSize) {
       // Generate inline logic for large maps
-      val parentClass = parent as IrClass
+      // In shard contexts, parent is the constructor, so we need to get the containing class
+      val parentClass: IrClass = when {
+        generationContext.isShardInitialization && generationContext.currentShardClass != null -> {
+          generationContext.currentShardClass!!
+        }
+        parent is IrClass -> parent
+        parent is IrFunction -> (parent as IrFunction).parentAsClass as IrClass
+        else -> error("Cannot determine parent class in context: parent is ${parent::class.simpleName}")
+      } as IrClass
 
       val sourceBindings = binding.sourceBindings.map { bindingGraph.requireBinding(it, IrBindingStack.empty()) }
-      val chunks = sourceBindings.chunked(STATEMENTS_PER_METHOD)
+      val chunks = sourceBindings.chunked(mapChunkSize)
       
       // Generate a main helper function that creates the builder and calls chunk functions
+      // Use internal visibility in shard contexts to avoid synthetic accessor issues
+      val helperVisibility = if (generationContext.isShardInitialization) {
+        DescriptorVisibilities.INTERNAL
+      } else {
+        DescriptorVisibilities.PRIVATE
+      }
+      
       val mainHelper = parentClass.addFunction {
         name = Name.identifier("build${binding.nameHint}Map")
-        visibility = DescriptorVisibilities.PRIVATE
+        visibility = helperVisibility
         returnType = mapProviderType
       }.apply {
         // Set the dispatch receiver parameter for this member function
-        val localReceiver = parentClass.thisReceiver!!.copyTo(this)
-        setDispatchReceiver(localReceiver)
+        // Get the correct receiver - must match the parent class type
+        val correctReceiver = parentClass.thisReceiver
+        if (correctReceiver != null) {
+          val localReceiver = correctReceiver.copyTo(this)
+          setDispatchReceiver(localReceiver)
+        }
       }
       
       // Generate chunk helper functions
       val chunkHelpers = chunks.mapIndexed { index, chunk ->
         parentClass.addFunction {
           name = Name.identifier("populate${binding.nameHint}MapChunk$index")
-          visibility = DescriptorVisibilities.PRIVATE
+          visibility = helperVisibility  // Use same visibility as main helper
           returnType = irBuiltIns.unitType
         }.apply {
           // Set the dispatch receiver parameter for this member function
-          val localReceiver = parentClass.thisReceiver!!.copyTo(this)
-          setDispatchReceiver(localReceiver)
+          // Get the correct receiver - must match the parent class type
+          val correctReceiver = parentClass.thisReceiver
+          if (correctReceiver != null) {
+            val localReceiver = correctReceiver.copyTo(this)
+            setDispatchReceiver(localReceiver)
+          }
           
           // Add builder parameter
           addValueParameter {

@@ -803,6 +803,22 @@ public class BoxTestGenerated extends AbstractBoxTest {
   }
 
   @Nested
+  @TestMetadata("compiler-tests/src/test/data/box/multibinding")
+  @TestDataPath("$PROJECT_ROOT")
+  public class Multibinding {
+    @Test
+    public void testAllFilesPresentInMultibinding() {
+      KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/box/multibinding"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
+    }
+
+    @Test
+    @TestMetadata("LargeMapMultibindingTest.kt")
+    public void testLargeMapMultibindingTest() {
+      runTest("compiler-tests/src/test/data/box/multibinding/LargeMapMultibindingTest.kt");
+    }
+  }
+
+  @Nested
   @TestMetadata("compiler-tests/src/test/data/box/multibindings")
   @TestDataPath("$PROJECT_ROOT")
   public class Multibindings {

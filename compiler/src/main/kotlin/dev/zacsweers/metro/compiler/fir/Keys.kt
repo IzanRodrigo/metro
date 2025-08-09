@@ -136,4 +136,8 @@ internal object Keys {
   data object GraphShard : GeneratedDeclarationKey() {
     override fun toString() = "GraphShard"
   }
+
+  data object SwitchingProvider : GeneratedDeclarationKey() {
+    override fun toString() = "SwitchingProvider"
+  }
 }

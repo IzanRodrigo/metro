@@ -1,0 +1,37 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(rm:*)",
+      "Bash(./gradlew:*)",
+      "Bash(export:*)",
+      "Bash(find:*)",
+      "Bash(java:*)",
+      "Bash(./metrow check:*)",
+      "Bash(ls:*)",
+      "Bash(git add:*)",
+      "Bash(grep:*)",
+      "Bash(awk:*)",
+      "Bash(mkdir:*)",
+      "Bash(./generate-contributors.sh:*)",
+      "Bash(chmod:*)",
+      "Bash(cp:*)",
+      "Bash(git checkout:*)",
+      "Bash(sed:*)",
+      "Bash(wc:*)",
+      "Bash(tail:*)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain assembleInternDebug)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain :app:kspInternDebugKotlin)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain clean)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain :app:assembleInternDebug)",
+      "Bash(./metrow publish:*)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain clean :app:assembleInternDebug --no-build-cache)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain clean :app:assembleInternDebug --no-build-cache --stop)",
+      "Bash(/Users/x497413/Dev/Projects/android-spain/gradlew -p /Users/x497413/Dev/Projects/android-spain :app:assembleInternDebug --no-build-cache)"
+    ],
+    "deny": [],
+    "additionalDirectories": [
+      "/Users/x497413/Dev/Projects/android-spain",
+      "/Users/x497413/Dev/Claude/metro-izan/dagger"
+    ]
+  }
+}

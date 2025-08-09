@@ -21,3 +21,4 @@ site/
 temp-clone/
 /benchmark/
 .cache/
+*.log

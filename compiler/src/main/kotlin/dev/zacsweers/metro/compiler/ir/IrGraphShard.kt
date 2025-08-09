@@ -46,6 +46,7 @@ internal class IrGraphShard(
   private val shardName: Name,
   internal val shardIndex: Int,
   val bindings: List<IrBinding>,
+  private val bindingGraph: IrBindingGraph,
   private val bindingGenerator: (IrBinding, IrValueParameter, Map<IrTypeKey, IrField>) -> IrExpression,
 ) : IrMetroContext by metroContext {
   
@@ -58,6 +59,12 @@ internal class IrGraphShard(
   
   // Performance optimization: Create a map for O(1) binding lookups
   private val bindingsByKey = bindings.associateBy { it.typeKey }
+  
+  // Cache for binding complexity analysis to avoid repeated calculations
+  private val bindingComplexityCache = mutableMapOf<IrTypeKey, Int>()
+  
+  // Cache topological sort result
+  private var sortedBindingsCache: List<IrBinding>? = null
   
   // Field to store the parent graph reference
   lateinit var parentGraphField: IrField
@@ -90,6 +97,13 @@ internal class IrGraphShard(
    * Generates the complete shard class with proper IR initialization
    */
   fun generate() {
+    generateCore()
+  }
+  
+  /**
+   * Core generation without debug operations for better performance
+   */
+  private fun generateCore() {
     val logger = loggerFor(MetroLogger.Type.ComponentSharding)
     
     try {
@@ -211,25 +225,20 @@ internal class IrGraphShard(
       
       logger.log("Successfully completed generation of shard '${shardName}'")
       
-      // Generate shard report if debug mode is enabled
-      if (debug) {
-        generateShardReport()
-        generateKotlinSourceReport()
-      }
-      
     } catch (e: Exception) {
       val errorMsg = "Critical error during shard generation for '${shardName}' in graph '${parentGraph.name}'"
       logger.log("CRITICAL ERROR: $errorMsg")
       logger.log("Exception details: ${e::class.simpleName}: ${e.message}")
       logger.log("Bindings being processed: ${bindings.map { it.typeKey }.joinToString()}")
       
-      // Generate emergency diagnostic report
-      try {
-        generateEmergencyShardReport(e)
-        // Always try to generate Kotlin source on error
-        generateKotlinSourceReport()
-      } catch (reportError: Exception) {
-        logger.log("Failed to generate emergency report: ${reportError.message}")
+      // Generate emergency diagnostic report only if explicitly in debug mode
+      if (debug) {
+        try {
+          generateEmergencyShardReport(e)
+          generateKotlinSourceReport()
+        } catch (reportError: Exception) {
+          logger.log("Failed to generate emergency report: ${reportError.message}")
+        }
       }
       
       throw RuntimeException("$errorMsg: ${e.message}", e)
@@ -331,7 +340,7 @@ internal class IrGraphShard(
     
     // IMPORTANT: Initialize fields in topological order to ensure dependencies are available
     // This prevents recursive generation and improves performance from O(n²) to O(n)
-    val sortedBindings = sortBindingsTopologically()
+    val sortedBindings = getSortedBindings()
     
     // Check if we need to chunk the initialization
     // For shards, we need very small chunks because each binding can generate significant bytecode
@@ -374,7 +383,7 @@ internal class IrGraphShard(
       // Analyze binding complexity to determine optimal chunk size
       val effectiveChunkSize = if (sortedBindings.size > 50) {
         // For shards with many bindings, use smaller chunks
-        val avgComplexity = sortedBindings.map { analyzeBindingComplexity(it) }.average()
+        val avgComplexity = sortedBindings.map { getCachedBindingComplexity(it) }.average()
         when {
           avgComplexity > 30 -> 3  // Very complex bindings
           avgComplexity > 20 -> 5  // Complex bindings
@@ -384,8 +393,10 @@ internal class IrGraphShard(
         STATEMENTS_PER_METHOD
       }
       
-      val chunks = sortedBindings.chunked(effectiveChunkSize)
-      logger.log("Creating ${chunks.size} init functions for shard $shardName ($effectiveChunkSize statements per chunk, avg complexity: ${sortedBindings.map { analyzeBindingComplexity(it) }.average()})")
+      // Create chunks that respect dependency order
+      // We can't just use .chunked() because it might put dependencies in later chunks
+      val chunks = createDependencyRespectingChunks(sortedBindings, effectiveChunkSize)
+      logger.log("Creating ${chunks.size} init functions for shard $shardName ($effectiveChunkSize statements per chunk, avg complexity: ${sortedBindings.map { getCachedBindingComplexity(it) }.average()})")
       
       chunks.forEachIndexed { index, chunk ->
         val initFunction = shardClass.addFunction {
@@ -404,7 +415,7 @@ internal class IrGraphShard(
             val field = providerFields[binding.typeKey]!!
             
             // Check if this is a particularly complex binding that might generate too much bytecode
-            val complexity = analyzeBindingComplexity(binding)
+            val complexity = getCachedBindingComplexity(binding)
             if (complexity > 100 && binding is IrBinding.Multibinding && binding.sourceBindings.size > 50) {
               // For extremely large multibindings, generate a separate helper method
               logger.log("Binding ${binding.typeKey} has complexity $complexity with ${binding.sourceBindings.size} sources - generating helper method")
@@ -477,6 +488,112 @@ internal class IrGraphShard(
   }
   
   /**
+   * Creates chunks of bindings that respect dependency order.
+   * Unlike simple chunking, this ensures that no binding in a chunk depends on a binding in a later chunk.
+   */
+  private fun createDependencyRespectingChunks(sortedBindings: List<IrBinding>, targetChunkSize: Int): List<List<IrBinding>> {
+    val chunks = mutableListOf<MutableList<IrBinding>>()
+    val bindingToChunkIndex = mutableMapOf<IrTypeKey, Int>()
+    
+    sortedBindings.forEach { binding ->
+      // Find the minimum chunk index where this binding can be placed
+      // It must be after all its dependencies
+      var minChunkIndex = 0
+      
+      // Check all dependencies to find the latest chunk they're in
+      getAllDependencies(binding).forEach { dep ->
+        // Resolve alias to actual binding if needed
+        val actualDepKey = resolveAliasTypeKey(dep)
+        
+        bindingToChunkIndex[actualDepKey]?.let { depChunkIndex ->
+          // This binding must be in the same chunk or a later chunk than its dependency
+          minChunkIndex = maxOf(minChunkIndex, depChunkIndex)
+        }
+      }
+      
+      // Try to place in the minimum required chunk, or create a new one if needed
+      val targetChunk = if (minChunkIndex < chunks.size) {
+        val chunk = chunks[minChunkIndex]
+        // If the chunk is full, we need to use the next chunk
+        if (chunk.size >= targetChunkSize) {
+          // Create a new chunk
+          minChunkIndex = chunks.size
+          mutableListOf<IrBinding>().also { chunks.add(it) }
+        } else {
+          chunk
+        }
+      } else {
+        // Need to create a new chunk
+        mutableListOf<IrBinding>().also { chunks.add(it) }
+      }
+      
+      targetChunk.add(binding)
+      bindingToChunkIndex[binding.typeKey] = minChunkIndex
+    }
+    
+    return chunks
+  }
+  
+  /**
+   * Helper function to get all dependencies including transitive ones from multibindings
+   */
+  private fun getAllDependencies(binding: IrBinding): List<IrContextualTypeKey> {
+    val directDeps = binding.dependencies.toMutableList()
+    
+    // For each dependency, check if it's a multibinding and add its source bindings
+    binding.dependencies.forEach { dep ->
+      val depBinding = try {
+        bindingGraph.requireBinding(dep, IrBindingStack.empty())
+      } catch (e: Exception) {
+        null
+      }
+      
+      if (depBinding is IrBinding.Multibinding) {
+        // Add the source bindings of the multibinding as transitive dependencies
+        depBinding.sourceBindings.forEach { sourceKey ->
+          directDeps.add(IrContextualTypeKey(sourceKey))
+        }
+      }
+    }
+    
+    return directDeps
+  }
+  
+  /**
+   * Resolves an alias type key to its actual binding type key
+   */
+  private fun resolveAliasTypeKey(dep: IrContextualTypeKey): IrTypeKey {
+    val depBinding = try {
+      bindingGraph.requireBinding(dep, IrBindingStack.empty())
+    } catch (e: Exception) {
+      return dep.typeKey
+    }
+    
+    if (depBinding is IrBinding.Alias) {
+      // Resolve the alias to find the actual binding's type key
+      var currentBinding: IrBinding = depBinding
+      val seen = mutableSetOf<IrBinding>()
+      while (currentBinding is IrBinding.Alias) {
+        if (!seen.add(currentBinding)) {
+          // Circular alias detected, return original
+          return dep.typeKey
+        }
+        currentBinding = currentBinding.aliasedBinding(bindingGraph, IrBindingStack.empty())
+      }
+      return currentBinding.typeKey
+    }
+    
+    return dep.typeKey
+  }
+  
+  /**
+   * Gets the cached sorted bindings or computes them if not cached
+   */
+  private fun getSortedBindings(): List<IrBinding> {
+    return sortedBindingsCache ?: sortBindingsTopologically().also { sortedBindingsCache = it }
+  }
+  
+  /**
    * Sorts bindings in topological order based on their dependencies within this shard.
    * This ensures that when we initialize a binding, all its dependencies are already initialized.
    */
@@ -495,9 +612,12 @@ internal class IrGraphShard(
     
     // Build edges - only for dependencies within this shard
     bindings.forEach { binding ->
-      binding.dependencies.forEach { dep ->
-        if (bindingsByKey.containsKey(dep.typeKey)) {
-          adjacency[dep.typeKey]!!.add(binding.typeKey)
+      getAllDependencies(binding).forEach { dep ->
+        // Resolve alias to actual binding if needed
+        val actualDepKey = resolveAliasTypeKey(dep)
+        
+        if (bindingsByKey.containsKey(actualDepKey)) {
+          adjacency[actualDepKey]!!.add(binding.typeKey)
           inDegree[binding.typeKey] = inDegree[binding.typeKey]!! + 1
         }
       }
@@ -575,9 +695,24 @@ internal class IrGraphShard(
   }
   
   /**
+   * Generates debug reports for this shard (called after all shards are generated)
+   */
+  fun generateDebugReports() {
+    if (!debug) return
+    
+    try {
+      generateShardReport()
+      generateKotlinSourceReport()
+    } catch (e: Exception) {
+      val logger = loggerFor(MetroLogger.Type.ComponentSharding)
+      logger.log("Failed to generate debug reports for shard '${shardName}': ${e.message}")
+    }
+  }
+  
+  /**
    * Generates a Kotlin source representation of the shard
    */
-  fun generateKotlinSourceReport() {
+  private fun generateKotlinSourceReport() {
     val logger = loggerFor(MetroLogger.Type.ComponentSharding)
     
     try {
@@ -625,7 +760,7 @@ internal class IrGraphShard(
         appendLine()
         
         // Calculate chunking info
-        val sortedBindings = sortBindingsTopologically()
+        val sortedBindings = getSortedBindings()
         val needsChunking = sortedBindings.size > STATEMENTS_PER_METHOD
         val chunks = if (needsChunking) sortedBindings.chunked(STATEMENTS_PER_METHOD) else listOf(sortedBindings)
         
@@ -776,7 +911,7 @@ internal class IrGraphShard(
         // Analyze bindings in detail
         appendLine("=== BINDING COMPLEXITY ANALYSIS ===")
         val sortedBindings = try {
-          sortBindingsTopologically()
+          getSortedBindings()
         } catch (e: Exception) {
           bindings
         }
@@ -788,7 +923,7 @@ internal class IrGraphShard(
         chunks.forEachIndexed { chunkIndex, chunk ->
           appendLine("Chunk $chunkIndex (initChunk$chunkIndex):")
           chunk.forEach { binding ->
-            val complexity = analyzeBindingComplexity(binding)
+            val complexity = getCachedBindingComplexity(binding)
             appendLine("  ${binding.typeKey}:")
             appendLine("    Type: ${binding::class.simpleName}")
             appendLine("    Dependencies: ${binding.dependencies.size}")
@@ -832,7 +967,7 @@ internal class IrGraphShard(
           appendLine("2. Reduce bindingsPerGraphShard to create smaller shards")
           appendLine("3. Consider refactoring bindings with many dependencies")
           
-          val highComplexityBindings = bindings.filter { analyzeBindingComplexity(it) > 50 }
+          val highComplexityBindings = bindings.filter { getCachedBindingComplexity(it) > 50 }
           if (highComplexityBindings.isNotEmpty()) {
             appendLine()
             appendLine("High complexity bindings that should be refactored:")
@@ -854,6 +989,15 @@ internal class IrGraphShard(
       
     } catch (e: Exception) {
       logger.log("Failed to generate emergency report: ${e.message}")
+    }
+  }
+  
+  /**
+   * Gets cached binding complexity or calculates and caches it
+   */
+  private fun getCachedBindingComplexity(binding: IrBinding): Int {
+    return bindingComplexityCache.getOrPut(binding.typeKey) {
+      analyzeBindingComplexity(binding)
     }
   }
   
