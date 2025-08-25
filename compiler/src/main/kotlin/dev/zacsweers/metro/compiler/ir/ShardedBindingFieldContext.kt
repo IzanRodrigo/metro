@@ -22,13 +22,36 @@ import org.jetbrains.kotlin.ir.declarations.IrField
  * Extended binding field context that supports sharding fields across multiple classes.
  * Tracks which shard (helper class) contains each field for proper cross-shard access.
  */
-internal class ShardedBindingFieldContext : BindingFieldContext() {
+internal class ShardedBindingFieldContext(
+  existingContext: BindingFieldContext? = null
+) : BindingFieldContext() {
   
   /**
    * Maps type keys to their containing shard class.
    * Null means the field is in the main graph class.
    */
   private val fieldShards = mutableMapOf<IrTypeKey, IrClass?>()
+  
+  init {
+    // Copy existing fields from the previous context if provided
+    existingContext?.let { existing ->
+      // Copy all provider fields
+      existing.availableProviderKeys.forEach { key ->
+        existing.providerField(key)?.let { field ->
+          super.putProviderField(key, field)
+          // These are from the main graph, so shard is null
+          fieldShards[key] = null
+        }
+      }
+      
+      // Copy all instance fields
+      existing.availableInstanceKeys.forEach { key ->
+        existing.instanceField(key)?.let { field ->
+          super.putInstanceField(key, field)
+        }
+      }
+    }
+  }
   
   /**
    * Maps shard classes to their corresponding field in the main graph class.

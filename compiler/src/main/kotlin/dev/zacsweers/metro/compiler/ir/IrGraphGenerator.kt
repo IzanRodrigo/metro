@@ -271,64 +271,43 @@ internal class IrGraphGenerator(
           !(binding is IrBinding.BoundInstance && binding.classReceiverParameter != null) &&
           !(binding is IrBinding.GraphDependency && binding.fieldAccess != null)
       }
+      
+      // Debug logging to understand sharding behavior
+      if (options.debug) {
+        log("Sharding check for ${graphClass.kotlinFqName}: " +
+            "maxFieldsPerShard=${options.maxFieldsPerShard}, " +
+            "bindingsToShard=${bindingsToShard.size}, " +
+            "totalInitOrder=${initOrder.size}")
+      }
+      
       val providerSpecs = fieldDistributor.distribute(bindingsToShard, graphClass)
       val useSharding = providerSpecs.isNotEmpty()
+      
+      if (options.debug && useSharding) {
+        log("Sharding enabled for ${graphClass.kotlinFqName}: creating ${providerSpecs.size} shard classes")
+      }
 
       // Replace bindingFieldContext with sharded version if needed
       if (useSharding) {
-        // Create a new sharded context
+        // Create a new sharded context, copying existing fields from the current context
         // Note: At this point, bindingFieldContext already has some fields from addBoundInstanceField calls
-        // Since ShardedBindingFieldContext extends BindingFieldContext, the existing fields will remain
-        // in the base class and be considered as belonging to the main graph (null shard)
-        bindingFieldContext = ShardedBindingFieldContext()
+        // We need to preserve those fields when switching to the sharded context
+        bindingFieldContext = ShardedBindingFieldContext(bindingFieldContext)
       }
 
-      // Generate helper classes and add fields to main graph if sharding is enabled
-      val shardClasses = if (useSharding) {
-        val shardedContext = bindingFieldContext as ShardedBindingFieldContext
-        providerSpecs.map { spec ->
-          // Generate the helper class
-          val shardClass = ProviderClassGenerator(
-            metroContext = this@IrGraphGenerator,
-            mainGraphClass = graphClass,
-            shardIndex = spec.shardIndex
-          ).generate()
-          
-          // Add field in main graph for this shard
-          val shardField = graphClass.addField {
-            name = Name.identifier("providers${spec.shardIndex}")
-            type = shardClass.defaultType
-            visibility = DescriptorVisibilities.INTERNAL
-            isFinal = true
-          }
-          
-          // Initialize the shard field in constructor
-          constructorStatements.add { thisReceiver ->
-            irSetField(
-              irGet(thisReceiver),
-              shardField,
-              irCallConstructor(shardClass.primaryConstructor!!.symbol, emptyList()).also {
-                it.arguments[0] = irGet(thisReceiver)
-              }
-            )
-          }
-          
-          // Register with context
-          shardedContext.registerShard(shardClass, shardField)
-          
-          Triple(spec, shardClass, shardField)
-        }
+      // Prepare to collect field specifications for each shard
+      val shardFieldSpecs = if (useSharding) {
+        mutableMapOf<ProviderClassSpec, MutableList<ShardFieldSpec>>()
       } else {
-        emptyList()
+        null
       }
 
-      // Create a map of bindings to their target shard
-      val bindingToShard = if (useSharding) {
-        buildMap<IrBinding, Triple<ProviderClassSpec, IrClass, IrField>> {
-          shardClasses.forEach { triple ->
-            val (spec, shardClass, shardField) = triple
+      // Create a map of bindings to their target shard spec
+      val bindingToShardSpec = if (useSharding) {
+        buildMap<IrBinding, ProviderClassSpec> {
+          providerSpecs.forEach { spec ->
             spec.bindings.forEach { binding ->
-              put(binding, Triple(spec, shardClass, shardField))
+              put(binding, spec)
             }
           }
         }
@@ -389,12 +368,7 @@ internal class IrGraphGenerator(
           val key = binding.typeKey
           
           // Determine which shard this binding belongs to
-          val shardInfo = bindingToShard[binding]
-          val (targetClass, targetShard) = if (shardInfo != null) {
-            shardInfo.second to shardInfo.second
-          } else {
-            graphClass to null
-          }
+          val shardSpec = bindingToShardSpec[binding]
           
           // Since assisted and member injections don't implement Factory, we can't just type these
           // as Provider<*> fields
@@ -413,13 +387,6 @@ internal class IrGraphGenerator(
               }
             }
 
-          // Create field in appropriate class (main or shard)
-          val field = targetClass.getOrCreateBindingField(
-            binding.typeKey,
-            { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)) },
-            { fieldType },
-          )
-
           val accessType =
             if (isProviderType) {
               IrGraphExpressionGenerator.AccessType.PROVIDER
@@ -427,25 +394,107 @@ internal class IrGraphGenerator(
               IrGraphExpressionGenerator.AccessType.INSTANCE
             }
 
-          field.withInit(key) { thisReceiver, typeKey ->
-            expressionGeneratorFactory
-              .create(thisReceiver)
-              .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
-              .letIf(binding.isScoped() && isProviderType) {
+          if (shardSpec != null) {
+            // Field belongs to a shard - collect specification
+            val fieldName = fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
+            val fieldInitializer: FieldInitializer = { thisReceiver, typeKey ->
+              expressionGeneratorFactory
+                .create(thisReceiver)
+                .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                .letIf(binding.isScoped() && isProviderType) {
+                  // If it's scoped, wrap it in double-check
+                  // DoubleCheck.provider(<provider>)
+                  it.doubleCheck(this, symbols, binding.typeKey)
+                }
+            }
+            
+            // Add to field specifications for this shard
+            shardFieldSpecs?.let { specs ->
+              specs.getOrPut(shardSpec) { mutableListOf() }.add(
+                ShardFieldSpec(
+                  name = fieldName,
+                  type = fieldType,
+                  typeKey = key,
+                  initializer = fieldInitializer
+                )
+              )
+            }
+            
+          } else {
+            // Field is in main graph - create immediately with normal initialization
+            val field = graphClass.getOrCreateBindingField(
+              binding.typeKey,
+              { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)) },
+              { fieldType },
+            )
+            
+            field.withInit(key) { thisReceiver, typeKey ->
+              expressionGeneratorFactory
+                .create(thisReceiver)
+                .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                .letIf(binding.isScoped() && isProviderType) {
                 // If it's scoped, wrap it in double-check
                 // DoubleCheck.provider(<provider>)
                 it.doubleCheck(this@withInit, symbols, binding.typeKey)
               }
-          }
-          
-          // Track in context (handles both regular and sharded)
-          val context = bindingFieldContext
-          if (context is ShardedBindingFieldContext) {
-            context.putProviderField(key, field, targetShard)
-          } else {
-            context.putProviderField(key, field)
+            }
+            
+            // Track in context
+            bindingFieldContext.putProviderField(key, field)
           }
         }
+
+      // Create shard classes with collected field specifications
+      val shardClasses = if (useSharding && shardFieldSpecs != null) {
+        val shardedContext = bindingFieldContext as ShardedBindingFieldContext
+        
+        providerSpecs.mapNotNull { spec ->
+          val fieldSpecs = shardFieldSpecs[spec] ?: return@mapNotNull null
+          
+          // Generate the shard class with its fields
+          val generatedShard = ProviderClassGenerator(
+            metroContext = this@IrGraphGenerator,
+            mainGraphClass = graphClass,
+            shardIndex = spec.shardIndex,
+            fieldSpecs = fieldSpecs
+          ).generate()
+          
+          // Add field in main graph for this shard
+          val shardField = graphClass.addField {
+            name = Name.identifier("providers${spec.shardIndex}")
+            type = generatedShard.shardClass.defaultType
+            visibility = DescriptorVisibilities.INTERNAL
+            isFinal = true
+          }
+          
+          // Initialize the shard field in constructor
+          constructorStatements.add { thisReceiver ->
+            irSetField(
+              irGet(thisReceiver),
+              shardField,
+              irCallConstructor(
+                generatedShard.shardClass.primaryConstructor!!.symbol, 
+                emptyList() // Type arguments
+              ).also {
+                // Set the constructor argument (the graph parameter)
+                it.arguments[0] = irGet(thisReceiver)
+              }
+            )
+          }
+          
+          // Register with context and update field mappings
+          shardedContext.registerShard(generatedShard.shardClass, shardField)
+          
+          // Track all shard fields in the context
+          for ((typeKey, field) in generatedShard.fields) {
+            shardedContext.putProviderField(typeKey, field, generatedShard.shardClass)
+          }
+          
+          Triple(spec, generatedShard.shardClass, shardField)
+        }
+      } else {
+        emptyList()
+      }
 
       // Add statements to our constructor's deferred fields _after_ we've added all provider
       // fields for everything else. This is important in case they reference each other

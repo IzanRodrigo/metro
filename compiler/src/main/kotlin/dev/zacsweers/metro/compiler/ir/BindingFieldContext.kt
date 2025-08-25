@@ -18,6 +18,9 @@ internal open class BindingFieldContext {
 
   val availableInstanceKeys: Set<IrTypeKey>
     get() = instanceFields.keys
+  
+  val availableProviderKeys: Set<IrTypeKey>
+    get() = providerFields.keys
 
   fun putInstanceField(key: IrTypeKey, field: IrField) {
     instanceFields[key] = field
