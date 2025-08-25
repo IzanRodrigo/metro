@@ -4,7 +4,7 @@ package dev.zacsweers.metro.compiler.ir
 
 import org.jetbrains.kotlin.ir.declarations.IrField
 
-internal class BindingFieldContext {
+internal open class BindingFieldContext {
   // TODO we can end up in awkward situations where we
   //  have the same type keys in both instance and provider fields
   //  this is tricky because depending on the context, it's not valid
@@ -23,7 +23,7 @@ internal class BindingFieldContext {
     instanceFields[key] = field
   }
 
-  fun putProviderField(key: IrTypeKey, field: IrField) {
+  open fun putProviderField(key: IrTypeKey, field: IrField) {
     providerFields[key] = field
   }
 

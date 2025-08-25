@@ -4,6 +4,8 @@ Changelog
 **Unreleased**
 --------------
 
+* **New**: Add automatic graph sharding support to avoid JVM class size limits for very large dependency graphs. Configure with `maxFieldsPerShard` in the `metro` Gradle extension.
+
 0.6.3
 -----
 

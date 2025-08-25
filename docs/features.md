@@ -68,6 +68,21 @@ Similar bindings:
 
 For more thorough debugging, Metro also has controls to enable debug logging controls and write graph reports to an output directory (configurable via the Gradle extension).
 
+## Automatic Graph Sharding
+
+For very large dependency graphs that approach JVM class size limits, Metro can automatically shard the generated code across multiple helper classes. This is completely transparent to your code:
+
+```kotlin
+metro {
+  maxFieldsPerShard = 10000 // Enable sharding
+}
+```
+
+When a graph exceeds the configured limit, Metro will:
+- Split provider fields across nested helper classes
+- Maintain all DI semantics (scoping, circular dependencies, etc.)
+- Add minimal runtime overhead (one extra field dereference)
+
 ## Advanced interop
 
 Metro has advanced interop with existing DI tools.

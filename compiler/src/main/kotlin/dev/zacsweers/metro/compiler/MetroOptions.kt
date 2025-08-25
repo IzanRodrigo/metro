@@ -169,6 +169,17 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
+  MAX_FIELDS_PER_SHARD(
+    RawMetroOption(
+      name = "max-fields-per-shard",
+      defaultValue = Int.MAX_VALUE.toString(),
+      valueDescription = "<number>",
+      description = "Maximum number of fields per class. When exceeded, the graph will be sharded into multiple classes. Set to Int.MAX_VALUE to disable sharding.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it.toInt() },
+    )
+  ),
   PUBLIC_PROVIDER_SEVERITY(
     RawMetroOption(
       name = "public-provider-severity",
@@ -505,6 +516,7 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
+  val maxFieldsPerShard: Int = MetroOption.MAX_FIELDS_PER_SHARD.raw.defaultValue.expectAs<String>().toInt(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE
@@ -639,6 +651,9 @@ public data class MetroOptions(
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
 
+          MetroOption.MAX_FIELDS_PER_SHARD ->
+            options = options.copy(maxFieldsPerShard = configuration.getAsInt(entry))
+
           MetroOption.PUBLIC_PROVIDER_SEVERITY ->
             options =
               options.copy(
@@ -757,6 +772,11 @@ public data class MetroOptions(
 
     private fun CompilerConfiguration.getAsBoolean(option: MetroOption): Boolean {
       @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Boolean>
+      return get(typed.key, typed.defaultValue)
+    }
+
+    private fun CompilerConfiguration.getAsInt(option: MetroOption): Int {
+      @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Int>
       return get(typed.key, typed.defaultValue)
     }
 

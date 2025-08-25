@@ -247,6 +247,10 @@ abstract class MetroCompilerTest {
               MetroOption.ENABLE_FULL_BINDING_GRAPH_VALIDATION -> {
                 processor.option(entry.raw.cliOption, enableFullBindingGraphValidation)
               }
+              MetroOption.MAX_FIELDS_PER_SHARD -> {
+                // For testing, we'll use the default value (Int.MAX_VALUE)
+                processor.option(entry.raw.cliOption, Int.MAX_VALUE.toString())
+              }
             }
           yield(option)
         }

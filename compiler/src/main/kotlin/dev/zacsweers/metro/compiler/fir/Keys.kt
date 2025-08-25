@@ -121,6 +121,10 @@ internal object Keys {
     override fun toString() = "GeneratedGraphExtension"
   }
 
+  data object GeneratedGraphShard : GeneratedDeclarationKey() {
+    override fun toString() = "GeneratedGraphShard"
+  }
+
   data object ContributionHint : GeneratedDeclarationKey() {
     override fun toString() = "ContributionHint"
   }

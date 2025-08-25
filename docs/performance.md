@@ -94,6 +94,19 @@ Below are some results from real-world projects, shared with the developers' per
     | Root non-ABI change (Incremental) | 70.9 s             | 38.9 s (45.2% faster) |
     | Clean build                       | 327 s              | 288 s (11.7% faster)  |
 
+### Large Graphs and Sharding
+
+For very large dependency graphs (10,000+ bindings), Metro can automatically shard the generated code across multiple helper classes to avoid JVM class size limits. This has minimal runtime performance impact (one extra field dereference):
+
+```kotlin
+metro {
+  // Enable sharding with max 10,000 fields per class
+  maxFieldsPerShard = 10000
+}
+```
+
+When enabled, Metro will automatically split large graphs into nested helper classes, maintaining all DI semantics while avoiding "class too large" JVM errors.
+
 ### Reporting
 
 If you want to investigate the performance of different stages of Metro's compiler pipeline, you can enable reporting in the Gradle DSL.

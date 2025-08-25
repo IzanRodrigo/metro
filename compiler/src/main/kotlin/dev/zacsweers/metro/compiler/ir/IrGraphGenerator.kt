@@ -44,6 +44,7 @@ import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.copyTo
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.primaryConstructor
@@ -75,7 +76,7 @@ internal class IrGraphGenerator(
   graphExtensionGenerator: IrGraphExtensionGenerator,
 ) : IrMetroContext by metroContext {
 
-  private val bindingFieldContext = BindingFieldContext()
+  private var bindingFieldContext: BindingFieldContext = BindingFieldContext()
 
   /**
    * To avoid `MethodTooLargeException`, we split field initializations up over multiple constructor
@@ -151,7 +152,7 @@ internal class IrGraphGenerator(
                 fieldNameAllocator.newName(
                   name
                     .asString()
-                    .removePrefix("$$")
+                    .removePrefix("$")
                     .decapitalizeUS()
                     .suffixIfNot("Instance")
                     .suffixIfNot("Provider")
@@ -261,6 +262,80 @@ internal class IrGraphGenerator(
           }
         }
 
+      // Check if sharding is needed
+      val fieldDistributor = FieldDistributor(options.maxFieldsPerShard)
+      val bindingsToShard = initOrder.filter { binding ->
+        // Filter out bindings that won't generate fields
+        binding.typeKey !in bindingFieldContext &&
+          binding !is IrBinding.Alias &&
+          !(binding is IrBinding.BoundInstance && binding.classReceiverParameter != null) &&
+          !(binding is IrBinding.GraphDependency && binding.fieldAccess != null)
+      }
+      val providerSpecs = fieldDistributor.distribute(bindingsToShard, graphClass)
+      val useSharding = providerSpecs.isNotEmpty()
+
+      // Replace bindingFieldContext with sharded version if needed
+      if (useSharding) {
+        // Create a new sharded context
+        // Note: At this point, bindingFieldContext already has some fields from addBoundInstanceField calls
+        // Since ShardedBindingFieldContext extends BindingFieldContext, the existing fields will remain
+        // in the base class and be considered as belonging to the main graph (null shard)
+        bindingFieldContext = ShardedBindingFieldContext()
+      }
+
+      // Generate helper classes and add fields to main graph if sharding is enabled
+      val shardClasses = if (useSharding) {
+        val shardedContext = bindingFieldContext as ShardedBindingFieldContext
+        providerSpecs.map { spec ->
+          // Generate the helper class
+          val shardClass = ProviderClassGenerator(
+            metroContext = this@IrGraphGenerator,
+            mainGraphClass = graphClass,
+            shardIndex = spec.shardIndex
+          ).generate()
+          
+          // Add field in main graph for this shard
+          val shardField = graphClass.addField {
+            name = Name.identifier("providers${spec.shardIndex}")
+            type = shardClass.defaultType
+            visibility = DescriptorVisibilities.INTERNAL
+            isFinal = true
+          }
+          
+          // Initialize the shard field in constructor
+          constructorStatements.add { thisReceiver ->
+            irSetField(
+              irGet(thisReceiver),
+              shardField,
+              irCallConstructor(shardClass.primaryConstructor!!.symbol, emptyList()).also {
+                it.arguments[0] = irGet(thisReceiver)
+              }
+            )
+          }
+          
+          // Register with context
+          shardedContext.registerShard(shardClass, shardField)
+          
+          Triple(spec, shardClass, shardField)
+        }
+      } else {
+        emptyList()
+      }
+
+      // Create a map of bindings to their target shard
+      val bindingToShard = if (useSharding) {
+        buildMap<IrBinding, Triple<ProviderClassSpec, IrClass, IrField>> {
+          shardClasses.forEach { triple ->
+            val (spec, shardClass, shardField) = triple
+            spec.bindings.forEach { binding ->
+              put(binding, Triple(spec, shardClass, shardField))
+            }
+          }
+        }
+      } else {
+        emptyMap()
+      }
+
       // For all deferred types, assign them first as factories
       // TODO For any types that depend on deferred types, they need providers too?
       @Suppress("UNCHECKED_CAST")
@@ -312,6 +387,15 @@ internal class IrGraphGenerator(
         }
         .forEach { binding ->
           val key = binding.typeKey
+          
+          // Determine which shard this binding belongs to
+          val shardInfo = bindingToShard[binding]
+          val (targetClass, targetShard) = if (shardInfo != null) {
+            shardInfo.second to shardInfo.second
+          } else {
+            graphClass to null
+          }
+          
           // Since assisted and member injections don't implement Factory, we can't just type these
           // as Provider<*> fields
           var isProviderType = true
@@ -329,13 +413,12 @@ internal class IrGraphGenerator(
               }
             }
 
-          // If we've reserved a field for this key here, pull it out and use that
-          val field =
-            getOrCreateBindingField(
-              binding.typeKey,
-              { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)) },
-              { fieldType },
-            )
+          // Create field in appropriate class (main or shard)
+          val field = targetClass.getOrCreateBindingField(
+            binding.typeKey,
+            { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)) },
+            { fieldType },
+          )
 
           val accessType =
             if (isProviderType) {
@@ -354,7 +437,14 @@ internal class IrGraphGenerator(
                 it.doubleCheck(this@withInit, symbols, binding.typeKey)
               }
           }
-          bindingFieldContext.putProviderField(key, field)
+          
+          // Track in context (handles both regular and sharded)
+          val context = bindingFieldContext
+          if (context is ShardedBindingFieldContext) {
+            context.putProviderField(key, field, targetShard)
+          } else {
+            context.putProviderField(key, field)
+          }
         }
 
       // Add statements to our constructor's deferred fields _after_ we've added all provider
@@ -511,13 +601,37 @@ internal class IrGraphGenerator(
               //  one and make the rest call that one. Not multibinding specific. Maybe
               //  groupBy { typekey }?
             }
+            
+            // Handle sharded field access
+            val context = bindingFieldContext
+            val providerExpression = if (context is ShardedBindingFieldContext) {
+              val location = context.getProviderFieldLocation(binding.typeKey)
+              if (location != null && location.shard != null) {
+                // Access through shard: this.providers1.repositoryProvider
+                val shardAccess = irGetField(
+                  irGet(irFunction.dispatchReceiverParameter!!),
+                  location.shardField!!
+                )
+                // Get the field from the shard
+                irGetField(shardAccess, location.field)
+              } else {
+                // Direct access in main class or binding needs to be generated
+                expressionGeneratorFactory
+                  .create(irFunction.dispatchReceiverParameter!!)
+                  .generateBindingCode(binding, contextualTypeKey = contextualTypeKey)
+              }
+            } else {
+              // Non-sharded, regular access
+              expressionGeneratorFactory
+                .create(irFunction.dispatchReceiverParameter!!)
+                .generateBindingCode(binding, contextualTypeKey = contextualTypeKey)
+            }
+            
             irExprBodySafe(
               symbol,
               typeAsProviderArgument(
                 contextualTypeKey,
-                expressionGeneratorFactory
-                  .create(irFunction.dispatchReceiverParameter!!)
-                  .generateBindingCode(binding, contextualTypeKey = contextualTypeKey),
+                providerExpression,
                 isAssisted = false,
                 isGraphInstance = false,
               ),

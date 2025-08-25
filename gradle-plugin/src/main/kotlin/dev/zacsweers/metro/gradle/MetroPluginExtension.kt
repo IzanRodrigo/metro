@@ -93,6 +93,17 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val chunkFieldInits: Property<Boolean> =
     objects.property(Boolean::class.javaObjectType).convention(true)
 
+  /**
+   * Maximum number of fields per shard when generating large dependency graphs.
+   * When a graph exceeds this limit, Metro will automatically split it into multiple
+   * helper classes to avoid "class too large" JVM errors.
+   * 
+   * Default is Int.MAX_VALUE (sharding disabled). Set to a lower value (e.g., 1000)
+   * to enable automatic sharding for large graphs.
+   */
+  public val maxFieldsPerShard: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(Int.MAX_VALUE)
+
   /** Enable/disable automatic transformation of providers to be private. Enabled by default. */
   public val transformProvidersToPrivate: Property<Boolean> =
     objects.property(Boolean::class.javaObjectType).convention(true)

@@ -21,3 +21,5 @@ site/
 temp-clone/
 /benchmark/
 .cache/
+.claude/
+.serena/
