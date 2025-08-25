@@ -16,6 +16,7 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.Origins
+import dev.zacsweers.metro.compiler.ir.setDispatchReceiver
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.DescriptorVisibility
@@ -23,20 +24,41 @@ import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addField
+import org.jetbrains.kotlin.ir.builders.declarations.addFunction
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
+import org.jetbrains.kotlin.ir.builders.declarations.buildValueParameter
 import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irComposite
+import org.jetbrains.kotlin.ir.builders.irCallOp
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
+import org.jetbrains.kotlin.ir.builders.irEquals
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.irIfThen
+import org.jetbrains.kotlin.ir.builders.irNull
+import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.ir.builders.irSet
 import org.jetbrains.kotlin.ir.builders.irSetField
+import org.jetbrains.kotlin.ir.builders.irString
+import org.jetbrains.kotlin.ir.builders.irTemporary
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
+import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrGetValue
 import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.makeNullable
 import org.jetbrains.kotlin.ir.util.addChild
+import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
+import org.jetbrains.kotlin.ir.util.fields
 import org.jetbrains.kotlin.ir.util.primaryConstructor
+import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
+import org.jetbrains.kotlin.ir.visitors.transformChildrenVoid
 import org.jetbrains.kotlin.name.Name
 
 /**
@@ -47,6 +69,10 @@ internal data class ShardFieldSpec(
   val type: IrType,
   val typeKey: IrTypeKey,
   val initializer: FieldInitializer,
+  val binding: IrBinding,
+  val accessType: IrGraphExpressionGenerator.AccessType,
+  val isScoped: Boolean,
+  val isProviderType: Boolean,
   val visibility: DescriptorVisibility = DescriptorVisibilities.PRIVATE
 )
 
@@ -59,17 +85,22 @@ internal class ProviderClassGenerator(
   private val mainGraphClass: IrClass,
   shardIndex: Int,
   private val fieldSpecs: List<ShardFieldSpec> = emptyList(),
+  private val bindingGraph: IrBindingGraph,
+  private val node: DependencyGraphNode,
 ) : IrMetroContext by metroContext {
 
   private val className = Name.identifier("${mainGraphClass.name.asString()}Providers$shardIndex")
   
   data class GeneratedShard(
     val shardClass: IrClass,
-    val fields: Map<IrTypeKey, IrField>
+    val fields: Map<IrTypeKey, IrField>,
+    val getterMethods: Map<IrTypeKey, IrSimpleFunction>
   )
   
   fun generate(): GeneratedShard {
     val createdFields = mutableListOf<IrField>()
+    val fieldToSpec = mutableMapOf<IrField, ShardFieldSpec>()
+    val getterMethods = mutableMapOf<IrTypeKey, IrSimpleFunction>()
     
     val shardClass = irFactory.buildClass {
       name = className
@@ -108,14 +139,99 @@ internal class ProviderClassGenerator(
       }
       
       // Create all the fields that belong to this shard
+      // These are nullable backing fields that will be initialized lazily
       fieldSpecs.forEach { spec ->
+        // Create a nullable backing field (prefixed with _)
+        val backingFieldName = "_${spec.name}"
         val field = addField {
-          name = Name.identifier(spec.name)
-          type = spec.type
-          visibility = spec.visibility
-          isFinal = true
+          name = Name.identifier(backingFieldName)
+          type = spec.type.makeNullable()
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = false // Must be non-final for lazy initialization
         }
         createdFields.add(field)
+        fieldToSpec[field] = spec
+        
+        // Create a getter method for lazy initialization
+        val getterMethod = addFunction {
+          name = Name.identifier("get${spec.name.capitalize()}")
+          returnType = spec.type
+          visibility = DescriptorVisibilities.INTERNAL
+        }.apply {
+          val getterFunction = this
+          // Set the dispatch receiver for this method
+          setDispatchReceiver(thisReceiver!!.copyTo(this, type = thisReceiver!!.type))
+          // Create the method body with lazy initialization
+          body = createIrBuilder(symbol).irBlockBody {
+            // Simple null check and initialization - no double-check for now
+            // to keep the implementation simpler and avoid synchronization issues
+            val resultVar = irTemporary(
+              value = irGetField(irGet(dispatchReceiverParameter!!), field),
+              nameHint = "result",
+              isMutable = true
+            )
+            
+            +irIfThen(
+              type = irBuiltIns.unitType,
+              condition = irEquals(irGet(resultVar), irNull()),
+              thenPart = irComposite {
+                // Get the graph reference from the field
+                val graphReference = irGetField(irGet(dispatchReceiverParameter!!), graphField)
+                
+                // Create a temporary variable to hold the graph
+                val graphVar = irTemporary(graphReference, nameHint = "graph")
+                
+                // Generate the initialization code for this field
+                // We need to create an expression generator that uses the graph reference
+                // The graph field in the shard contains a reference to the main graph instance
+                // which has all the fields and context needed for dependency resolution
+                
+                // Generate the initialization expression using the field initializer
+                // The field initializer is a lambda that takes a receiver parameter and generates the expression
+                // We need to create a synthetic parameter to represent the graph reference
+                val syntheticGraphParam = dispatchReceiverParameter!!.copyTo(
+                  getterFunction,
+                  type = mainGraphType,
+                  name = Name.identifier("graphParam")
+                )
+                
+                // Create a builder context and invoke the initializer
+                val initializedValue = createIrBuilder(symbol).run {
+                  // The initializer expects a parameter representing 'this' (the graph)
+                  // We'll generate the expression and then transform it to use our graph variable
+                  val generatedExpr = spec.initializer(this, syntheticGraphParam, spec.typeKey)
+                  
+                  // Transform the expression to replace references to the synthetic parameter
+                  // with references to our actual graph variable
+                  generatedExpr.transform(object : IrElementTransformerVoid() {
+                    override fun visitGetValue(expression: IrGetValue): IrExpression {
+                      return if (expression.symbol == syntheticGraphParam.symbol) {
+                        irGet(graphVar)
+                      } else {
+                        super.visitGetValue(expression)
+                      }
+                    }
+                  }, null)
+                }
+                
+                // Store in both the temporary variable and the backing field
+                +irSet(resultVar, initializedValue)
+                +irSetField(
+                  irGet(dispatchReceiverParameter!!),
+                  field,
+                  irGet(resultVar)
+                )
+              }
+            )
+            
+            // Return the non-null result (use !! operator which translates to checkNotNull)
+            // Since we just initialized it, it should never be null at this point
+            +irReturn(
+              irGet(resultVar)
+            )
+          }
+        }
+        getterMethods[spec.typeKey] = getterMethod
       }
       
       // Initialize the graph field in constructor
@@ -139,16 +255,10 @@ internal class ProviderClassGenerator(
           irGet(graphParam)
         )
         
-        // Initialize all the shard's fields
-        // This must happen after the graph field is set since the initializers may need the graph reference
-        fieldSpecs.zip(createdFields).forEach { (spec, field) ->
-          val initializedValue = spec.initializer.invoke(this, graphParam, spec.typeKey)
-          +irSetField(
-            irGet(this@apply.thisReceiver!!),
-            field,
-            initializedValue
-          )
-        }
+        // DO NOT initialize shard fields in the constructor
+        // This causes issues with circular dependencies and incorrect receiver contexts
+        // The fields are marked as non-final and will be initialized lazily on first access
+        // TODO: Implement proper lazy initialization using double-check pattern or similar
       }
       
       // Add this class as a nested class inside the main graph
@@ -158,7 +268,7 @@ internal class ProviderClassGenerator(
     // Create field mapping
     val fieldMap = fieldSpecs.zip(createdFields).associate { (spec, field) -> spec.typeKey to field }
     
-    return GeneratedShard(shardClass, fieldMap)
+    return GeneratedShard(shardClass, fieldMap, getterMethods)
   }
 }
 

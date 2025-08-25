@@ -25,12 +25,38 @@ Don't bother running code formatting, I'll handle that in commits.
 
 Metro is a compile-time dependency injection framework implemented as a Kotlin compiler plugin with multiplatform support.
 
+### Graph Sharding (Large Graphs Support)
+
+Metro supports automatic graph sharding to handle very large dependency graphs that would otherwise hit JVM class size limits:
+
+**Configuration:**
+```kotlin
+// build.gradle.kts
+metro {
+    maxFieldsPerShard = 10000  // Split graphs larger than this into multiple classes
+}
+```
+
+**How it works:**
+- When a dependency graph exceeds `maxFieldsPerShard` bindings, Metro automatically splits provider fields across multiple "shard" classes
+- Each shard class contains a subset of provider fields with lazy initialization
+- Fields are initialized on first access using the same binding resolution logic as non-sharded graphs
+- Scoped bindings are properly handled with DoubleCheck wrapping
+
+**When to use:**
+- Large applications with 1000+ bindings that hit "class too large" compilation errors
+- Default is `Int.MAX_VALUE` (sharding disabled)
+- Recommended threshold: 10000-20000 fields per shard
+
 ### Core Modules
 
 **compiler/** - Kotlin compiler plugin implementation
 - Uses two-phase compilation: FIR (analysis) → IR (code generation)
 - `fir/` - Frontend IR extensions for K2 compiler analysis and validation
 - `ir/` - IR transformers for code generation
+  - `IrGraphGenerator.kt` - Main graph generation, handles sharding decision
+  - `ProviderClassGenerator.kt` - Generates shard classes for large graphs
+  - `ShardedBindingFieldContext.kt` - Manages field access across shards
 - `graph/` - Dependency graph analysis, validation, and cycle detection
 - Entry point: `MetroCompilerPluginRegistrar.kt`
 

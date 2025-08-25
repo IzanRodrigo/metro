@@ -24,6 +24,7 @@ import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.parent
+import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
@@ -91,6 +92,38 @@ private constructor(
     INSTANCE,
     PROVIDER,
   }
+  
+  /**
+   * Accesses a provider field, handling sharded fields that require getter method calls.
+   */
+  context(builder: IrBuilderWithScope)
+  private fun accessProviderField(typeKey: IrTypeKey, field: IrField): IrExpression = with(builder) {
+    val context = bindingFieldContext
+    return if (context is ShardedBindingFieldContext) {
+      val location = context.getProviderFieldLocation(typeKey)
+      if (location != null && location.shard != null && location.getter != null) {
+        // Use lazy getter method for sharded fields
+        val shardAccess = irGetField(irGet(thisReceiver), location.shardField!!)
+        // Call the getter method on the shard instance
+        irInvoke(
+          dispatchReceiver = shardAccess,
+          callee = location.getter.symbol,
+          typeHint = field.type,
+          args = emptyList()
+        )
+      } else if (location != null && location.shard != null) {
+        // Fallback to direct field access if no getter
+        val shardAccess = irGetField(irGet(thisReceiver), location.shardField!!)
+        irGetField(shardAccess, field)
+      } else {
+        // Direct field access in main graph
+        irGetField(irGet(thisReceiver), field)
+      }
+    } else {
+      // Non-sharded, direct field access
+      irGetField(irGet(thisReceiver), field)
+    }
+  }
 
   context(scope: IrBuilderWithScope)
   fun generateBindingCode(
@@ -117,9 +150,9 @@ private constructor(
       // provider for it.
       // This is important for cases like DelegateFactory and breaking cycles.
       if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-        bindingFieldContext.providerField(binding.typeKey)?.let {
+        bindingFieldContext.providerField(binding.typeKey)?.let { field ->
           val providerInstance =
-            irGetField(irGet(thisReceiver), it).let {
+            accessProviderField(binding.typeKey, field).let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
             }
           return if (accessType == AccessType.INSTANCE) {
@@ -575,8 +608,8 @@ private constructor(
 
         val providerInstance =
           bindingFieldContext.providerField(typeKey)?.let { field ->
-            // If it's in provider fields, invoke that field
-            irGetField(irGet(thisReceiver), field)
+            // If it's in provider fields, access that field (handling sharding)
+            accessProviderField(typeKey, field)
           }
             ?: run {
               // Generate binding code for each param

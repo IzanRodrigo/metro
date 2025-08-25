@@ -17,6 +17,7 @@ package dev.zacsweers.metro.compiler.ir
 
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 
 /**
  * Extended binding field context that supports sharding fields across multiple classes.
@@ -59,10 +60,22 @@ internal class ShardedBindingFieldContext(
   private val shardFields = mutableMapOf<IrClass, IrField>()
   
   /**
+   * Maps type keys to their getter methods in shard classes.
+   */
+  private val fieldGetters = mutableMapOf<IrTypeKey, IrSimpleFunction>()
+  
+  /**
    * Registers a shard class and its corresponding field in the main graph.
    */
   fun registerShard(shardClass: IrClass, fieldInMainGraph: IrField) {
     shardFields[shardClass] = fieldInMainGraph
+  }
+  
+  /**
+   * Registers a getter method for a field in a shard.
+   */
+  fun registerGetterMethod(key: IrTypeKey, getter: IrSimpleFunction) {
+    fieldGetters[key] = getter
   }
   
   /**
@@ -95,6 +108,7 @@ internal class ShardedBindingFieldContext(
     val field: IrField,
     val shard: IrClass?, // null means main graph class
     val shardField: IrField?, // field in main graph that references the shard
+    val getter: IrSimpleFunction? = null, // getter method for lazy initialization
   )
   
   /**
@@ -104,6 +118,7 @@ internal class ShardedBindingFieldContext(
     val field = providerField(key) ?: return null
     val shard = fieldShards[key]
     val shardField = shard?.let { shardFields[it] }
-    return FieldLocation(field, shard, shardField)
+    val getter = fieldGetters[key]
+    return FieldLocation(field, shard, shardField, getter)
   }
 }

@@ -283,8 +283,29 @@ internal class IrGraphGenerator(
       val providerSpecs = fieldDistributor.distribute(bindingsToShard, graphClass)
       val useSharding = providerSpecs.isNotEmpty()
       
-      if (options.debug && useSharding) {
-        log("Sharding enabled for ${graphClass.kotlinFqName}: creating ${providerSpecs.size} shard classes")
+      // Create sharding report
+      val shardingReport = StringBuilder()
+      val shardingStartTime = if (useSharding) System.currentTimeMillis() else 0L
+      if (useSharding) {
+        shardingReport.appendLine("=== GRAPH SHARDING REPORT ===")
+        shardingReport.appendLine("Graph: ${graphClass.kotlinFqName}")
+        shardingReport.appendLine("Start time: ${java.time.Instant.now()}")
+        shardingReport.appendLine()
+        shardingReport.appendLine("Configuration:")
+        shardingReport.appendLine("  maxFieldsPerShard: ${options.maxFieldsPerShard}")
+        shardingReport.appendLine()
+        shardingReport.appendLine("Field Analysis:")
+        shardingReport.appendLine("  Total bindings in initOrder: ${initOrder.size}")
+        shardingReport.appendLine("  Bindings to shard: ${bindingsToShard.size}")
+        shardingReport.appendLine("  Existing fields in context: ${bindingFieldContext.availableProviderKeys.size}")
+        shardingReport.appendLine("  Deferred types: ${sealResult.deferredTypes.size}")
+        shardingReport.appendLine()
+        shardingReport.appendLine("Sharding Plan:")
+        shardingReport.appendLine("  Number of shards: ${providerSpecs.size}")
+        providerSpecs.forEachIndexed { index, spec ->
+          shardingReport.appendLine("  Shard ${index + 1}: ${spec.bindings.size} bindings")
+        }
+        shardingReport.appendLine()
       }
 
       // Replace bindingFieldContext with sharded version if needed
@@ -364,8 +385,12 @@ internal class IrGraphGenerator(
             fieldBindings.filter { it.isScoped() }.joinToString("\n") { it.typeKey.toString() }
           }
         }
-        .forEach { binding ->
+        .forEachIndexed { index, binding ->
           val key = binding.typeKey
+          
+          if (useSharding && index % 100 == 0) {
+            shardingReport.appendLine("Processing binding $index: $key")
+          }
           
           // Determine which shard this binding belongs to
           val shardSpec = bindingToShardSpec[binding]
@@ -398,6 +423,9 @@ internal class IrGraphGenerator(
             // Field belongs to a shard - collect specification
             val fieldName = fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
             val fieldInitializer: FieldInitializer = { thisReceiver, typeKey ->
+              // When this initializer runs in the shard constructor, thisReceiver will be
+              // the graph parameter, not the shard's thisReceiver. The expression generator
+              // needs to use this to access main graph fields.
               expressionGeneratorFactory
                 .create(thisReceiver)
                 .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
@@ -409,16 +437,18 @@ internal class IrGraphGenerator(
             }
             
             // Add to field specifications for this shard
-            shardFieldSpecs?.let { specs ->
-              specs.getOrPut(shardSpec) { mutableListOf() }.add(
-                ShardFieldSpec(
-                  name = fieldName,
-                  type = fieldType,
-                  typeKey = key,
-                  initializer = fieldInitializer
-                )
+              shardFieldSpecs?.getOrPut(shardSpec) { mutableListOf() }?.add(
+                  ShardFieldSpec(
+                      name = fieldName,
+                      type = fieldType,
+                      typeKey = key,
+                      initializer = fieldInitializer,
+                      binding = binding,
+                      accessType = accessType,
+                      isScoped = binding.isScoped(),
+                      isProviderType = isProviderType
+                  )
               )
-            }
             
           } else {
             // Field is in main graph - create immediately with normal initialization
@@ -446,17 +476,24 @@ internal class IrGraphGenerator(
 
       // Create shard classes with collected field specifications
       val shardClasses = if (useSharding && shardFieldSpecs != null) {
+        shardingReport.appendLine()
+        shardingReport.appendLine("Shard Class Generation:")
         val shardedContext = bindingFieldContext as ShardedBindingFieldContext
         
-        providerSpecs.mapNotNull { spec ->
-          val fieldSpecs = shardFieldSpecs[spec] ?: return@mapNotNull null
+        providerSpecs.mapIndexedNotNull { index, spec ->
+          val fieldSpecs = shardFieldSpecs[spec] ?: return@mapIndexedNotNull null
+          
+          shardingReport.appendLine("  Creating shard ${index + 1}: ${spec.className}")
+          shardingReport.appendLine("    Fields: ${fieldSpecs.size}")
           
           // Generate the shard class with its fields
           val generatedShard = ProviderClassGenerator(
             metroContext = this@IrGraphGenerator,
             mainGraphClass = graphClass,
             shardIndex = spec.shardIndex,
-            fieldSpecs = fieldSpecs
+            fieldSpecs = fieldSpecs,
+            bindingGraph = bindingGraph,
+            node = node
           ).generate()
           
           // Add field in main graph for this shard
@@ -482,18 +519,45 @@ internal class IrGraphGenerator(
             )
           }
           
+          // DO NOT initialize shard fields here - it causes circular dependencies
+          // The fields will remain null and need to be handled with lazy initialization
+          // TODO: Implement proper lazy initialization pattern for shard fields
+          
           // Register with context and update field mappings
           shardedContext.registerShard(generatedShard.shardClass, shardField)
           
-          // Track all shard fields in the context
+          // Track all shard fields and their getters in the context
           for ((typeKey, field) in generatedShard.fields) {
             shardedContext.putProviderField(typeKey, field, generatedShard.shardClass)
           }
           
+          // Register getter methods for lazy initialization
+          for ((typeKey, getter) in generatedShard.getterMethods) {
+            shardedContext.registerGetterMethod(typeKey, getter)
+          }
+          
+          shardingReport.appendLine("    Completed shard ${index + 1}")
+          
           Triple(spec, generatedShard.shardClass, shardField)
+        }.also {
+          shardingReport.appendLine()
+          shardingReport.appendLine("Summary: ${it.size} shard classes created successfully")
         }
       } else {
         emptyList()
+      }
+      
+      // Write sharding report if sharding was used
+      if (useSharding) {
+        val elapsedMs = System.currentTimeMillis() - shardingStartTime
+        shardingReport.appendLine()
+        shardingReport.appendLine("Performance:")
+        shardingReport.appendLine("  Total time: ${elapsedMs}ms")
+        shardingReport.appendLine()
+        shardingReport.appendLine("=== END SHARDING REPORT ===")
+        writeDiagnostic("sharding-report-${graphClass.kotlinFqName.asString().replace(".", "-")}.txt") {
+          shardingReport.toString()
+        }
       }
 
       // Add statements to our constructor's deferred fields _after_ we've added all provider
@@ -645,23 +709,34 @@ internal class IrGraphGenerator(
         val binding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
         body =
           createIrBuilder(symbol).run {
-            if (binding is IrBinding.Multibinding) {
-              // TODO if we have multiple accessors pointing at the same type, implement
-              //  one and make the rest call that one. Not multibinding specific. Maybe
-              //  groupBy { typekey }?
-            }
+            // TODO if we have multiple accessors pointing at the same type, implement
+            //  one and make the rest call that one. Not multibinding specific. Maybe
+            //  groupBy { typekey }?
+            // if (binding is IrBinding.Multibinding) { }
             
             // Handle sharded field access
             val context = bindingFieldContext
             val providerExpression = if (context is ShardedBindingFieldContext) {
               val location = context.getProviderFieldLocation(binding.typeKey)
-              if (location != null && location.shard != null) {
-                // Access through shard: this.providers1.repositoryProvider
+              if (location != null && location.shard != null && location.getter != null) {
+                // Use lazy getter method for sharded fields
                 val shardAccess = irGetField(
                   irGet(irFunction.dispatchReceiverParameter!!),
                   location.shardField!!
                 )
-                // Get the field from the shard
+                // Call the getter method on the shard instance
+                irInvoke(
+                  dispatchReceiver = shardAccess,
+                  callee = location.getter.symbol,
+                  typeHint = location.field.type,
+                  args = emptyList()
+                )
+              } else if (location != null && location.shard != null) {
+                // Fallback to direct field access if no getter (shouldn't happen with new implementation)
+                val shardAccess = irGetField(
+                  irGet(irFunction.dispatchReceiverParameter!!),
+                  location.shardField!!
+                )
                 irGetField(shardAccess, location.field)
               } else {
                 // Direct access in main class or binding needs to be generated
