@@ -14,6 +14,7 @@ import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.ir.transformers.AssistedFactoryTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.BindingContainerTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.MembersInjectorTransformer
+import dev.zacsweers.metro.compiler.ir.ShardGenerator
 import dev.zacsweers.metro.compiler.reportCompilerBug
 // import dev.zacsweers.metro.compiler.sharding.CycleBreaker // Removed - not implemented yet
 import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
@@ -582,9 +583,14 @@ private constructor(
       currentShardIndex != null && currentShardIndex != 0 && targetShardIndex == 0 -> {
         log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> graph.field")
         // Access through the 'graph' parameter that was passed to this shard
-        val graphParam = (thisReceiver.parent as? IrClass)?.primaryConstructor
-          ?.parameters?.firstOrNull { it.name.asString() == "graph" }
-          ?: reportCompilerBug("Shard class missing 'graph' constructor parameter")
+        val shardClass = thisReceiver.parent as? IrClass
+          ?: reportCompilerBug("thisReceiver parent is not an IrClass")
+        
+        // Use the stored metadata to get the graph parameter symbol robustly
+        val shardMetadata = ShardGenerator.getShardMetadata(shardClass)
+          ?: reportCompilerBug("Shard class missing metadata for graph parameter")
+        
+        val graphParam = shardMetadata.graphParameterSymbol.owner
         irGet(graphParam)
       }
       // If we're in the main graph and need to access a shard

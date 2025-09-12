@@ -26,6 +26,7 @@ import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.symbols.IrValueParameterSymbol
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
@@ -89,8 +90,11 @@ internal class ShardGenerator(
     }
     
     // Add parameters for main graph and modules
-    constructor.addValueParameter("graph", parentClass.defaultType)
+    val graphParameter = constructor.addValueParameter("graph", parentClass.defaultType)
     // Module parameters will be added based on shard requirements
+    
+    // Store the graph parameter symbol in metadata for robust access
+    setShardMetadata(shardClass, ShardMetadata(graphParameterSymbol = graphParameter.symbol))
     
     // Add constructor body that calls initializeFields if provided
     if (initializeFieldsFunction != null) {
@@ -350,6 +354,26 @@ internal class ShardGenerator(
 
   companion object {
     /**
+     * Metadata storage for shard classes.
+     * Maps shard classes to their metadata containing important symbols.
+     */
+    private val shardMetadataMap = mutableMapOf<IrClass, ShardMetadata>()
+    
+    /**
+     * Stores metadata for a shard class.
+     */
+    fun setShardMetadata(shardClass: IrClass, metadata: ShardMetadata) {
+      shardMetadataMap[shardClass] = metadata
+    }
+    
+    /**
+     * Retrieves metadata for a shard class.
+     */
+    fun getShardMetadata(shardClass: IrClass): ShardMetadata? {
+      return shardMetadataMap[shardClass]
+    }
+    
+    /**
      * Generates all shard classes for a sharding plan.
      * Returns a map of shard index to ShardInfo containing the generated class and field.
      */
@@ -398,5 +422,13 @@ internal class ShardGenerator(
     val shardClass: IrClass,
     val shardField: IrField?,
     val generator: ShardGenerator
+  )
+  
+  /**
+   * Metadata for a shard class containing important symbols.
+   * This allows robust access to shard constructor parameters without relying on names.
+   */
+  data class ShardMetadata(
+    val graphParameterSymbol: IrValueParameterSymbol
   )
 }
