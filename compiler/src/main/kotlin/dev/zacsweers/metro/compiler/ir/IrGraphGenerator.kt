@@ -98,7 +98,6 @@ internal class IrGraphGenerator(
    * @see <a href="https://github.com/ZacSweers/metro/issues/645">#645</a>
    */
   private val fieldInitializersByClass = mutableMapOf<IrClass, MutableList<Pair<IrField, FieldInitializer>>>()
-  private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
       context = this,
@@ -116,7 +115,7 @@ internal class IrGraphGenerator(
   private var shardInfos: Map<Int, ShardGenerator.ShardInfo> = emptyMap()
 
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
-    fieldsToTypeKeys[this] = typeKey
+    // The typeKey is already registered in shardFieldRegistry when the field is created
     // Determine which class this field belongs to (main graph or shard)
     val owningClass = parent as IrClass
     fieldInitializersByClass.getOrPut(owningClass) { mutableListOf() }.add(this to init)
@@ -482,10 +481,15 @@ internal class IrGraphGenerator(
               // Add field initializers first
               for ((field, init) in mainGraphInitializers) {
                 add { thisReceiver ->
+                  // Get the typeKey from the registry
+                  val fieldInfo = shardFieldRegistry.allFields().find { it.field == field }
+                    ?: error("Field ${field.name} not found in registry")
+                  val typeKey = fieldInfo.binding.typeKey
+                  
                   irSetField(
                     irGet(thisReceiver),
                     field,
-                    init(thisReceiver, fieldsToTypeKeys.getValue(field)),
+                    init(thisReceiver, typeKey),
                   )
                 }
               }
@@ -522,7 +526,10 @@ internal class IrGraphGenerator(
         // Assign those initializers directly to their fields and mark them as final
         for ((field, init) in mainGraphInitializers) {
           field.initFinal {
-            val typeKey = fieldsToTypeKeys.getValue(field)
+            // Get the typeKey from the registry
+            val fieldInfo = shardFieldRegistry.allFields().find { it.field == field }
+              ?: error("Field ${field.name} not found in registry")
+            val typeKey = fieldInfo.binding.typeKey
             init(thisReceiverParameter, typeKey)
           }
         }

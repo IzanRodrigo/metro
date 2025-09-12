@@ -70,6 +70,16 @@ internal class ShardFieldRegistry {
   }
   
   /**
+   * Gets all fields in a specific shard (alias for getFieldsInShard for API consistency).
+   * 
+   * @param index The shard index
+   * @return List of field information for that shard
+   */
+  fun fieldsInShard(index: Int): List<FieldInfo> {
+    return getFieldsInShard(index)
+  }
+  
+  /**
    * Checks if a binding is in a specific shard.
    * 
    * @param typeKey The type key of the binding
@@ -91,10 +101,10 @@ internal class ShardFieldRegistry {
   }
   
   /**
-   * Returns all registered field information.
+   * Returns all registered field information as a sequence for efficient iteration.
    */
-  fun allFields(): Collection<FieldInfo> {
-    return fieldsByTypeKey.values
+  fun allFields(): Sequence<FieldInfo> {
+    return fieldsByTypeKey.values.asSequence()
   }
   
   /**
