@@ -1587,3 +1587,75 @@ internal fun IrDeclarationWithVisibility.isVisibleAsInternal(file: IrFile): Bool
     referencedDeclarationPackageFragment.moduleDescriptor
   )
 }
+
+/**
+ * Utility functions for graph sharding code generation.
+ */
+context(context: IrMetroContext)
+internal fun IrClass.addInnerClass(simpleName: String): IrClass {
+  val cls = context.irFactory.buildClass { name = Name.identifier(simpleName) }
+  cls.parent = this
+  this.addChild(cls)
+  cls.createDefaultConstructorIfAbsent()
+  return cls
+}
+
+internal fun IrClass.addPrivateField(name: String, type: IrType): IrField {
+  return addField(Name.identifier(name), type, Vis.PRIVATE)
+}
+
+/**
+ * Queue of initialization statements that will be emitted into multiple
+ * initializer functions to avoid large <init> method bodies.
+ */
+internal class InitQueue {
+  private val blocks = mutableListOf<IrStatementsBuilder<*>.() -> Unit>()
+
+  /**
+   * Enqueue an initialization block. The receiver of the lambda is an
+   * [IrStatementsBuilder] for the target context.
+   */
+  fun add(block: IrStatementsBuilder<*>.() -> Unit) {
+    blocks += block
+  }
+
+  /**
+   * Flush the queued statements into a set of private initializer functions
+   * on the given class. Each function will contain at most [maxPerFn] blocks.
+   * The primary constructor of [owner] will be modified to call each
+   * initializePartN function in order.
+   */
+  fun flushSplit(owner: IrClass, maxPerFn: Int) {
+    if (blocks.isEmpty()) return
+    val parts = blocks.chunked(maxPerFn)
+    // Generate initializePartX methods
+    parts.forEachIndexed { index, chunk ->
+      val fnName = "initializePart${index + 1}"
+      val fn = owner.addFunction(Name.identifier(fnName), owner.defaultType).apply {
+        visibility = Vis.PRIVATE
+      }
+      // Build body for each initializePart function
+      val builder = DeclarationIrBuilder(fn.symbol.owner.factory, fn.symbol)
+      fn.body = builder.irBlockBody {
+        chunk.forEach { block ->
+          block()
+        }
+      }
+    }
+    // Modify constructor to call each initializePart method
+    val ctor = owner.primaryConstructor
+    if (ctor != null) {
+      val ctorBuilder = DeclarationIrBuilder(ctor.symbol.owner.factory, ctor.symbol)
+      ctor.body = ctorBuilder.irBlockBody {
+        for (i in 1..parts.size) {
+          val initFn = owner.declarations.filterIsInstance<IrSimpleFunction>().firstOrNull {
+            it.name.asString() == "initializePart$i"
+          }
+          if (initFn != null) {
+            +irCall(initFn.symbol)
+          }
+        }
+      }
+    }
+  }
+}
