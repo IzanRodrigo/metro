@@ -21,11 +21,14 @@ import java.util.PriorityQueue
 internal object GraphSharding {
 
   /**
-   * The default maximum number of bindings per shard.  This value was chosen conservatively to
-   * avoid hitting JVM method or class size limits.  It can be tuned or exposed via compiler
+   * The default maximum number of bindings per shard. This value was chosen conservatively to
+   * avoid hitting JVM method or class size limits. It can be tuned or exposed via compiler
    * options in the future.
+   *
+   * Borrowed from Dagger
+   * ttps://github.com/google/dagger/blob/master/dagger-compiler/main/java/dagger/internal/codegen/compileroption/CompilerOptions.java#L140-L143
    */
-  const val DEFAULT_BINDINGS_PER_SHARD: Int = 100
+  const val DEFAULT_BINDINGS_PER_SHARD: Int = 3500
 
   /**
    * Compute a set of shards for the given adjacency map.  The adjacency map must be fully
