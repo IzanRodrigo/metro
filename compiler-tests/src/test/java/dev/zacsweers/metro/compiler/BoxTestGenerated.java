@@ -22,6 +22,60 @@ public class BoxTestGenerated extends AbstractBoxTest {
     KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/box"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
   }
 
+  @Test
+  @TestMetadata("sharding_basic.kt")
+  public void testSharding_basic() {
+    runTest("compiler-tests/src/test/data/box/sharding_basic.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_cross_shard.kt")
+  public void testSharding_cross_shard() {
+    runTest("compiler-tests/src/test/data/box/sharding_cross_shard.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_cycle_breaking.kt")
+  public void testSharding_cycle_breaking() {
+    runTest("compiler-tests/src/test/data/box/sharding_cycle_breaking.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_cycles.kt")
+  public void testSharding_cycles() {
+    runTest("compiler-tests/src/test/data/box/sharding_cycles.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_generation_basic.kt")
+  public void testSharding_generation_basic() {
+    runTest("compiler-tests/src/test/data/box/sharding_generation_basic.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_large.kt")
+  public void testSharding_large() {
+    runTest("compiler-tests/src/test/data/box/sharding_large.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_minimal.kt")
+  public void testSharding_minimal() {
+    runTest("compiler-tests/src/test/data/box/sharding_minimal.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_module_passing.kt")
+  public void testSharding_module_passing() {
+    runTest("compiler-tests/src/test/data/box/sharding_module_passing.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_scc.kt")
+  public void testSharding_scc() {
+    runTest("compiler-tests/src/test/data/box/sharding_scc.kt");
+  }
+
   @Nested
   @TestMetadata("compiler-tests/src/test/data/box/aggregation")
   @TestDataPath("$PROJECT_ROOT")

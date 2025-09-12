@@ -169,6 +169,33 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
+  SHARDING_ENABLED(
+    RawMetroOption.boolean(
+      name = "sharding.enabled",
+      defaultValue = true,
+      valueDescription = "<true | false>",
+      description = "Enable/disable graph sharding for JVM targets to avoid method size limits. " +
+        "Sharding automatically splits large dependency graphs into smaller nested classes " +
+        "to work around JVM limitations (64KB method size, field count limits). " +
+        "This flag is only applicable to JVM/Android targets and is ignored on JS/Native platforms.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
+  KEYS_PER_SHARD(
+    RawMetroOption(
+      name = "sharding.keysPerShard",
+      defaultValue = 3000,
+      valueDescription = "<number>",
+      description = "Maximum number of bindings per shard before a new shard is created. " +
+        "Default is 3000, following Dagger's default threshold. Lower values create more " +
+        "shards but with smaller method sizes, while higher values create fewer shards " +
+        "but risk hitting JVM limits. Recommended range: 100-5000 depending on binding complexity.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = String::toInt,
+    )
+  ),
   PUBLIC_PROVIDER_SEVERITY(
     RawMetroOption(
       name = "public-provider-severity",
@@ -516,6 +543,8 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
+  val shardingEnabled: Boolean = MetroOption.SHARDING_ENABLED.raw.defaultValue.expectAs(),
+  val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE
@@ -653,6 +682,12 @@ public data class MetroOptions(
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
 
+          MetroOption.SHARDING_ENABLED ->
+            options = options.copy(shardingEnabled = configuration.getAsBoolean(entry))
+
+          MetroOption.KEYS_PER_SHARD ->
+            options = options.copy(keysPerShard = configuration.getAsInt(entry))
+
           MetroOption.PUBLIC_PROVIDER_SEVERITY ->
             options =
               options.copy(
@@ -774,6 +809,11 @@ public data class MetroOptions(
 
     private fun CompilerConfiguration.getAsBoolean(option: MetroOption): Boolean {
       @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Boolean>
+      return get(typed.key, typed.defaultValue)
+    }
+
+    private fun CompilerConfiguration.getAsInt(option: MetroOption): Int {
+      @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Int>
       return get(typed.key, typed.defaultValue)
     }
 

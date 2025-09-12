@@ -128,4 +128,8 @@ internal object Keys {
   data object BindingMirrorClassDeclaration : GeneratedDeclarationKey() {
     override fun toString() = "BindingMirrorClassDeclaration"
   }
+
+  data object GeneratedShardClass : GeneratedDeclarationKey() {
+    override fun toString() = "GeneratedShardClass"
+  }
 }

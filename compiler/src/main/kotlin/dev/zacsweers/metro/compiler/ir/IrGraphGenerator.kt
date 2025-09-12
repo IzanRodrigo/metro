@@ -5,6 +5,7 @@ package dev.zacsweers.metro.compiler.ir
 import dev.zacsweers.metro.compiler.METRO_VERSION
 import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
+import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
 import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.decapitalizeUS
 import dev.zacsweers.metro.compiler.expectAs
@@ -16,6 +17,7 @@ import dev.zacsweers.metro.compiler.ir.transformers.MembersInjectorTransformer
 import dev.zacsweers.metro.compiler.letIf
 import dev.zacsweers.metro.compiler.proto.MetroMetadata
 import dev.zacsweers.metro.compiler.reportCompilerBug
+import dev.zacsweers.metro.compiler.sharding.ShardingPlan
 import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
@@ -26,7 +28,9 @@ import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
 import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
+import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
@@ -37,6 +41,8 @@ import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.typeOrFail
@@ -44,6 +50,7 @@ import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.copyTo
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.primaryConstructor
@@ -73,17 +80,24 @@ internal class IrGraphGenerator(
   private val membersInjectorTransformer: MembersInjectorTransformer,
   assistedFactoryTransformer: AssistedFactoryTransformer,
   graphExtensionGenerator: IrGraphExtensionGenerator,
+  private val shardingPlan: ShardingPlan? = null,
 ) : IrMetroContext by metroContext {
 
   private val bindingFieldContext = BindingFieldContext()
+  
+  /**
+   * Registry for tracking which binding fields are in which shards.
+   * This coordinates field naming between shard generation and cross-shard access.
+   */
+  private val shardFieldRegistry = ShardFieldRegistry()
 
   /**
    * To avoid `MethodTooLargeException`, we split field initializations up over multiple constructor
-   * inits.
+   * inits. Each class (main graph or shard) maintains its own initialization list.
    *
    * @see <a href="https://github.com/ZacSweers/metro/issues/645">#645</a>
    */
-  private val fieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
+  private val fieldInitializersByClass = mutableMapOf<IrClass, MutableList<Pair<IrField, FieldInitializer>>>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
@@ -96,11 +110,16 @@ internal class IrGraphGenerator(
       assistedFactoryTransformer = assistedFactoryTransformer,
       graphExtensionGenerator = graphExtensionGenerator,
       parentTracer = parentTracer,
+      shardFieldRegistry = shardFieldRegistry,
     )
+  
+  private var shardInfos: Map<Int, ShardGenerator.ShardInfo> = emptyMap()
 
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
     fieldsToTypeKeys[this] = typeKey
-    fieldInitializers += (this to init)
+    // Determine which class this field belongs to (main graph or shard)
+    val owningClass = parent as IrClass
+    fieldInitializersByClass.getOrPut(owningClass) { mutableListOf() }.add(this to init)
   }
 
   fun IrField.initFinal(body: IrBuilderWithScope.() -> IrExpression): IrField = apply {
@@ -133,6 +152,18 @@ internal class IrGraphGenerator(
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
 
       val thisReceiverParameter = thisReceiverOrFail
+      
+      // Generate shard classes and fields if sharding is enabled
+      val (shardInfos, shardInitializers) = if (shardingPlan?.requiresSharding() == true) {
+        parentTracer.traceNested("Generate shards") {
+          generateShards()
+        }
+      } else {
+        emptyMap<Int, ShardGenerator.ShardInfo>() to emptyList()
+      }
+      
+      // Add shard initializations to constructor statements (BEFORE other field initializations)
+      constructorStatements.addAll(shardInitializers)
 
       fun addBoundInstanceField(
         typeKey: IrTypeKey,
@@ -312,6 +343,20 @@ internal class IrGraphGenerator(
         }
         .forEach { binding ->
           val key = binding.typeKey
+          
+          // Check if this binding should go into a shard
+          val targetShardIndex = shardingPlan?.bindingToShard?.get(key)
+          val targetShard = targetShardIndex?.let { shardInfos[it] }
+          
+          // If sharding is enabled and this binding is assigned to a non-component shard,
+          // generate it in that shard instead of the main class
+          if (targetShard != null && !targetShard.shard.isComponentShard) {
+            // This binding goes into a shard
+            // For now, we'll just track it - Phase 3 will handle the actual generation
+            // TODO: Generate field in shard class instead of main class
+            // TODO: Update bindingFieldContext to track shard location
+          }
+          
           // Since assisted and member injections don't implement Factory, we can't just type these
           // as Provider<*> fields
           var isProviderType = true
@@ -329,13 +374,40 @@ internal class IrGraphGenerator(
               }
             }
 
+          // Determine where to create the field (main class or shard)
+          val targetClass = if (targetShard != null && !targetShard.shard.isComponentShard) {
+            if (options.debug) {
+              log("[MetroSharding] Distributing field for ${binding.typeKey.render(short = true)} to Shard${targetShard.shard.index}")
+            }
+            targetShard.shardClass
+          } else {
+            this // Main graph class
+          }
+          
           // If we've reserved a field for this key here, pull it out and use that
-          val field =
-            getOrCreateBindingField(
+          val fieldName = fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
+          val field = targetClass.getOrCreateBindingField(
               binding.typeKey,
-              { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)) },
+              { fieldName },
               { fieldType },
             )
+          
+          // Register the field in the shard field registry
+          // Always register fields when sharding is available, even if not actively sharding
+          // This ensures singleton behavior is maintained
+          if (shardingPlan != null) {
+            val shardIndex = targetShardIndex ?: 0 // 0 represents the main component
+            if (options.debug) {
+              log("[MetroSharding] Registering field '$fieldName' for ${binding.typeKey.render(short = true)} in shard $shardIndex")
+            }
+            shardFieldRegistry.registerField(
+              typeKey = binding.typeKey,
+              shardIndex = shardIndex,
+              field = field,
+              fieldName = fieldName,
+              binding = binding
+            )
+          }
 
           val accessType =
             if (isProviderType) {
@@ -354,6 +426,13 @@ internal class IrGraphGenerator(
                 it.doubleCheck(this@withInit, symbols, binding.typeKey)
               }
           }
+          
+          // Track the field location for cross-shard access
+          if (targetShard != null && !targetShard.shard.isComponentShard) {
+            // Store shard reference in binding field context for Phase 3
+            // Phase 3 will use this to generate proper cross-shard access
+          }
+          
           bindingFieldContext.putProviderField(key, field)
         }
 
@@ -389,16 +468,19 @@ internal class IrGraphGenerator(
         }
       }
 
+      // Get field initializers for the main graph class
+      val mainGraphInitializers = fieldInitializersByClass[this@with] ?: emptyList()
+      
       if (
         options.chunkFieldInits &&
-          fieldInitializers.size + initStatements.size > STATEMENTS_PER_METHOD
+          mainGraphInitializers.size + initStatements.size > STATEMENTS_PER_METHOD
       ) {
         // Larger graph, split statements
         // Chunk our constructor statements and split across multiple init functions
         val chunks =
           buildList<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement> {
               // Add field initializers first
-              for ((field, init) in fieldInitializers) {
+              for ((field, init) in mainGraphInitializers) {
                 add { thisReceiver ->
                   irSetField(
                     irGet(thisReceiver),
@@ -438,7 +520,7 @@ internal class IrGraphGenerator(
       } else {
         // Small graph, just do it in the constructor
         // Assign those initializers directly to their fields and mark them as final
-        for ((field, init) in fieldInitializers) {
+        for ((field, init) in mainGraphInitializers) {
           field.initFinal {
             val typeKey = fieldsToTypeKeys.getValue(field)
             init(thisReceiverParameter, typeKey)
@@ -662,5 +744,124 @@ internal class IrGraphGenerator(
         }
       }
     }
+  }
+  
+  /**
+   * Generates shard classes and their initialization.
+   * Following Dagger's pattern, shards are initialized in the constructor before other bindings.
+   */
+  private fun IrClass.generateShards(): Pair<Map<Int, ShardGenerator.ShardInfo>, List<IrBuilderWithScope.(IrValueParameter) -> IrStatement>> {
+    requireNotNull(shardingPlan) { "generateShards called without sharding plan" }
+    
+    if (options.debug) {
+      log("[MetroSharding] Generating ${shardingPlan.additionalShards().size} shard classes")
+    }
+    
+    // First, generate shard classes with their field initialization methods
+    val infos = mutableMapOf<Int, ShardGenerator.ShardInfo>()
+    
+    // Process each shard (skipping shard 0 which is the main component)
+    for (shard in shardingPlan.additionalShards()) {
+      if (options.debug) {
+        log("[MetroSharding] Generating Shard${shard.index} for ${shard.bindings.size} bindings")
+        val sampleBindings = shard.bindings.take(3).joinToString { it.render(short = true) }
+        log("[MetroSharding]   Sample bindings: $sampleBindings")
+      }
+      
+      val generator = ShardGenerator(
+        context = this@IrGraphGenerator,
+        parentClass = this,
+        shard = shard,
+        bindingGraph = bindingGraph,
+        fieldNameAllocator = fieldNameAllocator,
+        shardingPlan = shardingPlan,
+        fieldRegistry = shardFieldRegistry
+      )
+      
+      // Generate the shard class with field initialization
+      // First create the class, then we'll add the initialization method
+      val shardClass = generator.generateShardClass()
+      
+      // Get the field initializers for this shard class
+      val shardInitializers = fieldInitializersByClass[shardClass] ?: emptyList()
+      
+      // Create ShardInfo
+      val shardInfo = ShardGenerator.ShardInfo(
+        shard = shard,
+        shardClass = shardClass,
+        shardField = null, // Will be set below
+        generator = generator
+      )
+      
+      // If there are initializers, generate the initializeFields method and update constructor
+      if (shardInitializers.isNotEmpty()) {
+        // Generate the initializeFields method
+        val initMethod = generator.generateShardFieldInitialization(shardInfo, shardInitializers)
+        
+        // Update the constructor to call initializeFields
+        val constructor = shardClass.primaryConstructor
+          ?: error("Shard class missing primary constructor")
+        
+        constructor.body = createIrBuilder(constructor.symbol).irBlockBody {
+          // Call the super constructor first
+          +irDelegatingConstructorCall(irBuiltIns.anyClass.owner.primaryConstructor!!)
+          // Initialize the instance
+          +IrInstanceInitializerCallImpl(
+            UNDEFINED_OFFSET,
+            UNDEFINED_OFFSET,
+            shardClass.symbol,
+            shardClass.defaultType,
+          )
+          // Call this.initializeFields() at the end of constructor
+          +irCall(initMethod.symbol).also { call ->
+            call.dispatchReceiver = irGet(shardClass.thisReceiver!!)
+          }
+        }
+      }
+      
+      // Generate the field in the parent class to hold this shard instance
+      val shardField = generator.generateShardField(shardClass)
+      
+      // Update the ShardInfo with the field
+      val updatedShardInfo = shardInfo.copy(shardField = shardField)
+      infos[shard.index] = updatedShardInfo
+    }
+    
+    // Store for later use in binding distribution
+    shardInfos = infos
+    
+    // Collect field initializations to add to constructor
+    val shardInitializers = mutableListOf<IrBuilderWithScope.(IrValueParameter) -> IrStatement>()
+    
+    // Initialize shard fields in constructor
+    // This must happen BEFORE other binding fields are initialized
+    for ((shardIndex, shardInfo) in infos) {
+      val shard = shardInfo.shard
+      val shardField = shardInfo.shardField
+      val shardClass = shardInfo.shardClass
+      
+      // Determine which modules this shard needs
+      // For now, pass all modules - Phase 3 will optimize this
+      // TODO: Implement proper module detection
+      val moduleParams = emptyList<IrValueParameter>()
+      
+      // Add field initialization in the constructor
+      shardField?.let { field ->
+        shardInitializers.add { thisReceiver ->
+          // Initialize the shard field with a new instance
+          val initialization = shardInfo.generator.generateShardInitialization(
+            shardClass = shardClass,
+            thisReceiver = thisReceiver,
+            moduleParameters = moduleParams
+          )
+          
+          // Set the field value
+          irSetField(irGet(thisReceiver), field, initialization)
+        }
+      }
+    }
+    
+    // Return both the infos and their initializations
+    return infos to shardInitializers
   }
 }
