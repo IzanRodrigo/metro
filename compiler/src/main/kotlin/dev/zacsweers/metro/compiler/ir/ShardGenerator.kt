@@ -35,11 +35,8 @@ import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 
-/**
- * Maximum number of statements per initialization method to avoid 64KB method size limit.
- * TODO: Unify with the constant in IrGraphGenerator
- */
-private const val SHARD_STATEMENTS_PER_METHOD = 25
+// Use shared constant from ShardingConstants
+private const val SHARD_STATEMENTS_PER_METHOD = ShardingConstants.STATEMENTS_PER_METHOD
 
 /**
  * Generates IR for shard classes following Dagger's pattern.
@@ -109,8 +106,11 @@ internal class ShardGenerator(
           shardClass.defaultType,
         )
         // Call this.initializeFields() at the end of constructor
+        val thisReceiver = requireNotNull(shardClass.thisReceiver) {
+          "Shard class ${shardClass.name} missing this receiver for init call"
+        }
         +irCall(initializeFieldsFunction.symbol).also { call ->
-          call.dispatchReceiver = irGet(shardClass.thisReceiver!!)
+          call.dispatchReceiver = irGet(thisReceiver)
         }
       }
     }
@@ -225,11 +225,14 @@ internal class ShardGenerator(
             val typeKey = fieldInfo.binding.typeKey
             
             // Create field assignment statement: this.field = initializer(this, typeKey)
+            val dispatchReceiver = requireNotNull(partMethod.dispatchReceiverParameter) {
+              "Part method ${partMethod.name} missing dispatch receiver parameter"
+            }
             val assignment = with(context.createIrBuilder(partMethod.symbol)) {
               irSetField(
-                receiver = irGet(partMethod.dispatchReceiverParameter!!),
+                receiver = irGet(dispatchReceiver),
                 field = field,
-                value = fieldInitializer(partMethod.dispatchReceiverParameter!!, typeKey)
+                value = fieldInitializer(dispatchReceiver, typeKey)
               )
             }
             
@@ -253,9 +256,12 @@ internal class ShardGenerator(
         endOffset = UNDEFINED_OFFSET
       ).apply {
         for (partFunction in partFunctions) {
+          val dispatchReceiver = requireNotNull(initMethod.dispatchReceiverParameter) {
+            "Initialize method missing dispatch receiver parameter"
+          }
           val callPart = with(context.createIrBuilder(initMethod.symbol)) {
             irCall(partFunction.symbol).also { call ->
-              call.dispatchReceiver = irGet(initMethod.dispatchReceiverParameter!!)
+              call.dispatchReceiver = irGet(dispatchReceiver)
             }
           }
           statements.add(callPart)
@@ -287,11 +293,14 @@ internal class ShardGenerator(
           val typeKey = fieldInfo.binding.typeKey
           
           // Create field assignment statement: this.field = initializer(this, typeKey)
+          val dispatchReceiver = requireNotNull(initMethod.dispatchReceiverParameter) {
+            "Initialize method missing dispatch receiver parameter"
+          }
           val assignment = with(context.createIrBuilder(initMethod.symbol)) {
             irSetField(
-              receiver = irGet(initMethod.dispatchReceiverParameter!!), // shard's 'this'
+              receiver = irGet(dispatchReceiver), // shard's 'this'
               field = field,
-              value = fieldInitializer(initMethod.dispatchReceiverParameter!!, typeKey)
+              value = fieldInitializer(dispatchReceiver, typeKey)
             )
           }
           
@@ -329,8 +338,9 @@ internal class ShardGenerator(
     val initializeFieldsMethod = generateShardFieldInitialization(shardInfo, initializers)
     
     // Now update the constructor to call the initialization method
-    val constructor = shardClass.primaryConstructor
-      ?: error("Shard class missing primary constructor")
+    val constructor = requireNotNull(shardClass.primaryConstructor) {
+      "Shard class ${shardClass.name} missing primary constructor"
+    }
     
     // Add constructor body that calls initializeFields
     constructor.body = context.createIrBuilder(constructor.symbol).irBlockBody {
@@ -344,8 +354,11 @@ internal class ShardGenerator(
         shardClass.defaultType,
       )
       // Call this.initializeFields() at the end of constructor
+      val thisReceiver = requireNotNull(shardClass.thisReceiver) {
+        "Shard class ${shardClass.name} missing this receiver"
+      }
       +irCall(initializeFieldsMethod.symbol).also { call ->
-        call.dispatchReceiver = irGet(shardClass.thisReceiver!!)
+        call.dispatchReceiver = irGet(thisReceiver)
       }
     }
     

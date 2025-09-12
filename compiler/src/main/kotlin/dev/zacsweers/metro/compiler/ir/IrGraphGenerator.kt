@@ -62,9 +62,8 @@ import org.jetbrains.kotlin.name.Name
 internal typealias FieldInitializer =
   IrBuilderWithScope.(thisReceiver: IrValueParameter, key: IrTypeKey) -> IrExpression
 
-// Borrowed from Dagger
-// https://github.com/google/dagger/blob/b39cf2d0640e4b24338dd290cb1cb2e923d38cb3/dagger-compiler/main/java/dagger/internal/codegen/writing/ComponentImplementation.java#L263
-private const val STATEMENTS_PER_METHOD = 25
+// Use shared constant from ShardingConstants
+private const val STATEMENTS_PER_METHOD = ShardingConstants.STATEMENTS_PER_METHOD
 
 internal class IrGraphGenerator(
   metroContext: IrMetroContext,

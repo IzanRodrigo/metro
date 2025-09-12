@@ -272,7 +272,9 @@ private constructor(
             if (factoryClass.isObject) {
               factoryClass
             } else {
-              factoryClass.companionObject()!!
+              requireNotNull(factoryClass.companionObject()) {
+                "Factory class ${factoryClass.name} missing companion object"
+              }
             }
           val createFunction = creatorClass.requireSimpleFunction(Symbols.StringNames.CREATE)
           // Must use the provider's params for IrTypeKey as that has qualifier
@@ -314,7 +316,9 @@ private constructor(
             dispatchReceiver = null
             isFromDagger = true
           } else {
-            val implClassCompanion = implClass.companionObject()!!
+            val implClassCompanion = requireNotNull(implClass.companionObject()) {
+              "Implementation class ${implClass.name} missing companion object"
+            }
             createFunction = implClassCompanion.requireSimpleFunction(Symbols.StringNames.CREATE)
             dispatchReceiver = irGetObject(implClassCompanion.symbol)
             isFromDagger = false
@@ -345,7 +349,9 @@ private constructor(
         }
 
         is IrBinding.MembersInjected -> {
-          val injectedClass = referenceClass(binding.targetClassId)!!.owner
+          val injectedClass = requireNotNull(referenceClass(binding.targetClassId)) {
+            "Could not find injected class for ${binding.targetClassId}"
+          }.owner
           val injectedType = injectedClass.defaultType
           val injectorClass = membersInjectorTransformer.getOrGenerateInjector(injectedClass)?.ir
 
@@ -362,7 +368,9 @@ private constructor(
             }
           } else {
             val injectorCreatorClass =
-              if (injectorClass.isObject) injectorClass else injectorClass.companionObject()!!
+              if (injectorClass.isObject) injectorClass else requireNotNull(injectorClass.companionObject()) {
+                "Injector class ${injectorClass.name} missing companion object"
+              }
             val createFunction =
               injectorCreatorClass.requireSimpleFunction(Symbols.StringNames.CREATE)
             val args =
@@ -409,7 +417,9 @@ private constructor(
                 // We need the provider
                 irGetField(
                   irGet(binding.classReceiverParameter),
-                  binding.providerFieldAccess!!.field,
+                  requireNotNull(binding.providerFieldAccess) {
+                    "GraphDependency binding missing provider field access"
+                  }.field,
                 )
               }
             }
@@ -433,7 +443,9 @@ private constructor(
               parentTracer,
             )
 
-          val ctor = extensionImpl.primaryConstructor!!
+          val ctor = requireNotNull(extensionImpl.primaryConstructor) {
+            "Extension implementation ${extensionImpl.name} missing primary constructor"
+          }
           val instanceExpression =
             irCallConstructor(ctor.symbol, node.sourceGraph.typeParameters.map { it.defaultType })
               .apply {
@@ -475,7 +487,9 @@ private constructor(
                 "Expected factory implementation to be generated for graph extension factory binding"
               )
 
-          val constructor = factoryImpl.primaryConstructor!!
+          val constructor = requireNotNull(factoryImpl.primaryConstructor) {
+            "Factory implementation ${factoryImpl.name} missing primary constructor"
+          }
           val parameters = constructor.parameters()
           val factoryInstance =
             irCallConstructor(

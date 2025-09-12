@@ -23,15 +23,15 @@ public class BoxTestGenerated extends AbstractBoxTest {
   }
 
   @Test
-  @TestMetadata("sharding_back_edge.kt")
-  public void testSharding_back_edge() {
-    runTest("compiler-tests/src/test/data/box/sharding_back_edge.kt");
-  }
-
-  @Test
   @TestMetadata("sharding_basic.kt")
   public void testSharding_basic() {
     runTest("compiler-tests/src/test/data/box/sharding_basic.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_chunked_init.kt")
+  public void testSharding_chunked_init() {
+    runTest("compiler-tests/src/test/data/box/sharding_chunked_init.kt");
   }
 
   @Test
