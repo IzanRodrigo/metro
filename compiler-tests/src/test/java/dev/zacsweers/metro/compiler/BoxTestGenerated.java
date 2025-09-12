@@ -77,6 +77,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
   }
 
   @Test
+  @TestMetadata("sharding_robust_params.kt")
+  public void testSharding_robust_params() {
+    runTest("compiler-tests/src/test/data/box/sharding_robust_params.kt");
+  }
+
+  @Test
   @TestMetadata("sharding_scc.kt")
   public void testSharding_scc() {
     runTest("compiler-tests/src/test/data/box/sharding_scc.kt");
