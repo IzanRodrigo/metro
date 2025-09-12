@@ -35,6 +35,12 @@ import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 
 /**
+ * Maximum number of statements per initialization method to avoid 64KB method size limit.
+ * TODO: Unify with the constant in IrGraphGenerator
+ */
+private const val SHARD_STATEMENTS_PER_METHOD = 25
+
+/**
  * Generates IR for shard classes following Dagger's pattern.
  * 
  * Shards are static nested classes within the main component that contain
@@ -175,6 +181,7 @@ internal class ShardGenerator(
   /**
    * Generates an initialization method inside the shard class.
    * Creates a private initializeFields() method that populates all fields in the shard.
+   * If there are too many initializers, splits them into multiple initializePart{N}() methods.
    * 
    * @param shardInfo The shard information containing the shard class
    * @param initializers List of (field, initializerFunction) pairs for this shard
@@ -186,42 +193,110 @@ internal class ShardGenerator(
   ): IrFunction {
     val shardClass = shardInfo.shardClass
     
-    // Create the initializeFields method
-    val initMethod = shardClass.addFunction {
-      name = "initializeFields".asName()
-      visibility = DescriptorVisibilities.PRIVATE
-      returnType = context.irBuiltIns.unitType
-    }
+    // Check if we need to chunk the initializers
+    val needsChunking = initializers.size > SHARD_STATEMENTS_PER_METHOD
     
-    // Create method body with field assignments
-    initMethod.body = context.irFactory.createBlockBody(
-      startOffset = UNDEFINED_OFFSET, 
-      endOffset = UNDEFINED_OFFSET
-    ).apply {
-      // Iterate over each field and its initializer
-      for ((field, fieldInitializer) in initializers) {
-        // Get the type key for this field from field registry
-        // Find the field info that matches this field
-        val fieldInfo = fieldRegistry.allFields().find { it.field == field }
-          ?: error("No field info found for field ${field.name}")
-        
-        // Extract the type key from the binding associated with this field
-        val typeKey = fieldInfo.binding.typeKey
-        
-        // Create field assignment statement: this.field = initializer(this, typeKey)
-        val assignment = with(context.createIrBuilder(initMethod.symbol)) {
-          irSetField(
-            receiver = irGet(initMethod.dispatchReceiverParameter!!), // shard's 'this'
-            field = field,
-            value = fieldInitializer(initMethod.dispatchReceiverParameter!!, typeKey)
-          )
+    if (needsChunking) {
+      // Split initializers into chunks
+      val chunks = initializers.chunked(SHARD_STATEMENTS_PER_METHOD)
+      
+      // Generate initializePart{N} methods for each chunk
+      val partFunctions = chunks.mapIndexed { index, chunk ->
+        val partMethod = shardClass.addFunction {
+          name = "initializePart${index + 1}".asName()
+          visibility = DescriptorVisibilities.PRIVATE
+          returnType = context.irBuiltIns.unitType
         }
         
-        statements.add(assignment)
+        // Create method body with field assignments for this chunk
+        partMethod.body = context.irFactory.createBlockBody(
+          startOffset = UNDEFINED_OFFSET,
+          endOffset = UNDEFINED_OFFSET
+        ).apply {
+          for ((field, fieldInitializer) in chunk) {
+            // Get the type key for this field from field registry
+            val fieldInfo = fieldRegistry.allFields().find { it.field == field }
+              ?: error("No field info found for field ${field.name}")
+            
+            val typeKey = fieldInfo.binding.typeKey
+            
+            // Create field assignment statement: this.field = initializer(this, typeKey)
+            val assignment = with(context.createIrBuilder(partMethod.symbol)) {
+              irSetField(
+                receiver = irGet(partMethod.dispatchReceiverParameter!!),
+                field = field,
+                value = fieldInitializer(partMethod.dispatchReceiverParameter!!, typeKey)
+              )
+            }
+            
+            statements.add(assignment)
+          }
+        }
+        
+        partMethod
       }
+      
+      // Create the main initializeFields method that calls all parts
+      val initMethod = shardClass.addFunction {
+        name = "initializeFields".asName()
+        visibility = DescriptorVisibilities.PRIVATE
+        returnType = context.irBuiltIns.unitType
+      }
+      
+      // Create method body that calls all part methods
+      initMethod.body = context.irFactory.createBlockBody(
+        startOffset = UNDEFINED_OFFSET,
+        endOffset = UNDEFINED_OFFSET
+      ).apply {
+        for (partFunction in partFunctions) {
+          val callPart = with(context.createIrBuilder(initMethod.symbol)) {
+            irCall(partFunction.symbol).also { call ->
+              call.dispatchReceiver = irGet(initMethod.dispatchReceiverParameter!!)
+            }
+          }
+          statements.add(callPart)
+        }
+      }
+      
+      return initMethod
+    } else {
+      // No chunking needed, generate single method as before
+      val initMethod = shardClass.addFunction {
+        name = "initializeFields".asName()
+        visibility = DescriptorVisibilities.PRIVATE
+        returnType = context.irBuiltIns.unitType
+      }
+      
+      // Create method body with field assignments
+      initMethod.body = context.irFactory.createBlockBody(
+        startOffset = UNDEFINED_OFFSET, 
+        endOffset = UNDEFINED_OFFSET
+      ).apply {
+        // Iterate over each field and its initializer
+        for ((field, fieldInitializer) in initializers) {
+          // Get the type key for this field from field registry
+          // Find the field info that matches this field
+          val fieldInfo = fieldRegistry.allFields().find { it.field == field }
+            ?: error("No field info found for field ${field.name}")
+          
+          // Extract the type key from the binding associated with this field
+          val typeKey = fieldInfo.binding.typeKey
+          
+          // Create field assignment statement: this.field = initializer(this, typeKey)
+          val assignment = with(context.createIrBuilder(initMethod.symbol)) {
+            irSetField(
+              receiver = irGet(initMethod.dispatchReceiverParameter!!), // shard's 'this'
+              field = field,
+              value = fieldInitializer(initMethod.dispatchReceiverParameter!!, typeKey)
+            )
+          }
+          
+          statements.add(assignment)
+        }
+      }
+      
+      return initMethod
     }
-    
-    return initMethod
   }
 
   /**
