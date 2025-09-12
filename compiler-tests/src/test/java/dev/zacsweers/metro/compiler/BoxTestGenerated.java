@@ -23,6 +23,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
   }
 
   @Test
+  @TestMetadata("sharding_backedge_cycle_guarantee.kt")
+  public void testSharding_backedge_cycle_guarantee() {
+    runTest("compiler-tests/src/test/data/box/sharding_backedge_cycle_guarantee.kt");
+  }
+
+  @Test
   @TestMetadata("sharding_basic.kt")
   public void testSharding_basic() {
     runTest("compiler-tests/src/test/data/box/sharding_basic.kt");
@@ -56,6 +62,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
   @TestMetadata("sharding_generation_basic.kt")
   public void testSharding_generation_basic() {
     runTest("compiler-tests/src/test/data/box/sharding_generation_basic.kt");
+  }
+
+  @Test
+  @TestMetadata("sharding_init_chunking_guarantee.kt")
+  public void testSharding_init_chunking_guarantee() {
+    runTest("compiler-tests/src/test/data/box/sharding_init_chunking_guarantee.kt");
   }
 
   @Test
