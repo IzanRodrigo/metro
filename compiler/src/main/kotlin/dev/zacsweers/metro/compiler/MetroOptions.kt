@@ -545,6 +545,7 @@ public data class MetroOptions(
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
   val shardingEnabled: Boolean = MetroOption.SHARDING_ENABLED.raw.defaultValue.expectAs(),
   val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
+  val shardingBreakCycles: Boolean = true,
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE

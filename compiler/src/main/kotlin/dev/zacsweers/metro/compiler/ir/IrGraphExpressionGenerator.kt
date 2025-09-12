@@ -644,19 +644,26 @@ private constructor(
     }
     
     // Check if this binding needs Provider wrapping for cycle breaking
-    // TODO: Implement cycle breaking in future iteration
-    val needsCycleBreaking = false
+    // Back-edges (higher shard -> lower shard) can create initialization cycles
+    val isCrossShard = currentShardIndex != null && targetShardIndex != currentShardIndex
+    val isBackEdge = isCrossShard && targetShardIndex < (currentShardIndex ?: Int.MAX_VALUE)
+    val needsCycleBreaking = options.shardingBreakCycles && isBackEdge
+    
+    if (needsCycleBreaking) {
+      log("[MetroSharding] Detected back-edge from shard $currentShardIndex to shard $targetShardIndex for ${binding.typeKey.render(short = true)}, using Provider indirection")
+    }
     
     return when {
-      // If cycle breaking is needed, always return as Provider
+      // If cycle breaking is needed and caller wants instance, go through Provider.invoke()
       needsCycleBreaking && accessType == AccessType.INSTANCE -> {
-        // Return the provider itself, not the instance
-        // The caller will need to handle this as a Provider
-        providerInstance
+        // Use Provider.invoke() to break the cycle
+        irInvoke(providerInstance, callee = symbols.providerInvoke)
       }
+      // Normal instance access (forward edge or no cycle breaking)
       accessType == AccessType.INSTANCE -> {
         irInvoke(providerInstance, callee = symbols.providerInvoke)
       }
+      // Provider access - return the provider itself
       else -> {
         providerInstance
       }
