@@ -28,6 +28,9 @@ internal class ShardFieldRegistry {
   /** Maps shard index to all fields in that shard */
   private val fieldsByShard = mutableMapOf<Int, MutableList<FieldInfo>>()
   
+  /** Maps IR fields to their field information for efficient reverse lookups */
+  private val fieldsByIrField = mutableMapOf<IrField, FieldInfo>()
+  
   /**
    * Registers a binding field in a specific shard.
    * 
@@ -47,6 +50,7 @@ internal class ShardFieldRegistry {
     val info = FieldInfo(shardIndex, field, fieldName, binding)
     fieldsByTypeKey[typeKey] = info
     fieldsByShard.getOrPut(shardIndex) { mutableListOf() }.add(info)
+    fieldsByIrField[field] = info
   }
   
   /**
@@ -57,6 +61,17 @@ internal class ShardFieldRegistry {
    */
   fun findField(typeKey: IrTypeKey): FieldInfo? {
     return fieldsByTypeKey[typeKey]
+  }
+  
+  /**
+   * Finds the field information for a given IR field.
+   * This enables efficient reverse lookups when you have a field and need its metadata.
+   * 
+   * @param field The IR field to look up
+   * @return The field information, or null if not found
+   */
+  fun findFieldByIrField(field: IrField): FieldInfo? {
+    return fieldsByIrField[field]
   }
   
   /**
@@ -113,5 +128,6 @@ internal class ShardFieldRegistry {
   fun clear() {
     fieldsByTypeKey.clear()
     fieldsByShard.clear()
+    fieldsByIrField.clear()
   }
 }

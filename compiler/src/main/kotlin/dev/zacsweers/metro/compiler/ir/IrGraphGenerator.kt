@@ -480,8 +480,8 @@ internal class IrGraphGenerator(
               // Add field initializers first
               for ((field, init) in mainGraphInitializers) {
                 add { thisReceiver ->
-                  // Get the typeKey from the registry
-                  val fieldInfo = shardFieldRegistry.allFields().find { it.field == field }
+                  // Get the typeKey from the registry using efficient reverse lookup
+                  val fieldInfo = shardFieldRegistry.findFieldByIrField(field)
                     ?: error("Field ${field.name} not found in registry")
                   val typeKey = fieldInfo.binding.typeKey
                   
@@ -525,8 +525,8 @@ internal class IrGraphGenerator(
         // Assign those initializers directly to their fields and mark them as final
         for ((field, init) in mainGraphInitializers) {
           field.initFinal {
-            // Get the typeKey from the registry
-            val fieldInfo = shardFieldRegistry.allFields().find { it.field == field }
+            // Get the typeKey from the registry using efficient reverse lookup
+            val fieldInfo = shardFieldRegistry.findFieldByIrField(field)
               ?: error("Field ${field.name} not found in registry")
             val typeKey = fieldInfo.binding.typeKey
             init(thisReceiverParameter, typeKey)

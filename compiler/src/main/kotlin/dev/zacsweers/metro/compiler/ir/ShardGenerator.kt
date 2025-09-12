@@ -218,8 +218,8 @@ internal class ShardGenerator(
           endOffset = UNDEFINED_OFFSET
         ).apply {
           for ((field, fieldInitializer) in chunk) {
-            // Get the type key for this field from field registry
-            val fieldInfo = fieldRegistry.allFields().find { it.field == field }
+            // Get the type key for this field from field registry using efficient reverse lookup
+            val fieldInfo = fieldRegistry.findFieldByIrField(field)
               ?: error("No field info found for field ${field.name}")
             
             val typeKey = fieldInfo.binding.typeKey
@@ -285,8 +285,8 @@ internal class ShardGenerator(
         // Iterate over each field and its initializer
         for ((field, fieldInitializer) in initializers) {
           // Get the type key for this field from field registry
-          // Find the field info that matches this field
-          val fieldInfo = fieldRegistry.allFields().find { it.field == field }
+          // Find the field info that matches this field using efficient reverse lookup
+          val fieldInfo = fieldRegistry.findFieldByIrField(field)
             ?: error("No field info found for field ${field.name}")
           
           // Extract the type key from the binding associated with this field
