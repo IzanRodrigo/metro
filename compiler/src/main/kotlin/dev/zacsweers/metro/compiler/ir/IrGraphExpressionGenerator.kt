@@ -15,7 +15,6 @@ import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.ir.transformers.AssistedFactoryTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.BindingContainerTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.MembersInjectorTransformer
-import dev.zacsweers.metro.compiler.ir.ShardGenerator
 import dev.zacsweers.metro.compiler.reportCompilerBug
 // import dev.zacsweers.metro.compiler.sharding.CycleBreaker // Removed - not implemented yet
 import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
@@ -586,6 +585,24 @@ private constructor(
       }
     }
 
+  /**
+   * Helper method to get the parent graph from within a shard class.
+   * Reads the 'graph' backing field instead of using constructor parameters.
+   */
+  context(scope: IrBuilderWithScope)
+  private fun irThisGraph(thisReceiver: IrValueParameter): IrExpression = with(scope) {
+    val thisClass = thisReceiver.parent as? IrClass
+      ?: reportCompilerBug("thisReceiver parent is not an IrClass")
+
+    val graphField = thisClass.declarations
+      .filterIsInstance<IrField>()
+      .firstOrNull { it.name.asString() == "graph" }
+      ?: reportCompilerBug("Shard class ${thisClass.name} missing graph backing field")
+
+    // Return this.graph
+    irGetField(irGet(thisReceiver), graphField)
+  }
+
   context(scope: IrBuilderWithScope)
   private fun generateCrossShardAccess(
     binding: IrBinding,
@@ -596,23 +613,15 @@ private constructor(
     log("[MetroSharding] Generating cross-shard access from shard ${currentShardIndex ?: 0} to shard $targetShardIndex for ${binding.typeKey.render(short = true)}")
     
     // Handle access based on where we are and where we're going - three routes:
-    // 1. shard → main: use shard constructor graph parameter
+    // 1. shard → main: use this.graph (backing field)
     // 2. main → shardN: use this.shardN
-    // 3. shardA → shardB: use graph.shardB
+    // 3. shardA → shardB: use this.graph.shardB (backing field then shard field)
     val targetAccess = when {
-      // Case 1: shard → main (use shard constructor graph parameter)
+      // Case 1: shard → main (use this.graph backing field)
       currentShardIndex != null && currentShardIndex != 0 && targetShardIndex == 0 -> {
-        log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> graph.field")
-        // Access through the 'graph' parameter that was passed to this shard
-        val shardClass = thisReceiver.parent as? IrClass
-          ?: reportCompilerBug("thisReceiver parent is not an IrClass")
-        
-        // Use the stored metadata to get the graph parameter symbol robustly
-        val shardMetadata = ShardGenerator.getShardMetadata(shardClass)
-          ?: reportCompilerBug("Shard class missing metadata for graph parameter")
-        
-        val graphParam = shardMetadata.graphParameterSymbol.owner
-        irGet(graphParam)
+        log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> this.graph.field")
+        // Access through the 'graph' backing field in this shard
+        irThisGraph(thisReceiver)
       }
       // Case 2: main → shardN (use this.shardN)
       currentShardIndex == null && targetShardIndex != 0 -> {
@@ -630,30 +639,29 @@ private constructor(
         // Access the shard: this.shard{N}
         irGetField(irGet(thisReceiver), shardField)
       }
-      // Case 3: shardA → shardB (use graph.shardB)
+      // Case 3: shardA → shardB (use this.graph.shardB)
       currentShardIndex != null && currentShardIndex != 0 && targetShardIndex != 0 && currentShardIndex != targetShardIndex -> {
-        log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> graph.shard${targetShardIndex}.field")
-        // First get the graph parameter
-        val shardClass = thisReceiver.parent as? IrClass
-          ?: reportCompilerBug("thisReceiver parent is not an IrClass")
-        
-        val shardMetadata = ShardGenerator.getShardMetadata(shardClass)
-          ?: reportCompilerBug("Shard class missing metadata for graph parameter")
-        
-        val graphParam = shardMetadata.graphParameterSymbol.owner
-        val graphAccess = irGet(graphParam)
-        
+        log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> this.graph.shard${targetShardIndex}.field")
+        // First get the graph from the backing field
+        val parentGraph = irThisGraph(thisReceiver)
+
+        // Get the type of the parent graph to find the shard field
+        val mainGraphType = (thisReceiver.parent as IrClass).declarations
+          .filterIsInstance<IrField>()
+          .first { it.name.asString() == "graph" }
+          .type
+
+        val mainGraphClass = mainGraphType.expectAs<IrSimpleType>().classifier.expectAs<IrClassSymbol>().owner
+
         // Then access the target shard field through the graph
         val shardFieldName = "shard$targetShardIndex"
-        val mainGraphClass = graphParam.type.expectAs<IrSimpleType>().classifier.expectAs<IrClassSymbol>().owner
-        
         val shardField = mainGraphClass.declarations
           .filterIsInstance<IrField>()
           .find { it.name.asString() == shardFieldName }
           ?: reportCompilerBug("Shard field '$shardFieldName' not found in main graph class")
-        
-        // Access: graph.shard{N}
-        irGetField(graphAccess, shardField)
+
+        // Access: this.graph.shard{N}
+        irGetField(parentGraph, shardField)
       }
       else -> {
         reportCompilerBug("Invalid cross-shard access: from shard $currentShardIndex to shard $targetShardIndex")
