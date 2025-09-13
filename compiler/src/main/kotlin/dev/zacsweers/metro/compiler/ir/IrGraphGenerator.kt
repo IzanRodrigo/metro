@@ -51,6 +51,7 @@ import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
@@ -173,6 +174,17 @@ internal class IrGraphGenerator(
   fun generate() =
     with(graphClass) {
       val ctor = primaryConstructor!!
+
+      // SwitchingProvider state tracking
+      val switchingIds = mutableMapOf<IrTypeKey, Int>()
+      var nextSwitchId = 0
+
+      // Find the SwitchingProvider class if it exists
+      val switchingProviderClass: IrClass? = declarations
+        .filterIsInstance<IrClass>()
+        .firstOrNull { it.name.asString() == "SwitchingProvider" }
+
+      val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
 
       val constructorStatements =
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
@@ -487,14 +499,39 @@ internal class IrGraphGenerator(
             }
 
           field.withInit(key) { thisReceiver, typeKey ->
-            expressionGeneratorFactory
-              .create(thisReceiver)
-              .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
-              .letIf(binding.isScoped() && isProviderType) {
-                // If it's scoped, wrap it in double-check
-                // DoubleCheck.provider(<provider>)
-                it.doubleCheck(this@withInit, symbols, binding.typeKey)
+            // If SwitchingProvider is available and this is a provider field, use it
+            if (spCtor != null && isProviderType) {
+              // Register this binding with an ID
+              val id = switchingIds.getOrPut(binding.typeKey) { nextSwitchId++ }
+
+              // new SwitchingProvider(graph, id)
+              val spNew = createIrBuilder(spCtor.symbol).run {
+                irCallConstructor(spCtor.symbol, emptyList()).apply {
+                  putValueArgument(0, irGet(thisReceiver)) // graph 'this'
+                  putValueArgument(1, irInt(id))
+                }
               }
+
+              // Wrap in DoubleCheck or SingleCheck based on scoping
+              if (binding.isScoped()) {
+                // DoubleCheck.provider(<provider>)
+                spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
+              } else {
+                // For unscoped, we could use SingleCheck if it exists, otherwise DoubleCheck
+                // For now, just use DoubleCheck for all
+                spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
+              }
+            } else {
+              // Fallback to original implementation if no SwitchingProvider
+              expressionGeneratorFactory
+                .create(thisReceiver)
+                .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                .letIf(binding.isScoped() && isProviderType) {
+                  // If it's scoped, wrap it in double-check
+                  // DoubleCheck.provider(<provider>)
+                  it.doubleCheck(this@withInit, symbols, binding.typeKey)
+                }
+            }
           }
           
           // Track the field location for cross-shard access
@@ -613,7 +650,7 @@ internal class IrGraphGenerator(
 
       // Populate SwitchingProvider if it exists
       parentTracer.traceNested("Populate SwitchingProvider") {
-        populateSwitchingProviderIfExists()
+        populateSwitchingProviderIfExists(switchingProviderClass, switchingIds)
       }
 
       parentTracer.traceNested("Implement overrides") { node.implementOverrides() }
@@ -855,33 +892,21 @@ internal class IrGraphGenerator(
    * Populates the SwitchingProvider invoke() method if it exists.
    * This should be called after all fields are created and initialized.
    */
-  private fun IrClass.populateSwitchingProviderIfExists() {
-    // Find the nested SwitchingProvider class if it exists
-    val switchingProviderClass = declarations
-      .filterIsInstance<IrClass>()
-      .firstOrNull { it.name.asString() == "SwitchingProvider" }
-
-    if (switchingProviderClass == null) {
-      // No SwitchingProvider, nothing to do
+  private fun IrClass.populateSwitchingProviderIfExists(
+    switchingProviderClass: IrClass?,
+    switchingIds: Map<IrTypeKey, Int>
+  ) {
+    if (switchingProviderClass == null || switchingIds.isEmpty()) {
+      // No SwitchingProvider or no bindings registered, nothing to do
       return
     }
 
-    // Collect all bindings that have provider fields
-    // We need bindings with their assigned IDs
-    val idToBinding = mutableListOf<IrBinding>()
-
-    // For now, we'll just collect provider-backed bindings from the main graph
-    // In a full implementation, we'd need to track the actual ID assignments
-    this@IrGraphGenerator.bindingGraph.bindingsSnapshot().values.forEach { binding ->
-      // Only include bindings that would have provider fields
-      if (binding is IrBinding.ConstructorInjected ||
-          binding is IrBinding.Provided ||
-          binding is IrBinding.BoundInstance ||
-          binding is IrBinding.Alias ||
-          binding is IrBinding.GraphExtension) {
-        idToBinding.add(binding)
+    // Build the ordered list of bindings based on their IDs
+    val idToBinding = switchingIds.entries
+      .sortedBy { it.value }
+      .mapNotNull { (typeKey, _) ->
+        this@IrGraphGenerator.bindingGraph.bindingsSnapshot()[typeKey]
       }
-    }
 
     if (idToBinding.isNotEmpty()) {
       // Call the SwitchingProviderGenerator to populate the invoke() method
