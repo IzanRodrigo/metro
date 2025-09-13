@@ -621,9 +621,12 @@ enum class AccessType {
   ): IrExpression = with(scope) {
     log("[MetroSharding] Generating cross-shard access from shard ${currentShardIndex ?: 0} to shard $targetShardIndex for ${binding.typeKey.render(short = true)}")
     
-    // Handle access based on where we are and where we're going
+    // Handle access based on where we are and where we're going - three routes:
+    // 1. shard → main: use shard constructor graph parameter
+    // 2. main → shardN: use this.shardN
+    // 3. shardA → shardB: use graph.shardB
     val targetAccess = when {
-      // If we're in a shard and need to access the main graph (shard 0)
+      // Case 1: shard → main (use shard constructor graph parameter)
       currentShardIndex != null && currentShardIndex != 0 && targetShardIndex == 0 -> {
         log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> graph.field")
         // Access through the 'graph' parameter that was passed to this shard
@@ -637,10 +640,10 @@ enum class AccessType {
         val graphParam = shardMetadata.graphParameterSymbol.owner
         irGet(graphParam)
       }
-      // If we're in the main graph and need to access a shard
-      targetShardIndex != 0 -> {
+      // Case 2: main → shardN (use this.shardN)
+      currentShardIndex == null && targetShardIndex != 0 -> {
         val shardFieldName = "shard$targetShardIndex"
-        log("[MetroSharding]   Access pattern: graph -> $shardFieldName.field")
+        log("[MetroSharding]   Access pattern: main -> $shardFieldName.field")
         // Find the shard field in the main component class
         val componentClass = thisReceiver.parent as? IrClass
           ?: reportCompilerBug("thisReceiver parent is not an IrClass")
@@ -653,40 +656,49 @@ enum class AccessType {
         // Access the shard: this.shard{N}
         irGetField(irGet(thisReceiver), shardField)
       }
+      // Case 3: shardA → shardB (use graph.shardB)
+      currentShardIndex != null && currentShardIndex != 0 && targetShardIndex != 0 && currentShardIndex != targetShardIndex -> {
+        log("[MetroSharding]   Access pattern: shard${currentShardIndex} -> graph.shard${targetShardIndex}.field")
+        // First get the graph parameter
+        val shardClass = thisReceiver.parent as? IrClass
+          ?: reportCompilerBug("thisReceiver parent is not an IrClass")
+        
+        val shardMetadata = ShardGenerator.getShardMetadata(shardClass)
+          ?: reportCompilerBug("Shard class missing metadata for graph parameter")
+        
+        val graphParam = shardMetadata.graphParameterSymbol.owner
+        val graphAccess = irGet(graphParam)
+        
+        // Then access the target shard field through the graph
+        val shardFieldName = "shard$targetShardIndex"
+        val mainGraphClass = graphParam.type.expectAs<IrSimpleType>().classifier.expectAs<IrClassSymbol>().owner
+        
+        val shardField = mainGraphClass.declarations
+          .filterIsInstance<IrField>()
+          .find { it.name.asString() == shardFieldName }
+          ?: reportCompilerBug("Shard field '$shardFieldName' not found in main graph class")
+        
+        // Access: graph.shard{N}
+        irGetField(graphAccess, shardField)
+      }
       else -> {
         reportCompilerBug("Invalid cross-shard access: from shard $currentShardIndex to shard $targetShardIndex")
       }
     }
     
-    // Now we need to access the binding field within the target (shard or main graph)
-    // Get the target class to search for the field
-    val targetClass = when (targetAccess) {
-      is IrGetField -> {
-        // Field access - get the field's type which should be the shard class
-        targetAccess.symbol.owner.type.expectAs<IrSimpleType>().classifier.expectAs<IrClassSymbol>().owner
-      }
-      is IrGetValue -> {
-        // Value access (parameter) - get the parameter's type which should be the main graph class
-        targetAccess.symbol.owner.type.expectAs<IrSimpleType>().classifier.expectAs<IrClassSymbol>().owner
-      }
-      else -> reportCompilerBug("Unexpected target access type: ${targetAccess::class.simpleName}")
-    }
-    
-    // Look for the provider field by checking if the shard has a field for this binding
-    // Use the field registry to find the exact field for this binding
+    // After selecting targetAccess, lookup the field by key
     val fieldInfo = shardFieldRegistry?.findField(binding.typeKey)
       ?: reportCompilerBug("Field registry not available for cross-shard access")
     
     // Verify the field is in the expected shard
-    if (fieldInfo.shardIndex != targetShardIndex) {
-      reportCompilerBug("Field for ${binding.typeKey} expected in shard $targetShardIndex but found in shard ${fieldInfo.shardIndex}")
+    check(fieldInfo.shardIndex == targetShardIndex) {
+      "Field for ${binding.typeKey} expected in shard $targetShardIndex but found in shard ${fieldInfo.shardIndex}"
     }
     
     val bindingField = fieldInfo.field
     
-    // Access the binding field through the target (either shard or main graph)
-    val ownerRecv = irOwnerReceiverFor(fieldInfo.shardIndex, thisReceiver, shardGraphParameter)
-    val fieldAccess = irGetField(ownerRecv, bindingField)
+    // Access the binding field through the target that we already computed
+    val fieldAccess = irGetField(targetAccess, bindingField)
     
     // Transform for the correct access type (Provider vs Instance)
     val metroProviderSymbols = symbols.providerSymbolsFor(contextualTypeKey)
