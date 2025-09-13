@@ -238,25 +238,30 @@ internal class ShardGenerator(
           name = "initializePart${index + 1}".asName()
           visibility = DescriptorVisibilities.PRIVATE
           returnType = context.irBuiltIns.unitType
+        }.apply {
+          // Make it an instance method by adding dispatch receiver
+          buildReceiverParameter { type = shardClass.defaultType }
         }
-        
-        partMethod.buildReceiverParameter { type = shardClass.defaultType }
-        
+
         // Create method body with field assignments for this chunk
         partMethod.body = context.irFactory.createBlockBody(
           startOffset = UNDEFINED_OFFSET,
           endOffset = UNDEFINED_OFFSET
         ).apply {
+          val dr = requireNotNull(partMethod.dispatchReceiverParameter) {
+            "Part method ${partMethod.name} missing dispatch receiver parameter"
+          }
           for ((field, typeKey, fieldInitializer) in chunk) {
-            val dr = requireNotNull(partMethod.dispatchReceiverParameter) {
-              "Part method ${partMethod.name} missing dispatch receiver parameter"
-            }
             statements += with(context.createIrBuilder(partMethod.symbol)) {
-              irSetField(irGet(dr), field, fieldInitializer(dr, typeKey))
+              irSetField(
+                receiver = irGet(dr),
+                field = field,
+                value = fieldInitializer(dr, typeKey)
+              )
             }
           }
         }
-        
+
         partMethod
       }
       
@@ -265,24 +270,25 @@ internal class ShardGenerator(
         name = "initializeFields".asName()
         visibility = DescriptorVisibilities.PRIVATE
         returnType = context.irBuiltIns.unitType
+      }.apply {
+        // Make it an instance method by adding dispatch receiver
+        buildReceiverParameter { type = shardClass.defaultType }
       }
-      initMethod.buildReceiverParameter { type = shardClass.defaultType }
-      
+
       // Create method body that calls all part methods
       initMethod.body = context.irFactory.createBlockBody(
         startOffset = UNDEFINED_OFFSET,
         endOffset = UNDEFINED_OFFSET
       ).apply {
+        val dr = requireNotNull(initMethod.dispatchReceiverParameter) {
+          "Initialize method missing dispatch receiver parameter"
+        }
         for (partFunction in partFunctions) {
-          val dispatchReceiver = requireNotNull(initMethod.dispatchReceiverParameter) {
-            "Initialize method missing dispatch receiver parameter"
-          }
-          val callPart = with(context.createIrBuilder(initMethod.symbol)) {
+          statements += with(context.createIrBuilder(initMethod.symbol)) {
             irCall(partFunction.symbol).also { call ->
-              call.dispatchReceiver = irGet(dispatchReceiver)
+              call.dispatchReceiver = irGet(dr)
             }
           }
-          statements.add(callPart)
         }
       }
       
@@ -293,26 +299,32 @@ internal class ShardGenerator(
         name = "initializeFields".asName()
         visibility = DescriptorVisibilities.PRIVATE
         returnType = context.irBuiltIns.unitType
+      }.apply {
+        // Make it an instance method by adding dispatch receiver
+        buildReceiverParameter { type = shardClass.defaultType }
       }
-      initMethod.buildReceiverParameter { type = shardClass.defaultType }
-      
+
       // Create method body with field assignments
       initMethod.body = context.irFactory.createBlockBody(
-        startOffset = UNDEFINED_OFFSET, 
+        startOffset = UNDEFINED_OFFSET,
         endOffset = UNDEFINED_OFFSET
       ).apply {
+        val dr = requireNotNull(initMethod.dispatchReceiverParameter) {
+          "Initialize method missing dispatch receiver parameter"
+        }
         // Iterate over each field and its initializer
         for ((field, typeKey, fieldInitializer) in initializers) {
           // Use the stored type key directly, no registry lookup needed
-          val dr = requireNotNull(initMethod.dispatchReceiverParameter) {
-            "Initialize method missing dispatch receiver parameter"
-          }
           statements += with(context.createIrBuilder(initMethod.symbol)) {
-            irSetField(irGet(dr), field, fieldInitializer(dr, typeKey))
+            irSetField(
+              receiver = irGet(dr),
+              field = field,
+              value = fieldInitializer(dr, typeKey)
+            )
           }
         }
       }
-      
+
       return initMethod
     }
   }
