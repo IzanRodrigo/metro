@@ -75,6 +75,7 @@ import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.kotlinFqName
+import org.jetbrains.kotlin.ir.util.nonDispatchParameters
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.ir.util.propertyIfAccessor
@@ -197,12 +198,90 @@ internal class IrGraphGenerator(
 
       val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
 
+      // Populate SwitchingProvider constructor body if it exists
+      @Suppress("DEPRECATION")
+      if (switchingProviderClass != null && spCtor != null) {
+        // First, create backing fields for graph and id if they don't exist
+        val graphField = switchingProviderClass.declarations
+          .filterIsInstance<IrField>()
+          .firstOrNull { it.name.asString() == "graph" }
+          ?: switchingProviderClass.addField {
+            name = Name.identifier("graph")
+            type = graphClass.defaultType
+            visibility = DescriptorVisibilities.PRIVATE
+            isFinal = true
+          }
+
+        val idField = switchingProviderClass.declarations
+          .filterIsInstance<IrField>()
+          .firstOrNull { it.name.asString() == "id" }
+          ?: switchingProviderClass.addField {
+            name = Name.identifier("id")
+            type = irBuiltIns.intType
+            visibility = DescriptorVisibilities.PRIVATE
+            isFinal = true
+          }
+
+        // Build constructor body: super(), field assignments, instance initializer
+        @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+        spCtor.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+          val builder = createIrBuilder(spCtor.symbol)
+          val thisParam = switchingProviderClass.thisReceiver
+            ?: error("SwitchingProvider must have thisReceiver")
+
+          // Find constructor parameters - use nonDispatchParameters to avoid deprecated API
+          val params = spCtor.nonDispatchParameters
+          require(params.size >= 2) {
+            "SwitchingProvider constructor must have at least 2 parameters but found ${params.size}"
+          }
+          val graphParam = params[0]  // First param should be graph
+          val idParam = params[1]     // Second param should be id
+
+          // Validate parameter names
+          require(graphParam.name.asString() == "graph") {
+            "Expected first parameter to be 'graph' but got '${graphParam.name}'"
+          }
+          require(idParam.name.asString() == "id") {
+            "Expected second parameter to be 'id' but got '${idParam.name}'"
+          }
+
+          // Call super constructor (Any)
+          statements += builder.irDelegatingConstructorCall(
+            irBuiltIns.anyClass.owner.primaryConstructor!!
+          )
+
+          // Assign fields
+          statements += builder.irSetField(
+            receiver = builder.irGet(thisParam),
+            field = graphField,
+            value = builder.irGet(graphParam)
+          )
+
+          statements += builder.irSetField(
+            receiver = builder.irGet(thisParam),
+            field = idField,
+            value = builder.irGet(idParam)
+          )
+
+          // Call instance initializer if needed
+          statements += IrInstanceInitializerCallImpl(
+            UNDEFINED_OFFSET,
+            UNDEFINED_OFFSET,
+            switchingProviderClass.symbol,
+            irBuiltIns.unitType
+          )
+        }
+
+        if (options.debug) {
+          log("Populated SwitchingProvider constructor body with field assignments")
+        }
+      }
+
       // Resolve caching wrapper symbols once for efficiency
       val doubleCheckProvider = symbols.doubleCheckProvider // Thread-safe for scoped bindings
-      // TODO: Add SingleCheck symbol to Symbols class for unscoped bindings
       // SingleCheck is lighter weight than DoubleCheck (no synchronization needed for unscoped)
-      // For now, use DoubleCheck for all bindings until SingleCheck is available
-      val singleCheckProvider = symbols.singleCheckProviderOrNull() ?: doubleCheckProvider
+      // Use SingleCheck for unscoped bindings when available, fallback to DoubleCheck
+      val singleCheckProvider = symbols.metroProviderSymbols.singleCheckProviderOrNull() ?: doubleCheckProvider
 
       val constructorStatements =
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
@@ -1016,7 +1095,7 @@ internal class IrGraphGenerator(
           .filterIsInstance<IrField>()
           .first { it.name.asString() == "graph" }
 
-        val graphParameter = constructor.valueParameters.first()
+        val graphParameter = constructor.nonDispatchParameters.first()
 
         constructor.body = createIrBuilder(constructor.symbol).irBlockBody {
           val thisRef = requireNotNull(shardClass.thisReceiver) {
