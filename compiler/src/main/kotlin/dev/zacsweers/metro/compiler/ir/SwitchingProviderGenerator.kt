@@ -14,6 +14,7 @@ internal class SwitchingProviderGenerator(
   private val context: IrMetroContext,
 ) : IrMetroContext by context {
 
+  @Suppress("DEPRECATION")
   fun populateInvokeBody(
     graphClass: IrClass,
     switchingProviderClass: IrClass,

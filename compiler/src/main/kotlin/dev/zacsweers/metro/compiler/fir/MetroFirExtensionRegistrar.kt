@@ -19,7 +19,6 @@ import dev.zacsweers.metro.compiler.fir.generators.LoggingFirStatusTransformerEx
 import dev.zacsweers.metro.compiler.fir.generators.LoggingFirSupertypeGenerationExtension
 import dev.zacsweers.metro.compiler.fir.generators.ProvidesFactoryFirGenerator
 import dev.zacsweers.metro.compiler.fir.generators.ProvidesFactorySupertypeGenerator
-import dev.zacsweers.metro.compiler.fir.generators.ShardFirGenerator
 import dev.zacsweers.metro.compiler.fir.generators.kotlinOnly
 import kotlin.io.path.appendText
 import kotlin.io.path.createFile
@@ -73,7 +72,6 @@ public class MetroFirExtensionRegistrar(
       )
     }
     +declarationGenerator("FirGen - DependencyGraph", ::DependencyGraphFirGenerator, true)
-    +declarationGenerator("FirGen - Shards", ::ShardFirGenerator, true)
   }
 
   private fun loggerFor(type: MetroLogger.Type, tag: String): MetroLogger {

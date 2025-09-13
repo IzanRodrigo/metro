@@ -161,6 +161,7 @@ internal class IrGraphGenerator(
    * Graph extensions may reserve field names for their linking, so if they've done that we use the
    * precomputed field rather than generate a new one.
    */
+  @Suppress("DEPRECATION")
   private inline fun IrClass.getOrCreateBindingField(
     key: IrTypeKey,
     name: () -> String,
@@ -506,7 +507,7 @@ internal class IrGraphGenerator(
 
               // new SwitchingProvider(graph, id)
               val spNew = createIrBuilder(spCtor.symbol).run {
-                irCallConstructor(spCtor.symbol, emptyList()).apply {
+                irCallConstructor(callee = spCtor.symbol, typeArguments = emptyList()).apply {
                   putValueArgument(0, irGet(thisReceiver)) // graph 'this'
                   putValueArgument(1, irInt(id))
                 }
