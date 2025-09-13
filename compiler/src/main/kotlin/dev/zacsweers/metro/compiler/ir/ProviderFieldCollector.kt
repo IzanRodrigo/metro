@@ -68,6 +68,12 @@ internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
     }
   }
 
+  fun markForField(contextualTypeKey: IrContextualTypeKey) {
+    // Mark twice to ensure refCount >= 2 for unscoped bindings accessed via properties
+    contextualTypeKey.mark()
+    contextualTypeKey.mark()
+  }
+
   private fun IrContextualTypeKey.mark(): Boolean {
     val binding = graph.requireBinding(this, IrBindingStack.empty())
     return binding.mark()

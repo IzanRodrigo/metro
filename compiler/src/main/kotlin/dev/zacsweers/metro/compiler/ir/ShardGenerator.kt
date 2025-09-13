@@ -23,7 +23,6 @@ import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irSetField
-import org.jetbrains.kotlin.ir.builders.irInstanceInitializerCall
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
@@ -123,7 +122,9 @@ internal class ShardGenerator(
       }
 
       // 1. Call super constructor (Any.<init>())
-      statements += builder.irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.constructors.single())
+      statements += builder.irDelegatingConstructorCall(
+        context.irBuiltIns.anyClass.owner.primaryConstructor!!
+      )
 
       // 2. Set the graph field: this.graph = graph
       statements += builder.irSetField(
@@ -133,7 +134,12 @@ internal class ShardGenerator(
       )
 
       // 3. Call instance initializer
-      statements += builder.irInstanceInitializerCall(shardClass.symbol)
+      statements += IrInstanceInitializerCallImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        shardClass.symbol,
+        shardClass.defaultType
+      )
 
       // 4. Call this.initializeFields() if provided
       if (initializeFieldsFunction != null) {
@@ -402,7 +408,9 @@ internal class ShardGenerator(
       }
 
       // 1. Call super constructor (Any.<init>())
-      statements += builder.irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.constructors.single())
+      statements += builder.irDelegatingConstructorCall(
+        context.irBuiltIns.anyClass.owner.primaryConstructor!!
+      )
 
       // 2. Set the graph field: this.graph = graph
       statements += builder.irSetField(
@@ -412,7 +420,12 @@ internal class ShardGenerator(
       )
 
       // 3. Call instance initializer
-      statements += builder.irInstanceInitializerCall(shardClass.symbol)
+      statements += IrInstanceInitializerCallImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        shardClass.symbol,
+        shardClass.defaultType
+      )
 
       // 4. Call this.initializeFields()
       statements += builder.irCall(initializeFieldsMethod.symbol).also { call ->

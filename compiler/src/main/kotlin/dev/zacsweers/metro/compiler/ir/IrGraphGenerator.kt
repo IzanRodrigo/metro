@@ -59,6 +59,7 @@ import org.jetbrains.kotlin.ir.expressions.IrBlockBody
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.typeWith
+import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
@@ -332,7 +333,12 @@ internal class IrGraphGenerator(
       // Collect bindings and their dependencies for provider field ordering
       val initOrder =
         parentTracer.traceNested("Collect bindings") {
-          val providerFieldBindings = ProviderFieldCollector(bindingGraph).collect()
+          val collector = ProviderFieldCollector(bindingGraph)
+          // Mark all accessor bindings for field generation to ensure consistent property behavior
+          node.accessors.forEach { (_, contextualTypeKey) ->
+            collector.markForField(contextualTypeKey)
+          }
+          val providerFieldBindings = collector.collect()
           buildList(providerFieldBindings.size) {
             for (key in sealResult.sortedKeys) {
               if (key in sealResult.reachableKeys) {
@@ -959,19 +965,15 @@ internal class IrGraphGenerator(
     return infos to shardInitializers
   }
 
-  /**
-   * Generates a SwitchingProvider nested class for efficient dependency dispatch.
-   * This follows Dagger's pattern of using ID-based switching for large graphs.
-   *
-   * @param providerCases Map of provider ID to the expression that creates the dependency
-   * @param typeParameter The type parameter for the SwitchingProvider<T>
-   * @return The generated SwitchingProvider class
-   */
+  // TODO: Add SwitchingProvider implementation in a follow-up PR
+  // The SwitchingProvider pattern requires more careful integration with the
+  // existing provider field generation logic
+  /*
   private fun IrClass.generateSwitchingProvider(
     providerCases: Map<Int, IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrExpression>,
-    typeParameter: IrType = irBuiltIns.anyNType
+    typeParameter: IrType = context.irBuiltIns.anyNType
   ): IrClass {
-    val switchingProviderClass = pluginContext.irFactory.buildClass {
+    val switchingProviderClass = context.pluginContext.irFactory.buildClass {
       name = "SwitchingProvider".asName()
       kind = ClassKind.CLASS
       visibility = DescriptorVisibilities.PRIVATE
@@ -1053,13 +1055,13 @@ internal class IrGraphGenerator(
         .symbol
     )
 
-    val thisReceiver = invokeMethod.addValueParameter {
-      name = "<this>".asName()
-      type = switchingProviderClass.defaultType
-      origin = IrDeclarationOrigin.INSTANCE_RECEIVER
+    invokeMethod.dispatchReceiverParameter = invokeMethod.addValueParameter(
+      "<this>",
+      switchingProviderClass.defaultType,
+      IrDeclarationOrigin.INSTANCE_RECEIVER
+    ).apply {
       index = -1
     }
-    invokeMethod.dispatchReceiverParameter = thisReceiver
 
     // Split cases into chunks if needed (max 100 per method)
     val CASES_PER_METHOD = 100
@@ -1098,6 +1100,7 @@ internal class IrGraphGenerator(
       // Main invoke method delegates to helpers based on ID range
       invokeMethod.body = context.irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
         val builder = context.createIrBuilder(invokeMethod.symbol)
+        val thisReceiver = requireNotNull(invokeMethod.dispatchReceiverParameter)
         val idValue = builder.irGetField(builder.irGet(thisReceiver), idField)
 
         statements += builder.irReturn(
@@ -1115,7 +1118,13 @@ internal class IrGraphGenerator(
                   dispatchReceiver = builder.irInt(range.first)
                   putValueArgument(0, builder.irInt(range.last))
                 }.let { rangeExpr ->
-                  builder.irCall(symbols.contains).apply {
+                  // Call IntRange.contains(value)
+                  builder.irCall(
+                    rangeExpr.type.getClass()!!.declarations
+                      .filterIsInstance<IrSimpleFunction>()
+                      .first { it.name.asString() == "contains" }
+                      .symbol
+                  ).apply {
                     dispatchReceiver = rangeExpr
                     putValueArgument(0, idValue)
                   }
@@ -1129,8 +1138,8 @@ internal class IrGraphGenerator(
                 }
               )
             } + builder.irElseBranch(
-              builder.irCall(symbols.error).apply {
-                putValueArgument(0, builder.irString("Unknown provider id: \$id"))
+              builder.irCall(context.irBuiltIns.errorFunction).apply {
+                putValueArgument(0, builder.irString("Unknown provider id"))
               }
             )
           )
@@ -1167,8 +1176,8 @@ internal class IrGraphGenerator(
             expression(builder, parentAccess as IrValueParameter)
           )
         } + builder.irElseBranch(
-          builder.irCall(symbols.error).apply {
-            putValueArgument(0, builder.irString("Unknown provider id: \$id"))
+          builder.irCall(context.irBuiltIns.errorFunction).apply {
+            putValueArgument(0, builder.irString("Unknown provider id"))
           }
         )
       )
@@ -1176,4 +1185,5 @@ internal class IrGraphGenerator(
       statements += builder.irReturn(whenExpr)
     }
   }
+  */
 }

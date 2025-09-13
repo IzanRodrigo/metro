@@ -165,9 +165,10 @@ private constructor(
       }
 
       // Check for cross-shard access
-      if (shardingPlan != null && currentShardIndex != null) {
+      if (shardingPlan != null) {
         val targetShard = shardingPlan.getShardForBinding(binding.typeKey)
-        if (targetShard != null && targetShard != currentShardIndex) {
+        // If the binding is in a shard and we're not already in that shard, use cross-shard access
+        if (targetShard != null && targetShard != 0 && targetShard != currentShardIndex) {
           // This is a cross-shard dependency
           return generateCrossShardAccess(binding, targetShard, accessType, contextualTypeKey)
         }
