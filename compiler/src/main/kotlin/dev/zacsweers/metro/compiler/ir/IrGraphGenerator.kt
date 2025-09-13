@@ -38,13 +38,13 @@ import org.jetbrains.kotlin.ir.builders.declarations.buildReceiverParameter
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irBranch
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irElseBranch
 import org.jetbrains.kotlin.ir.builders.irEquals
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.builders.irWhen
-import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
@@ -341,20 +341,12 @@ internal class IrGraphGenerator(
           if (switchingProviderClass != null && spCtor != null) {
             // Use SwitchingProvider wrapped in caching
             val id = switchingIds.getOrPut(typeKey) { nextSwitchId++ }
-            val spNew = irCallConstructor(spCtor.symbol, listOf(typeKey.type)).also { call ->
-              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-              call.dispatchReceiver = null
-              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-              call.extensionReceiver = null
-              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-              for (i in 0 until call.typeArgumentsCount) {
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.putTypeArgument(i, typeKey.type)
-              }
-              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-              call.putValueArgument(0, irGet(thisReceiverParameter)) // graph
-              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-              call.putValueArgument(1, irInt(id))
+            val spNew = irCall(spCtor.symbol).also { call ->
+              // Set type arguments - the SwitchingProvider has one type parameter
+              call.typeArguments[0] = typeKey.type
+              // Set value arguments
+              call.arguments[0] = irGet(thisReceiverParameter) // graph
+              call.arguments[1] = irInt(id) // id
             }
 
             // Wrap in appropriate caching mechanism
@@ -444,7 +436,7 @@ internal class IrGraphGenerator(
         .sortedBy { it.kotlinFqName.asString() }
         .forEach { clazz ->
           addBoundInstanceField(IrTypeKey(clazz), clazz.name) { _, _ ->
-            irCallConstructor(clazz.primaryConstructor!!.symbol, emptyList())
+            irCall(clazz.primaryConstructor!!.symbol)
           }
         }
 
@@ -470,20 +462,12 @@ internal class IrGraphGenerator(
             if (switchingProviderClass != null && spCtor != null) {
               // Use SwitchingProvider wrapped in caching for graph provider too
               val id = switchingIds.getOrPut(node.typeKey) { nextSwitchId++ }
-              val spNew = irCallConstructor(spCtor.symbol, listOf(node.typeKey.type)).also { call ->
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.dispatchReceiver = null
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.extensionReceiver = null
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                for (i in 0 until call.typeArgumentsCount) {
-                  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                  call.putTypeArgument(i, node.typeKey.type)
-                }
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.putValueArgument(0, irGet(thisReceiverParameter)) // graph
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.putValueArgument(1, irInt(id))
+              val spNew = irCall(spCtor.symbol).also { call ->
+                // Set type arguments - the SwitchingProvider has one type parameter
+                call.typeArguments[0] = node.typeKey.type
+                // Set value arguments
+                call.arguments[0] = irGet(thisReceiverParameter) // graph
+                call.arguments[1] = irInt(id) // id
               }
 
               // Graph bindings are typically unscoped, use DoubleCheck (SingleCheck not yet available)
@@ -678,20 +662,12 @@ internal class IrGraphGenerator(
             if (switchingProviderClass != null && spCtor != null && isProviderType) {
               // Use SwitchingProvider wrapped in caching
               val id = switchingIds.getOrPut(binding.typeKey) { nextSwitchId++ }
-              val spNew = irCallConstructor(spCtor.symbol, listOf(binding.typeKey.type)).also { call ->
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.dispatchReceiver = null
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.extensionReceiver = null
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                for (i in 0 until call.typeArgumentsCount) {
-                  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                  call.putTypeArgument(i, binding.typeKey.type)
-                }
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.putValueArgument(0, irGet(thisReceiver)) // graph
-                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
-                call.putValueArgument(1, irInt(id))
+              val spNew = irCall(spCtor.symbol).also { call ->
+                // Set type arguments - the SwitchingProvider has one type parameter
+                call.typeArguments[0] = binding.typeKey.type
+                // Set value arguments
+                call.arguments[0] = irGet(thisReceiver) // graph
+                call.arguments[1] = irInt(id) // id
               }
 
               // Wrap in appropriate caching mechanism based on scoping
@@ -1420,7 +1396,7 @@ internal class IrGraphGenerator(
                   .symbol
                 ).apply {
                   dispatchReceiver = builder.irInt(range.first)
-                  putValueArgument(0, builder.irInt(range.last))
+                  arguments[0] = builder.irInt(range.last)
                 }.let { rangeExpr ->
                   // Call IntRange.contains(value)
                   builder.irCall(
@@ -1430,7 +1406,7 @@ internal class IrGraphGenerator(
                       .symbol
                   ).apply {
                     dispatchReceiver = rangeExpr
-                    putValueArgument(0, idValue)
+                    arguments[0] = idValue
                   }
                 }
               }
@@ -1443,7 +1419,7 @@ internal class IrGraphGenerator(
               )
             } + builder.irElseBranch(
               builder.irCall(context.irBuiltIns.errorFunction).apply {
-                putValueArgument(0, builder.irString("Unknown provider id"))
+                arguments[0] = builder.irString("Unknown provider id")
               }
             )
           )
@@ -1481,7 +1457,7 @@ internal class IrGraphGenerator(
           )
         } + builder.irElseBranch(
           builder.irCall(context.irBuiltIns.errorFunction).apply {
-            putValueArgument(0, builder.irString("Unknown provider id"))
+            arguments[0] = builder.irString("Unknown provider id")
           }
         )
       )
