@@ -176,6 +176,34 @@ import org.jetbrains.kotlin.name.SpecialNames
 internal class DependencyGraphFirGenerator(session: FirSession) :
   FirDeclarationGenerationExtension(session) {
 
+  @OptIn(DirectDeclarationsAccess::class)
+  private fun createSwitchingProviderSkeleton(
+    session: FirSession,
+    owner: FirClassSymbol<*>,
+    name: Name
+  ): FirClassLikeSymbol<*> {
+    // Check if already exists (idempotent on incremental builds)
+    val existing = owner.declarationSymbols
+      .filterIsInstance<FirClassSymbol<*>>()
+      .firstOrNull { it.name == name }
+    if (existing != null) return existing
+
+    // Create SwitchingProvider<T> : Provider<T>
+    val switchingProviderClass = createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
+      visibility = Visibilities.Private
+      modality = Modality.FINAL
+
+      // Add type parameter T
+      val typeParam = typeParameter(Name.identifier("T"))
+
+      // Add supertype: Provider<T>
+      // For now, we don't add the supertype here since it requires the type parameter
+      // It will be handled properly in the IR phase where we have full type information
+    }
+
+    return switchingProviderClass.symbol
+  }
+
   companion object {
     private val PLACEHOLDER_SAM_FUNCTION = "$\$PLACEHOLDER_FOR_SAM".asName()
   }
@@ -272,13 +300,8 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       }
       Name.identifier("SwitchingProvider") -> {
         log("Generating SwitchingProvider class in ${owner.classId}")
-        // Create SwitchingProvider<T> nested class
-        createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
-            visibility = Visibilities.Private
-            modality = Modality.FINAL
-            // Type parameter will be added in IR phase
-          }
-          .symbol
+        // Create SwitchingProvider<T> nested class with full FIR structure
+        createSwitchingProviderSkeleton(session, owner, name)
       }
       else -> null
     }
@@ -383,7 +406,8 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           visibility = Visibilities.Private
         }
       } else if (context.owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
-        // SwitchingProvider constructor - will be populated in IR phase
+        // SwitchingProvider constructor(graph: GraphImpl, id: Int)
+        val graphClass = context.owner.requireContainingClassSymbol()
         createConstructor(
           context.owner,
           Keys.Default,
@@ -391,6 +415,18 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           generateDelegatedNoArgConstructorCall = true,
         ) {
           visibility = Visibilities.Public
+          // Add graph parameter
+          valueParameter(
+            name = Name.identifier("graph"),
+            type = graphClass.constructType(),
+            key = Keys.RegularParameter
+          )
+          // Add id parameter
+          valueParameter(
+            name = Name.identifier("id"),
+            type = session.builtinTypes.intType.coneType,
+            key = Keys.RegularParameter
+          )
         }
       } else {
         return emptyList()
@@ -512,12 +548,20 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
     } else if (owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
       // SwitchingProvider's invoke method - stub for now, will be populated in IR
       if (callableId.callableName == Symbols.Names.invoke) {
+        // Get the type parameter T to use as return type
+        val typeParam = owner.typeParameterSymbols.firstOrNull()
+        val returnType = if (typeParam != null) {
+          typeParam.toConeType()
+        } else {
+          // Fallback to Any if type parameter not found
+          session.builtinTypes.anyType.coneType
+        }
+
         val generatedFunction = createMemberFunction(
           owner,
           Keys.Default,
           Symbols.Names.invoke,
-          // Return type will be set properly in IR phase
-          returnType = session.builtinTypes.anyType.coneType
+          returnType = returnType
         ) {
           status {
             isOperator = true

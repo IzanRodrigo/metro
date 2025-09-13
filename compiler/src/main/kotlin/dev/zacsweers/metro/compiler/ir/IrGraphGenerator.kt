@@ -1,5 +1,7 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
+@file:Suppress("DEPRECATION")
+
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.METRO_VERSION
@@ -172,6 +174,7 @@ internal class IrGraphGenerator(
       ?: addField(fieldName = name().asName(), fieldType = type(), fieldVisibility = visibility)
   }
 
+  @Suppress("DEPRECATION")
   fun generate() =
     with(graphClass) {
       val ctor = primaryConstructor!!
@@ -520,8 +523,8 @@ internal class IrGraphGenerator(
               // new SwitchingProvider(graph, id)
               val spNew = createIrBuilder(spCtor.symbol).run {
                 irCallConstructor(callee = spCtor.symbol, typeArguments = emptyList()).apply {
-                  putValueArgument(0, irGet(thisReceiver)) // graph 'this'
-                  putValueArgument(1, irInt(id))
+                  arguments[0] = irGet(thisReceiver) // graph 'this'
+                  arguments[1] = irInt(id)
                 }
               }
 
@@ -936,6 +939,7 @@ internal class IrGraphGenerator(
    * Generates shard classes and their initialization.
    * Following Dagger's pattern, shards are initialized in the constructor before other bindings.
    */
+  @Suppress("DEPRECATION")
   private fun IrClass.generateShards(): Pair<Map<Int, ShardGenerator.ShardInfo>, List<IrBuilderWithScope.(IrValueParameter) -> IrStatement>> {
     requireNotNull(shardingPlan) { "generateShards called without sharding plan" }
     
@@ -1077,6 +1081,7 @@ internal class IrGraphGenerator(
   // The SwitchingProvider pattern requires more careful integration with the
   // existing provider field generation logic
   /*
+  @Suppress("DEPRECATION")
   private fun IrClass.generateSwitchingProvider(
     providerCases: Map<Int, IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrExpression>,
     typeParameter: IrType = context.irBuiltIns.anyNType

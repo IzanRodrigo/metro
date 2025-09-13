@@ -1,5 +1,7 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
+@file:Suppress("DEPRECATION")
+
 package dev.zacsweers.metro.compiler.ir
 
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
