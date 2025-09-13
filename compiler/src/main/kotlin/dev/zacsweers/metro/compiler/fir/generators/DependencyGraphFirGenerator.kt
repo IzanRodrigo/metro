@@ -22,6 +22,7 @@ import dev.zacsweers.metro.compiler.fir.requireContainingClassSymbol
 import dev.zacsweers.metro.compiler.mapToArray
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import org.jetbrains.kotlin.descriptors.ClassKind
+import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
 import org.jetbrains.kotlin.fir.FirSession
 import org.jetbrains.kotlin.fir.declarations.DirectDeclarationsAccess
@@ -205,6 +206,10 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       // Always generate this impl though we may not use it. It's just easier to do it this way in
       // FIR unfortunately due to lifecycles
       names += Symbols.Names.MetroImpl
+    } else if (classSymbol.hasOrigin(Keys.MetroGraphDeclaration)) {
+      // For the $$Metro class, generate the SwitchingProvider
+      log("Found MetroGraph class ${classSymbol.classId}, adding SwitchingProvider")
+      names += Name.identifier("SwitchingProvider")
     }
 
     if (names.isNotEmpty()) {
@@ -265,6 +270,16 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           .apply { markAsDeprecatedHidden(session) }
           .symbol
       }
+      Name.identifier("SwitchingProvider") -> {
+        log("Generating SwitchingProvider class in ${owner.classId}")
+        // Create SwitchingProvider<T> nested class
+        createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
+            visibility = Visibilities.Private
+            modality = Modality.FINAL
+            // Type parameter will be added in IR phase
+          }
+          .symbol
+      }
       else -> null
     }
   }
@@ -297,6 +312,10 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
     } else if (classSymbol.hasOrigin(Keys.MetroGraphDeclaration)) {
       // $$MetroGraph, generate a constructor
       names += SpecialNames.INIT
+    } else if (classSymbol.hasOrigin(Keys.SwitchingProviderDeclaration)) {
+      // SwitchingProvider, generate constructor and invoke method
+      names += SpecialNames.INIT
+      names += Symbols.Names.invoke
     }
 
     if (names.isNotEmpty()) {
@@ -362,6 +381,16 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           generateDelegatedNoArgConstructorCall = true,
         ) {
           visibility = Visibilities.Private
+        }
+      } else if (context.owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
+        // SwitchingProvider constructor - will be populated in IR phase
+        createConstructor(
+          context.owner,
+          Keys.Default,
+          isPrimary = true,
+          generateDelegatedNoArgConstructorCall = true,
+        ) {
+          visibility = Visibilities.Public
         }
       } else {
         return emptyList()
@@ -480,6 +509,23 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
         graphObject.findCreator(session, "generateFunctions ${context.owner.classId}", ::log)!!
       val samFunction = creator.classSymbol.findSamFunction(session)
       samFunction?.let { functions += generateSAMFunction(graphObject.classSymbol, it) }
+    } else if (owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
+      // SwitchingProvider's invoke method - stub for now, will be populated in IR
+      if (callableId.callableName == Symbols.Names.invoke) {
+        val generatedFunction = createMemberFunction(
+          owner,
+          Keys.Default,
+          Symbols.Names.invoke,
+          // Return type will be set properly in IR phase
+          returnType = session.builtinTypes.anyType.coneType
+        ) {
+          status {
+            isOperator = true
+            isOverride = true
+          }
+        }
+        functions += generatedFunction.symbol
+      }
     }
 
     if (functions.isNotEmpty()) {
