@@ -214,26 +214,19 @@ internal class ShardGenerator(
         }
         
         partMethod.buildReceiverParameter { type = shardClass.defaultType }
-// Create method body with field assignments for this chunk
+        
+        // Create method body with field assignments for this chunk
         partMethod.body = context.irFactory.createBlockBody(
           startOffset = UNDEFINED_OFFSET,
           endOffset = UNDEFINED_OFFSET
         ).apply {
           for ((field, typeKey, fieldInitializer) in chunk) {
-            // Use the stored type key directly, no registry lookup needed
-            // Create field assignment statement: this.field = initializer(this, typeKey)
-            val dispatchReceiver = requireNotNull(partMethod.dispatchReceiverParameter) {
+            val dr = requireNotNull(partMethod.dispatchReceiverParameter) {
               "Part method ${partMethod.name} missing dispatch receiver parameter"
             }
-            val assignment = with(context.createIrBuilder(partMethod.symbol)) {
-              irSetField(
-                receiver = irGet(dispatchReceiver),
-                field = field,
-                value = fieldInitializer(dispatchReceiver, typeKey)
-              )
+            statements += with(context.createIrBuilder(partMethod.symbol)) {
+              irSetField(irGet(dr), field, fieldInitializer(dr, typeKey))
             }
-            
-            statements.add(assignment)
           }
         }
         
@@ -246,6 +239,7 @@ internal class ShardGenerator(
         visibility = DescriptorVisibilities.PRIVATE
         returnType = context.irBuiltIns.unitType
       }
+      initMethod.buildReceiverParameter { type = shardClass.defaultType }
       
       // Create method body that calls all part methods
       initMethod.body = context.irFactory.createBlockBody(
@@ -273,6 +267,7 @@ internal class ShardGenerator(
         visibility = DescriptorVisibilities.PRIVATE
         returnType = context.irBuiltIns.unitType
       }
+      initMethod.buildReceiverParameter { type = shardClass.defaultType }
       
       // Create method body with field assignments
       initMethod.body = context.irFactory.createBlockBody(
@@ -282,19 +277,12 @@ internal class ShardGenerator(
         // Iterate over each field and its initializer
         for ((field, typeKey, fieldInitializer) in initializers) {
           // Use the stored type key directly, no registry lookup needed
-          // Create field assignment statement: this.field = initializer(this, typeKey)
-          val dispatchReceiver = requireNotNull(initMethod.dispatchReceiverParameter) {
+          val dr = requireNotNull(initMethod.dispatchReceiverParameter) {
             "Initialize method missing dispatch receiver parameter"
           }
-          val assignment = with(context.createIrBuilder(initMethod.symbol)) {
-            irSetField(
-              receiver = irGet(dispatchReceiver), // shard's 'this'
-              field = field,
-              value = fieldInitializer(dispatchReceiver, typeKey)
-            )
+          statements += with(context.createIrBuilder(initMethod.symbol)) {
+            irSetField(irGet(dr), field, fieldInitializer(dr, typeKey))
           }
-          
-          statements.add(assignment)
         }
       }
       
