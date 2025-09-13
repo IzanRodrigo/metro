@@ -96,7 +96,7 @@ internal class IrGraphGenerator(
    *
    * @see <a href="https://github.com/ZacSweers/metro/issues/645">#645</a>
    */
-  private val fieldInitializersByClass = mutableMapOf<IrClass, MutableList<Pair<IrField, FieldInitializer>>>()
+  private val fieldInitializersByClass = mutableMapOf<IrClass, MutableList<Triple<IrField, IrTypeKey, FieldInitializer>>>()
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
       context = this,
@@ -113,11 +113,22 @@ internal class IrGraphGenerator(
   
   private var shardInfos: Map<Int, ShardGenerator.ShardInfo> = emptyMap()
 
+  /** Owner IrClass for a binding key based on the sharding plan. */
+  private fun ownerClassFor(key: IrTypeKey): IrClass {
+    val idx = shardingPlan?.bindingToShard?.get(key)
+    return if (idx != null && idx != 0) {
+      shardInfos[idx]?.shardClass ?: graphClass
+    } else {
+      graphClass
+    }
+  }
+
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
     // The typeKey is already registered in shardFieldRegistry when the field is created
     // Determine which class this field belongs to (main graph or shard)
     val owningClass = parent as IrClass
-    fieldInitializersByClass.getOrPut(owningClass) { mutableListOf() }.add(this to init)
+    // Store the type key alongside the field and initializer to avoid reverse lookups later
+    fieldInitializersByClass.getOrPut(owningClass) { mutableListOf() }.add(Triple(this, typeKey, init))
   }
 
   fun IrField.initFinal(body: IrBuilderWithScope.() -> IrExpression): IrField = apply {
@@ -174,8 +185,7 @@ internal class IrGraphGenerator(
 
         bindingFieldContext.putProviderField(
           typeKey,
-          getOrCreateBindingField(
-              typeKey,
+          ownerClassFor(typeKey).getOrCreateBindingField(typeKey,
               {
                 fieldNameAllocator.newName(
                   name
@@ -297,8 +307,7 @@ internal class IrGraphGenerator(
         sealResult.deferredTypes.associateWith { deferredTypeKey ->
           val binding = bindingGraph.requireBinding(deferredTypeKey, IrBindingStack.empty())
           val field =
-            getOrCreateBindingField(
-                binding.typeKey,
+            ownerClassFor(binding.typeKey).getOrCreateBindingField(binding.typeKey,
                 { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS() + "Provider") },
                 { deferredTypeKey.type.wrapInProvider(symbols.metroProvider) },
               )
@@ -478,13 +487,9 @@ internal class IrGraphGenerator(
         val chunks =
           buildList<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement> {
               // Add field initializers first
-              for ((field, init) in mainGraphInitializers) {
+              for ((field, typeKey, init) in mainGraphInitializers) {
                 add { thisReceiver ->
-                  // Get the typeKey from the registry using efficient reverse lookup
-                  val fieldInfo = shardFieldRegistry.findFieldByIrField(field)
-                    ?: error("Field ${field.name} not found in registry")
-                  val typeKey = fieldInfo.binding.typeKey
-                  
+                  // Use the stored type key directly, no registry lookup needed
                   irSetField(
                     irGet(thisReceiver),
                     field,
@@ -523,12 +528,9 @@ internal class IrGraphGenerator(
       } else {
         // Small graph, just do it in the constructor
         // Assign those initializers directly to their fields and mark them as final
-        for ((field, init) in mainGraphInitializers) {
+        for ((field, typeKey, init) in mainGraphInitializers) {
           field.initFinal {
-            // Get the typeKey from the registry using efficient reverse lookup
-            val fieldInfo = shardFieldRegistry.findFieldByIrField(field)
-              ?: error("Field ${field.name} not found in registry")
-            val typeKey = fieldInfo.binding.typeKey
+            // Use the stored type key directly, no registry lookup needed
             init(thisReceiverParameter, typeKey)
           }
         }

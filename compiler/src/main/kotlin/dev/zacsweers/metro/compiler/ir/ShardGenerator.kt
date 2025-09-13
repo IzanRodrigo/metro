@@ -14,6 +14,7 @@ import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.buildReceiverParameter
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
@@ -188,12 +189,12 @@ internal class ShardGenerator(
    * If there are too many initializers, splits them into multiple initializePart{N}() methods.
    * 
    * @param shardInfo The shard information containing the shard class
-   * @param initializers List of (field, initializerFunction) pairs for this shard
+   * @param initializers List of (field, typeKey, initializerFunction) triples for this shard
    * @return The generated initializeFields IrFunction
    */
   fun generateShardFieldInitialization(
     shardInfo: ShardInfo, 
-    initializers: List<Pair<IrField, FieldInitializer>>
+    initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>
   ): IrFunction {
     val shardClass = shardInfo.shardClass
     
@@ -212,18 +213,14 @@ internal class ShardGenerator(
           returnType = context.irBuiltIns.unitType
         }
         
-        // Create method body with field assignments for this chunk
+        partMethod.buildReceiverParameter { type = shardClass.defaultType }
+// Create method body with field assignments for this chunk
         partMethod.body = context.irFactory.createBlockBody(
           startOffset = UNDEFINED_OFFSET,
           endOffset = UNDEFINED_OFFSET
         ).apply {
-          for ((field, fieldInitializer) in chunk) {
-            // Get the type key for this field from field registry using efficient reverse lookup
-            val fieldInfo = fieldRegistry.findFieldByIrField(field)
-              ?: error("No field info found for field ${field.name}")
-            
-            val typeKey = fieldInfo.binding.typeKey
-            
+          for ((field, typeKey, fieldInitializer) in chunk) {
+            // Use the stored type key directly, no registry lookup needed
             // Create field assignment statement: this.field = initializer(this, typeKey)
             val dispatchReceiver = requireNotNull(partMethod.dispatchReceiverParameter) {
               "Part method ${partMethod.name} missing dispatch receiver parameter"
@@ -283,15 +280,8 @@ internal class ShardGenerator(
         endOffset = UNDEFINED_OFFSET
       ).apply {
         // Iterate over each field and its initializer
-        for ((field, fieldInitializer) in initializers) {
-          // Get the type key for this field from field registry
-          // Find the field info that matches this field using efficient reverse lookup
-          val fieldInfo = fieldRegistry.findFieldByIrField(field)
-            ?: error("No field info found for field ${field.name}")
-          
-          // Extract the type key from the binding associated with this field
-          val typeKey = fieldInfo.binding.typeKey
-          
+        for ((field, typeKey, fieldInitializer) in initializers) {
+          // Use the stored type key directly, no registry lookup needed
           // Create field assignment statement: this.field = initializer(this, typeKey)
           val dispatchReceiver = requireNotNull(initMethod.dispatchReceiverParameter) {
             "Initialize method missing dispatch receiver parameter"
@@ -317,11 +307,11 @@ internal class ShardGenerator(
    * This method coordinates the generation of both the shard class and its initialization method,
    * ensuring the constructor properly calls initializeFields().
    * 
-   * @param initializers List of (field, initializerFunction) pairs for this shard
+   * @param initializers List of (field, typeKey, initializerFunction) triples for this shard
    * @return The generated shard class with initialization
    */
   fun generateShardClassWithInitialization(
-    initializers: List<Pair<IrField, FieldInitializer>>
+    initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>
   ): IrClass {
     // First generate the shard class without initialization
     val shardClass = generateShardClass()

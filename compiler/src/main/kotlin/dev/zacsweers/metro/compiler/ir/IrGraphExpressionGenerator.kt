@@ -3,6 +3,7 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.Symbols
+import dev.zacsweers.metro.compiler.Symbols.Names.scope
 import dev.zacsweers.metro.compiler.exitProcessing
 import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
@@ -137,7 +138,36 @@ private constructor(
     }
   }
 
-  enum class AccessType {
+  
+
+  /** Resolve correct receiver for a field's owning shard. */
+  private fun irOwnerReceiverFor(
+    ownerShardIndex: Int,
+    thisReceiver: IrValueParameter,
+    graphParam: IrValueParameter?
+  ): IrExpression {
+    val current = currentShardIndex
+    return when {
+      // main component reading main-owned field
+      current == null && ownerShardIndex == 0 -> with(scope) { irGet(thisReceiver) }
+      // shard reading its own field
+      current != null && ownerShardIndex == current -> with(scope) { irGet(thisReceiver) }
+      else -> {
+        // need graph parameter
+        val gp = requireNotNull(graphParam) { "Cross-shard access requires graph param" }
+        val b = this
+        val graphExpr = with(b) { irGet(gp) }
+        if (ownerShardIndex == 0) {
+          graphExpr
+        } else {
+          val shardField = shardInfos?.get(ownerShardIndex)?.shardField
+            ?: reportCompilerBug("Missing shard field for index $ownerShardIndex")
+          with(b) { irGetField(graphExpr, shardField) }
+        }
+      }
+    }
+  }
+enum class AccessType {
     INSTANCE,
     PROVIDER,
   }
@@ -655,7 +685,8 @@ private constructor(
     val bindingField = fieldInfo.field
     
     // Access the binding field through the target (either shard or main graph)
-    val fieldAccess = irGetField(targetAccess, bindingField)
+    val ownerRecv = irOwnerReceiverFor(fieldInfo.shardIndex, thisReceiver, shardGraphParameter)
+    val fieldAccess = irGetField(ownerRecv, bindingField)
     
     // Transform for the correct access type (Provider vs Instance)
     val metroProviderSymbols = symbols.providerSymbolsFor(contextualTypeKey)

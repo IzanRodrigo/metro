@@ -185,7 +185,7 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
   KEYS_PER_SHARD(
     RawMetroOption(
       name = "sharding.keysPerShard",
-      defaultValue = 3000,
+      defaultValue = 150,
       valueDescription = "<number>",
       description = "Maximum number of bindings per shard before a new shard is created. " +
         "Default is 3000, following Dagger's default threshold. Lower values create more " +
