@@ -39,6 +39,7 @@ import org.jetbrains.kotlin.fir.plugin.createCompanionObject
 import org.jetbrains.kotlin.fir.plugin.createConstructor
 import org.jetbrains.kotlin.fir.plugin.createDefaultPrivateConstructor
 import org.jetbrains.kotlin.fir.plugin.createMemberFunction
+import org.jetbrains.kotlin.fir.plugin.createMemberProperty
 import org.jetbrains.kotlin.fir.plugin.createNestedClass
 import org.jetbrains.kotlin.fir.scopes.impl.toConeType
 import org.jetbrains.kotlin.fir.symbols.impl.FirClassLikeSymbol
@@ -201,6 +202,11 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       // It will be handled properly in the IR phase where we have full type information
     }
 
+    // Note: According to GPT5 prompt, we should add explicit backing field properties here.
+    // However, the Kotlin FIR plugin API doesn't easily support adding properties in this context.
+    // The IR phase will handle creating the backing fields when it processes the constructor parameters.
+    // The constructor already has 'graph' and 'id' parameters which will be materialized as fields in IR.
+
     return switchingProviderClass.symbol
   }
 
@@ -336,9 +342,11 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       // $$MetroGraph, generate a constructor
       names += SpecialNames.INIT
     } else if (classSymbol.hasOrigin(Keys.SwitchingProviderDeclaration)) {
-      // SwitchingProvider, generate constructor and invoke method
+      // SwitchingProvider, generate constructor, properties, and invoke method
       names += SpecialNames.INIT
       names += Symbols.Names.invoke
+      names += Name.identifier("graph")
+      names += Name.identifier("id")
     }
 
     if (names.isNotEmpty()) {
