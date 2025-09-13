@@ -65,13 +65,21 @@ internal class ShardFieldRegistry {
   
   /**
    * Finds the field information for a given IR field.
-   * This enables efficient reverse lookups when you have a field and need its metadata.
+   * 
+   * DIAGNOSTIC USE ONLY: This method includes a fallback name-based lookup for diagnostic purposes.
+   * Do not use this in initialization paths or performance-critical code.
+   * For production code, use findField(typeKey) instead.
    * 
    * @param field The IR field to look up
    * @return The field information, or null if not found
    */
   fun findFieldByIrField(field: IrField): FieldInfo? {
-    return fieldsByIrField[field]
+    // First try the efficient map lookup
+    fieldsByIrField[field]?.let { return it }
+    
+    // Fallback: search by field name (diagnostic only)
+    val name = field.name.asString()
+    return fieldsByTypeKey.values.firstOrNull { it.fieldName == name }
   }
   
   /**
