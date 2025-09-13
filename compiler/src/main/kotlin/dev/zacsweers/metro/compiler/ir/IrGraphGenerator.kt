@@ -188,19 +188,21 @@ internal class IrGraphGenerator(
         .filterIsInstance<IrClass>()
         .firstOrNull { it.name.asString() == "SwitchingProvider" }
 
-      // If we're expecting SwitchingProvider but didn't find it, that's an error
-      // For now, it's optional since not all graphs have it yet
-      if (switchingProviderClass == null && options.debug) {
-        log("SwitchingProvider skeleton not found in ${graphClass.name}; FIR generation may be missing")
+      // Validate SwitchingProvider presence when sharding is enabled
+      if (shardingPlan?.requiresSharding() == true && switchingProviderClass == null) {
+        error("SwitchingProvider skeleton not found in ${graphClass.name}; FIR step missing or failed")
+      } else if (switchingProviderClass == null && options.debug) {
+        log("SwitchingProvider not found in ${graphClass.name}; using fallback provider generation")
       }
 
       val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
 
       // Resolve caching wrapper symbols once for efficiency
       val doubleCheckProvider = symbols.doubleCheckProvider // Thread-safe for scoped bindings
-      // TODO: Implement SingleCheck for unscoped bindings (lighter weight than DoubleCheck)
-      // For now, use DoubleCheck for all bindings
-      val singleCheckProvider = doubleCheckProvider
+      // TODO: Add SingleCheck symbol to Symbols class for unscoped bindings
+      // SingleCheck is lighter weight than DoubleCheck (no synchronization needed for unscoped)
+      // For now, use DoubleCheck for all bindings until SingleCheck is available
+      val singleCheckProvider = symbols.singleCheckProviderOrNull() ?: doubleCheckProvider
 
       val constructorStatements =
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
@@ -528,15 +530,26 @@ internal class IrGraphGenerator(
                 }
               }
 
-              // Wrap in DoubleCheck based on scoping
-              // TODO: Use SingleCheck for unscoped bindings when available
+              // Wrap in appropriate caching mechanism based on scoping
               if (binding.isScoped()) {
                 // DoubleCheck.provider(<provider>) - Thread-safe for scoped bindings
                 spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
               } else {
-                // For unscoped bindings, would use SingleCheck if available (lighter weight)
-                // Currently using DoubleCheck for all bindings
-                spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
+                // For unscoped bindings, use SingleCheck if available (lighter weight, no synchronization)
+                // Falls back to DoubleCheck if SingleCheck not available
+                if (singleCheckProvider != doubleCheckProvider) {
+                  // SingleCheck is available, use it for unscoped bindings
+                  irInvoke(
+                    dispatchReceiver = null, // SingleCheck.provider is static
+                    callee = singleCheckProvider,
+                    typeHint = binding.typeKey.type.wrapInProvider(symbols.metroProvider),
+                    typeArgs = listOf(binding.typeKey.type),
+                    args = listOf(spNew)
+                  )
+                } else {
+                  // Fall back to DoubleCheck
+                  spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
+                }
               }
             } else {
               // Fallback to original implementation if no SwitchingProvider
