@@ -11,9 +11,15 @@ private const val INITIAL_VALUE = 512
 /** Computes the set of bindings that must end up in provider fields. */
 internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
 
-  private data class Node(val binding: IrBinding, var refCount: Int = 0) {
+  private data class Node(val binding: IrBinding, var refCount: Int = 0, var isGraphAccessor: Boolean = false) {
     val needsField: Boolean
       get() {
+        // Always create provider fields for qualified bindings to prevent collisions
+        if (binding.typeKey.qualifier != null) return true
+
+        // Always create provider fields for graph interface accessors to ensure singleton semantics
+        if (isGraphAccessor) return true
+
         // Scoped, graph, and members injector bindings always need provider fields
         if (binding.isScoped()) return true
         if (binding is IrBinding.GraphDependency) return true
@@ -69,9 +75,11 @@ internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
   }
 
   fun markForField(contextualTypeKey: IrContextualTypeKey) {
-    // Mark twice to ensure refCount >= 2 for unscoped bindings accessed via properties
-    contextualTypeKey.mark()
-    contextualTypeKey.mark()
+    // Mark as graph accessor to ensure field creation for singleton semantics
+    val binding = graph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+    val node = nodes.getOrPut(binding.typeKey) { Node(binding) }
+    node.isGraphAccessor = true
+    node.mark()
   }
 
   private fun IrContextualTypeKey.mark(): Boolean {
