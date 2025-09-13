@@ -15,17 +15,23 @@ internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
     val needsField: Boolean
       get() {
         // Always create provider fields for qualified bindings to prevent collisions
-        if (binding.typeKey.qualifier != null) return true
+        val hasQualifier = binding.typeKey.qualifier != null
+        if (hasQualifier) return true
 
         // Always create provider fields for graph interface accessors to ensure singleton semantics
-        if (isGraphAccessor) return true
+        val isGraphProp = isGraphAccessor // Graph interface properties marked during analysis
+        if (isGraphProp) return true
 
-        // Scoped, graph, and members injector bindings always need provider fields
+        // Scoped bindings always need provider fields for proper caching
         if (binding.isScoped()) return true
+
+        // Multibindings are always created adhoc - no field needed
+        if (binding is IrBinding.Multibinding) return false
+
+        // Additional cases that require fields
         if (binding is IrBinding.GraphDependency) return true
         if (binding is IrBinding.MembersInjected && !binding.isFromInjectorFunction) return true
-        // Multibindings are always created adhoc
-        if (binding is IrBinding.Multibinding) return false
+
         // Assisted types always need to be a single field to ensure use of the same provider
         if (binding is IrBinding.Assisted) return true
         // TODO what about assisted but no assisted params? These also don't become providers
@@ -40,7 +46,7 @@ internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
         }
 
         // If it's unscoped but used more than once and not into a multibinding,
-        // we can generate a reusable field
+        // we can generate a reusable field for efficiency
         return refCount >= 2
       }
 
