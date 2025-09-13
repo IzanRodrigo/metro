@@ -12,6 +12,7 @@ import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.functions
+import org.jetbrains.kotlin.ir.util.nonDispatchParameters
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 
 internal class SwitchingProviderGenerator(
@@ -28,48 +29,64 @@ internal class SwitchingProviderGenerator(
     thisGraphParamName: String = "graph",
     idParamName: String = "id",
   ) {
+    // Resolve fields safely at the top
+    val idField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+      .firstOrNull { it.name.asString() == idParamName }
+      ?: error("SwitchingProvider must have field: $idParamName")
+
+    val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+      .firstOrNull { it.name.asString() == thisGraphParamName }
+      ?: error("SwitchingProvider must have field: $thisGraphParamName")
+
+    // Find the invoke function
     val invokeFun = switchingProviderClass.functions
-      .first { it.name.asString() == "invoke" && it.valueParameters.isEmpty() }
+      .firstOrNull { it.name.asString() == "invoke" && it.nonDispatchParameters.isEmpty() }
+      ?: error("SwitchingProvider must have invoke() function with no parameters")
 
-    invokeFun.body = createIrBuilder(invokeFun.symbol).irBlockBody {
-      // when(id) { case -> return <expr> ; else -> throw AssertionError(id) }
-      val primaryConstructor = switchingProviderClass.primaryConstructor
-        ?: error("SwitchingProvider must have a primary constructor")
-
-      val idParam = primaryConstructor.valueParameters
-        .firstOrNull { it.name.asString() == idParamName }
-        ?: error("SwitchingProvider constructor must have parameter: $idParamName")
-
-      val dispatchThis = invokeFun.dispatchReceiverParameter!!
+    // Build the invoke body
+    val builder = createIrBuilder(invokeFun.symbol)
+    invokeFun.body = builder.irBlockBody {
+      val thisParam = invokeFun.dispatchReceiverParameter
+        ?: error("invoke() must have dispatch receiver")
 
       // Read "this.id" field
-      val idField = switchingProviderClass.declarations.filterIsInstance<IrField>()
-        .firstOrNull { it.name.asString() == idParamName }
-        ?: error("SwitchingProvider must have field: $idParamName")
-      val idGet = irGetField(irGet(dispatchThis), idField)
+      val idVal = irGetField(irGet(thisParam), idField)
 
+      // Build branches for when(id) expression
       val branches = mutableListOf<IrBranchImpl>()
 
+      // Add a branch for each binding ID
       idToBinding.forEachIndexed { id, binding ->
-        val caseBody = generateBindingReturnExpr(invokeFun, switchingProviderClass, binding, thisGraphParamName)
+        val resultExpr = generateReturnExprViaGraph(
+          builder = this,
+          switchingProviderClass = switchingProviderClass,
+          graphField = graphField,
+          binding = binding,
+          invokeFun = invokeFun,
+          graphClass = graphClass
+        )
         branches += IrBranchImpl(
-          UNDEFINED_OFFSET, UNDEFINED_OFFSET,
-          condition = irEquals(idGet, irInt(id)),
-          result = caseBody
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          condition = irEquals(idVal, irInt(id)),
+          result = resultExpr
         )
       }
 
-      // default -> error("Unknown id: $id")
+      // Default branch: throw error with the unknown id
+      // Use simpler error function instead of AssertionError
       val defaultThrow = irInvoke(
         callee = symbols.stdlibErrorFunction,
         args = listOf(irString("Unknown SwitchingProvider id"))
       )
       branches += IrBranchImpl(
-        UNDEFINED_OFFSET, UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
         condition = irTrue(),
         result = defaultThrow
       )
 
+      // Create when expression with all branches
       val whenExpr = irWhen(
         type = invokeFun.returnType,
         branches = branches
@@ -79,17 +96,17 @@ internal class SwitchingProviderGenerator(
     }
   }
 
-  private fun IrBuilderWithScope.generateBindingReturnExpr(
-    owner: IrFunction,
+  private fun IrBuilderWithScope.generateReturnExprViaGraph(
+    builder: IrBuilderWithScope,
     switchingProviderClass: IrClass,
+    graphField: IrField,
     binding: IrBinding,
-    thisGraphParamName: String
+    invokeFun: IrFunction,
+    graphClass: IrClass
   ): IrExpression {
-    // Delegate to the existing provider field on the graph
-    val dispatchThis = owner.dispatchReceiverParameter!!
-    val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
-      .firstOrNull { it.name.asString() == thisGraphParamName }
-      ?: error("SwitchingProvider must have field: $thisGraphParamName")
+    // Read this.graph
+    val dispatchThis = invokeFun.dispatchReceiverParameter
+      ?: error("invoke() must have dispatch receiver")
     val graphGet = irGetField(irGet(dispatchThis), graphField)
 
     // Check if sharding is enabled and find which shard contains this binding
