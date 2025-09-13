@@ -19,6 +19,7 @@ internal class SwitchingProviderGenerator(
   private val context: IrMetroContext,
   private val bindingFieldContext: BindingFieldContext? = null,
   private val shardFieldRegistry: ShardFieldRegistry? = null,
+  private val expressionGenerator: IrGraphExpressionGenerator? = null,
 ) : IrMetroContext by context {
 
   @Suppress("DEPRECATION")
@@ -49,9 +50,6 @@ internal class SwitchingProviderGenerator(
       val thisParam = invokeFun.dispatchReceiverParameter
         ?: error("invoke() must have dispatch receiver")
 
-      // Read "this.id" field
-      val idVal = irGetField(irGet(thisParam), idField)
-
       // Build branches for when(id) expression
       val branches = mutableListOf<IrBranchImpl>()
 
@@ -65,10 +63,14 @@ internal class SwitchingProviderGenerator(
           invokeFun = invokeFun,
           graphClass = graphClass
         )
+
+        // Create a fresh field access for each branch to avoid duplicate IR nodes
+        val idFieldAccess = irGetField(irGet(thisParam), idField)
+
         branches += IrBranchImpl(
           UNDEFINED_OFFSET,
           UNDEFINED_OFFSET,
-          condition = irEquals(idVal, irInt(id)),
+          condition = irEquals(idFieldAccess, irInt(id)),
           result = resultExpr
         )
       }

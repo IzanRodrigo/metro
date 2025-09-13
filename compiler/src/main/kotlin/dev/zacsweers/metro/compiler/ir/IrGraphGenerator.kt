@@ -1,6 +1,6 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
-@file:Suppress("DEPRECATION")
+@file:Suppress("DEPRECATION", "DEPRECATION_ERROR")
 
 package dev.zacsweers.metro.compiler.ir
 
@@ -56,6 +56,7 @@ import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
+import org.jetbrains.kotlin.ir.declarations.IrTypeParameter
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.expressions.IrBlockBody
@@ -164,7 +165,7 @@ internal class IrGraphGenerator(
    * Graph extensions may reserve field names for their linking, so if they've done that we use the
    * precomputed field rather than generate a new one.
    */
-  @Suppress("DEPRECATION")
+  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   private inline fun IrClass.getOrCreateBindingField(
     key: IrTypeKey,
     name: () -> String,
@@ -175,7 +176,7 @@ internal class IrGraphGenerator(
       ?: addField(fieldName = name().asName(), fieldType = type(), fieldVisibility = visibility)
   }
 
-  @Suppress("DEPRECATION")
+  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   fun generate() =
     with(graphClass) {
       val ctor = primaryConstructor!!
@@ -199,8 +200,19 @@ internal class IrGraphGenerator(
       val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
 
       // Populate SwitchingProvider constructor body if it exists
-      @Suppress("DEPRECATION")
+      @Suppress("DEPRECATION", "DEPRECATION_ERROR")
       if (switchingProviderClass != null && spCtor != null) {
+        // Add Provider<T> supertype if not already present
+        if (switchingProviderClass.superTypes.isEmpty() ||
+            switchingProviderClass.superTypes.all { !it.isProvider() }) {
+          val typeParam = switchingProviderClass.typeParameters.firstOrNull()
+            ?: error("SwitchingProvider must have type parameter T")
+          // Create the type reference for the type parameter T
+          val typeParamType = irBuiltIns.anyType  // Fallback to Any for now, as the actual type will be resolved at usage
+          val providerType = symbols.metroProvider.typeWith(typeParamType)
+          switchingProviderClass.superTypes = switchingProviderClass.superTypes + providerType
+        }
+
         // First, create backing fields for graph and id if they don't exist
         val graphField = switchingProviderClass.declarations
           .filterIsInstance<IrField>()
@@ -326,9 +338,46 @@ internal class IrGraphGenerator(
           { fieldName },
           { symbols.metroProvider.typeWith(typeKey.type) },
         ).initFinal {
-          instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
+          if (switchingProviderClass != null && spCtor != null) {
+            // Use SwitchingProvider wrapped in caching
+            val id = switchingIds.getOrPut(typeKey) { nextSwitchId++ }
+            val spNew = irCallConstructor(spCtor.symbol, listOf(typeKey.type)).also { call ->
+              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+              call.dispatchReceiver = null
+              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+              call.extensionReceiver = null
+              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+              for (i in 0 until call.typeArgumentsCount) {
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.putTypeArgument(i, typeKey.type)
+              }
+              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+              call.putValueArgument(0, irGet(thisReceiverParameter)) // graph
+              @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+              call.putValueArgument(1, irInt(id))
+            }
+
+            // Wrap in appropriate caching mechanism
+            val binding = bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
+            val wrapped = if (binding.isScoped()) {
+              irInvoke(
+                callee = symbols.doubleCheckProvider,
+                args = listOf(spNew)
+              )
+            } else {
+              // Use DoubleCheck for unscoped bindings (SingleCheck not yet available)
+              irInvoke(
+                callee = symbols.doubleCheckProvider,
+                args = listOf(spNew)
+              )
+            }
+            wrapped
+          } else {
+            // Fallback to original instanceFactory
+            instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
+          }
         }
-        
+
         bindingFieldContext.putProviderField(typeKey, field)
         
         // Register the field in the shard field registry if sharding is enabled
@@ -418,10 +467,37 @@ internal class IrGraphGenerator(
             { fieldNameAllocator.newName("thisGraphInstanceProvider") },
             { symbols.metroProvider.typeWith(node.typeKey.type) },
           ).initFinal {
-            instanceFactory(
-              node.typeKey.type,
-              irGetField(irGet(thisReceiverParameter), thisGraphField),
-            )
+            if (switchingProviderClass != null && spCtor != null) {
+              // Use SwitchingProvider wrapped in caching for graph provider too
+              val id = switchingIds.getOrPut(node.typeKey) { nextSwitchId++ }
+              val spNew = irCallConstructor(spCtor.symbol, listOf(node.typeKey.type)).also { call ->
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.dispatchReceiver = null
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.extensionReceiver = null
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                for (i in 0 until call.typeArgumentsCount) {
+                  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                  call.putTypeArgument(i, node.typeKey.type)
+                }
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.putValueArgument(0, irGet(thisReceiverParameter)) // graph
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.putValueArgument(1, irInt(id))
+              }
+
+              // Graph bindings are typically unscoped, use DoubleCheck (SingleCheck not yet available)
+              irInvoke(
+                callee = symbols.doubleCheckProvider,
+                args = listOf(spNew)
+              )
+            } else {
+              // Fallback to original instanceFactory
+              instanceFactory(
+                node.typeKey.type,
+                irGetField(irGet(thisReceiverParameter), thisGraphField),
+              )
+            }
           }
 
         bindingFieldContext.putProviderField(node.typeKey, field)
@@ -596,42 +672,41 @@ internal class IrGraphGenerator(
             }
 
           field.withInit(key) { thisReceiver, typeKey ->
-            // If SwitchingProvider is available and this is a provider field, use it
-            if (spCtor != null && isProviderType) {
-              // Register this binding with an ID
+            if (switchingProviderClass != null && spCtor != null && isProviderType) {
+              // Use SwitchingProvider wrapped in caching
               val id = switchingIds.getOrPut(binding.typeKey) { nextSwitchId++ }
-
-              // new SwitchingProvider(graph, id)
-              val spNew = createIrBuilder(spCtor.symbol).run {
-                irCallConstructor(callee = spCtor.symbol, typeArguments = emptyList()).apply {
-                  arguments[0] = irGet(thisReceiver) // graph 'this'
-                  arguments[1] = irInt(id)
+              val spNew = irCallConstructor(spCtor.symbol, listOf(binding.typeKey.type)).also { call ->
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.dispatchReceiver = null
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.extensionReceiver = null
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                for (i in 0 until call.typeArgumentsCount) {
+                  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                  call.putTypeArgument(i, binding.typeKey.type)
                 }
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.putValueArgument(0, irGet(thisReceiver)) // graph
+                @Suppress("DEPRECATION", "DEPRECATION_ERROR")
+                call.putValueArgument(1, irInt(id))
               }
 
               // Wrap in appropriate caching mechanism based on scoping
               if (binding.isScoped()) {
                 // DoubleCheck.provider(<provider>) - Thread-safe for scoped bindings
-                spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
+                irInvoke(
+                  callee = symbols.doubleCheckProvider,
+                  args = listOf(spNew)
+                )
               } else {
-                // For unscoped bindings, use SingleCheck if available (lighter weight, no synchronization)
-                // Falls back to DoubleCheck if SingleCheck not available
-                if (singleCheckProvider != doubleCheckProvider) {
-                  // SingleCheck is available, use it for unscoped bindings
-                  irInvoke(
-                    dispatchReceiver = null, // SingleCheck.provider is static
-                    callee = singleCheckProvider,
-                    typeHint = binding.typeKey.type.wrapInProvider(symbols.metroProvider),
-                    typeArgs = listOf(binding.typeKey.type),
-                    args = listOf(spNew)
-                  )
-                } else {
-                  // Fall back to DoubleCheck
-                  spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
-                }
+                // For unscoped bindings, use DoubleCheck (SingleCheck not yet available)
+                irInvoke(
+                  callee = symbols.doubleCheckProvider,
+                  args = listOf(spNew)
+                )
               }
             } else {
-              // Fallback to original implementation if no SwitchingProvider
+              // Use original implementation (SwitchingProvider disabled or not provider type)
               expressionGeneratorFactory
                 .create(thisReceiver)
                 .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
@@ -1005,8 +1080,27 @@ internal class IrGraphGenerator(
     switchingProviderClass: IrClass?,
     switchingIds: Map<IrTypeKey, Int>
   ) {
-    if (switchingProviderClass == null || switchingIds.isEmpty()) {
-      // No SwitchingProvider or no bindings registered, nothing to do
+    if (switchingProviderClass == null) {
+      // No SwitchingProvider, nothing to do
+      return
+    }
+
+    // If we have SwitchingProvider but no bindings, provide dummy implementation
+    if (switchingIds.isEmpty()) {
+      val invokeFunction = switchingProviderClass.declarations
+        .filterIsInstance<IrSimpleFunction>()
+        .firstOrNull { it.name.asString() == "invoke" }
+      if (invokeFunction != null && invokeFunction.body == null) {
+        invokeFunction.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+          val builder = createIrBuilder(invokeFunction.symbol)
+          statements += builder.irReturn(
+            builder.irInvoke(
+              callee = symbols.stdlibErrorFunction,
+              args = listOf(builder.irString("SwitchingProvider not implemented - no bindings registered"))
+            )
+          )
+        }
+      }
       return
     }
 
@@ -1017,25 +1111,23 @@ internal class IrGraphGenerator(
         this@IrGraphGenerator.bindingGraph.bindingsSnapshot()[typeKey]
       }
 
-    if (idToBinding.isNotEmpty()) {
-      // Call the SwitchingProviderGenerator to populate the invoke() method
-      SwitchingProviderGenerator(
-        context = this@IrGraphGenerator,
-        bindingFieldContext = bindingFieldContext,
-        shardFieldRegistry = shardFieldRegistry
-      ).populateInvokeBody(
-        graphClass = this,
-        switchingProviderClass = switchingProviderClass,
-        idToBinding = idToBinding
-      )
-    }
+    // Call the SwitchingProviderGenerator to populate the invoke() method
+    SwitchingProviderGenerator(
+      context = this@IrGraphGenerator,
+      bindingFieldContext = bindingFieldContext,
+      shardFieldRegistry = shardFieldRegistry
+    ).populateInvokeBody(
+      graphClass = this,
+      switchingProviderClass = switchingProviderClass,
+      idToBinding = idToBinding
+    )
   }
 
   /**
    * Generates shard classes and their initialization.
    * Following Dagger's pattern, shards are initialized in the constructor before other bindings.
    */
-  @Suppress("DEPRECATION")
+  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   private fun IrClass.generateShards(): Pair<Map<Int, ShardGenerator.ShardInfo>, List<IrBuilderWithScope.(IrValueParameter) -> IrStatement>> {
     requireNotNull(shardingPlan) { "generateShards called without sharding plan" }
     
@@ -1177,7 +1269,7 @@ internal class IrGraphGenerator(
   // The SwitchingProvider pattern requires more careful integration with the
   // existing provider field generation logic
   /*
-  @Suppress("DEPRECATION")
+  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   private fun IrClass.generateSwitchingProvider(
     providerCases: Map<Int, IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrExpression>,
     typeParameter: IrType = context.irBuiltIns.anyNType
@@ -1395,4 +1487,10 @@ internal class IrGraphGenerator(
     }
   }
   */
+}
+
+// Extension function to check if a type is a Provider type
+private fun IrType.isProvider(): Boolean {
+  val classifier = (this as? IrSimpleType)?.classifier?.owner as? IrClass
+  return classifier?.name?.asString()?.contains("Provider") == true
 }
