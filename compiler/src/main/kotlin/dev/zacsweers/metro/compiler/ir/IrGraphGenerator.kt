@@ -180,12 +180,24 @@ internal class IrGraphGenerator(
       val switchingIds = mutableMapOf<IrTypeKey, Int>()
       var nextSwitchId = 0
 
-      // Find the SwitchingProvider class if it exists
+      // Robust lookup of the FIR-declared SwitchingProvider class
       val switchingProviderClass: IrClass? = declarations
         .filterIsInstance<IrClass>()
         .firstOrNull { it.name.asString() == "SwitchingProvider" }
 
+      // If we're expecting SwitchingProvider but didn't find it, that's an error
+      // For now, it's optional since not all graphs have it yet
+      if (switchingProviderClass == null && options.debug) {
+        log("SwitchingProvider skeleton not found in ${graphClass.name}; FIR generation may be missing")
+      }
+
       val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
+
+      // Resolve caching wrapper symbols once for efficiency
+      val doubleCheckProvider = symbols.doubleCheckProvider // Thread-safe for scoped bindings
+      // TODO: Implement SingleCheck for unscoped bindings (lighter weight than DoubleCheck)
+      // For now, use DoubleCheck for all bindings
+      val singleCheckProvider = doubleCheckProvider
 
       val constructorStatements =
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
@@ -513,13 +525,14 @@ internal class IrGraphGenerator(
                 }
               }
 
-              // Wrap in DoubleCheck or SingleCheck based on scoping
+              // Wrap in DoubleCheck based on scoping
+              // TODO: Use SingleCheck for unscoped bindings when available
               if (binding.isScoped()) {
-                // DoubleCheck.provider(<provider>)
+                // DoubleCheck.provider(<provider>) - Thread-safe for scoped bindings
                 spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
               } else {
-                // For unscoped, we could use SingleCheck if it exists, otherwise DoubleCheck
-                // For now, just use DoubleCheck for all
+                // For unscoped bindings, would use SingleCheck if available (lighter weight)
+                // Currently using DoubleCheck for all bindings
                 spNew.doubleCheck(this@withInit, symbols, binding.typeKey)
               }
             } else {
