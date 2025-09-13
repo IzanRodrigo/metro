@@ -238,7 +238,7 @@ internal class IrGraphGenerator(
             if (param.typeKey !in sealResult.reachableKeys) continue
 
             val graphDepField =
-              addSimpleInstanceField(
+              graphClass.addSimpleInstanceField(
                 fieldNameAllocator.newName(graphDep.sourceGraph.name.asString() + "Instance"),
                 param.typeKey,
               ) {
@@ -273,7 +273,7 @@ internal class IrGraphGenerator(
       // Don't add it if it's not used
       if (node.typeKey in sealResult.reachableKeys) {
         val thisGraphField =
-          addSimpleInstanceField(fieldNameAllocator.newName("thisGraphInstance"), node.typeKey) {
+          graphClass.addSimpleInstanceField(fieldNameAllocator.newName("thisGraphInstance"), node.typeKey) {
             irGet(thisReceiverParameter)
           }
 
@@ -613,13 +613,42 @@ internal class IrGraphGenerator(
     name: String,
     typeKey: IrTypeKey,
     initializerExpression: IrBuilderWithScope.() -> IrExpression,
-  ): IrField =
-    addField(
-        fieldName = name.removePrefix("$$").decapitalizeUS(),
+  ): IrField {
+    // Determine the correct owner class based on sharding
+    val owner = ownerClassFor(typeKey)
+    val fieldName = name.removePrefix("$$").decapitalizeUS()
+
+    val field = owner.addField(
+        fieldName = fieldName,
         fieldType = typeKey.type,
         fieldVisibility = DescriptorVisibilities.PRIVATE,
       )
       .initFinal { initializerExpression() }
+
+    // Register the field in the shard field registry if sharding is enabled
+    if (shardingPlan != null) {
+      val shardIndex = shardingPlan.bindingToShard[typeKey] ?: 0
+      // Try to get the binding if available
+      val binding = try {
+        bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
+      } catch (e: Exception) {
+        // For non-binding fields like thisGraphInstance, create a placeholder
+        null
+      }
+
+      if (binding != null) {
+        shardFieldRegistry.registerField(
+          typeKey = typeKey,
+          shardIndex = shardIndex,
+          field = field,
+          fieldName = fieldName,
+          binding = binding
+        )
+      }
+    }
+
+    return field
+  }
 
   private fun DependencyGraphNode.implementOverrides() {
     // Implement abstract getters for accessors
