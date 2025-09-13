@@ -167,9 +167,12 @@ private constructor(
       // Check for cross-shard access
       if (shardingPlan != null) {
         val targetShard = shardingPlan.getShardForBinding(binding.typeKey)
-        // If the binding is in a shard and we're not already in that shard, use cross-shard access
-        if (targetShard != null && targetShard != 0 && targetShard != currentShardIndex) {
-          // This is a cross-shard dependency
+        // Route cross-shard calls through shard instances
+        // Allow main graph (currentShardIndex == null or 0) to access shards
+        val currentShard = currentShardIndex ?: 0
+        if (targetShard != null && targetShard != currentShard) {
+          // This is a cross-shard dependency - route through appropriate shard instance
+          log("generateBindingCode: Cross-shard access detected from shard $currentShard to shard $targetShard for ${binding.typeKey.render(short = true)}")
           return generateCrossShardAccess(binding, targetShard, accessType, contextualTypeKey)
         }
       }
@@ -612,7 +615,7 @@ private constructor(
     contextualTypeKey: IrContextualTypeKey,
   ): IrExpression = with(scope) {
     log("[MetroSharding] Generating cross-shard access from shard ${currentShardIndex ?: 0} to shard $targetShardIndex for ${binding.typeKey.render(short = true)}")
-    
+
     // Handle access based on where we are and where we're going - three routes:
     // 1. shard → main: use this.graph (backing field)
     // 2. main → shardN: use this.shardN
@@ -625,7 +628,8 @@ private constructor(
         irThisGraph(thisReceiver)
       }
       // Case 2: main → shardN (use this.shardN)
-      currentShardIndex == null && targetShardIndex != 0 -> {
+      // Handle both null and 0 as main graph
+      (currentShardIndex == null || currentShardIndex == 0) && targetShardIndex != 0 -> {
         val shardFieldName = "shard$targetShardIndex"
         log("[MetroSharding]   Access pattern: main -> $shardFieldName.field")
         // Find the shard field in the main component class
