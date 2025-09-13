@@ -15,12 +15,13 @@ internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
     val needsField: Boolean
       get() {
         // Always create provider fields for qualified bindings to prevent collisions
-        val hasQualifier = binding.typeKey.qualifier != null
-        if (hasQualifier) return true
+        if (binding.typeKey.qualifier != null) return true
 
-        // Always create provider fields for graph interface accessors to ensure singleton semantics
-        val isGraphProp = isGraphAccessor // Graph interface properties marked during analysis
-        if (isGraphProp) return true
+        // Always create provider fields for graph interface returns to ensure singleton semantics
+        if (binding.isGraphInterfaceReturn) return true
+
+        // Always create provider fields for graph interface accessors to ensure singleton semantics (legacy)
+        if (isGraphAccessor) return true
 
         // Scoped bindings always need provider fields for proper caching
         if (binding.isScoped()) return true

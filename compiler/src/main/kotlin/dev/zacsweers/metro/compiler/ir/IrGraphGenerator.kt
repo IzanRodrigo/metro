@@ -522,6 +522,9 @@ internal class IrGraphGenerator(
           // Mark all accessor bindings for field generation to ensure consistent property behavior
           node.accessors.forEach { (_, contextualTypeKey) ->
             collector.markForField(contextualTypeKey)
+            // Mark the binding as a graph interface return for PROMPT 7
+            val binding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+            binding.isGraphInterfaceReturn = true
           }
           val providerFieldBindings = collector.collect()
           buildList(providerFieldBindings.size) {
