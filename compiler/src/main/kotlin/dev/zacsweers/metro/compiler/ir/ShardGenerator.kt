@@ -23,6 +23,7 @@ import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irSetField
+import org.jetbrains.kotlin.ir.builders.irInstanceInitializerCall
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
@@ -61,12 +62,12 @@ internal class ShardGenerator(
    * - static nested class (not inner)
    * - internal visibility for cross-shard access
    * - receives main graph instance and necessary modules in constructor
-   * 
+   *
    * @param initializeFieldsFunction Optional initialization function to call in constructor
    */
   fun generateShardClass(initializeFieldsFunction: IrFunction? = null): IrClass {
     val shardClassName = shard.shardClassName()
-    
+
     // Create the shard class using the IR factory
     val shardClass = pluginContext.irFactory.buildClass {
       name = shardClassName.asName()
@@ -75,47 +76,73 @@ internal class ShardGenerator(
       modality = Modality.FINAL
       origin = Origins.Default
     }
-    
+
     // Make it a nested class of the parent component
     parentClass.addChild(shardClass)
-    shardClass.createThisReceiverParameter()
-    
+
+    // Ensure thisReceiver is created
+    if (shardClass.thisReceiver == null) {
+      shardClass.createThisReceiverParameter()
+    }
+
+    // Add backing field for graph parameter
+    val graphField = shardClass.addField {
+      name = "graph".asName()
+      type = parentClass.defaultType
+      visibility = DescriptorVisibilities.PRIVATE
+      isFinal = true
+      origin = Origins.Default
+    }
+
+    // Generate initializeFields method FIRST (if we have the function)
+    // This ensures it exists before we reference it in the constructor
+    if (initializeFieldsFunction != null) {
+      // The function is already created, just ensure it's added to the class
+      shardClass.addChild(initializeFieldsFunction)
+    }
+
     // Add primary constructor
     val constructor = shardClass.addConstructor {
       visibility = DescriptorVisibilities.PUBLIC
       isPrimary = true
       returnType = shardClass.defaultType
     }
-    
+
     // Add parameters for main graph and modules
     val graphParameter = constructor.addValueParameter("graph", parentClass.defaultType)
     // Module parameters will be added based on shard requirements
-    
+
     // Store the graph parameter symbol in metadata for robust access
     setShardMetadata(shardClass, ShardMetadata(graphParameterSymbol = graphParameter.symbol))
-    
-    // Add constructor body that calls initializeFields if provided
-    if (initializeFieldsFunction != null) {
-      constructor.body = context.createIrBuilder(constructor.symbol).irBlockBody {
-        // Call the super constructor first
-        +irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.primaryConstructor!!)
-        // Initialize the instance
-        +IrInstanceInitializerCallImpl(
-          UNDEFINED_OFFSET,
-          UNDEFINED_OFFSET,
-          shardClass.symbol,
-          shardClass.defaultType,
-        )
-        // Call this.initializeFields() at the end of constructor
-        val thisReceiver = requireNotNull(shardClass.thisReceiver) {
-          "Shard class ${shardClass.name} missing this receiver for init call"
-        }
-        +irCall(initializeFieldsFunction.symbol).also { call ->
-          call.dispatchReceiver = irGet(thisReceiver)
+
+    // Add constructor body WITH proper field assignment
+    constructor.body = context.irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+      val builder = context.createIrBuilder(constructor.symbol)
+      val thisRef = requireNotNull(shardClass.thisReceiver) {
+        "Shard class ${shardClass.name} missing this receiver"
+      }
+
+      // 1. Call super constructor (Any.<init>())
+      statements += builder.irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.constructors.single())
+
+      // 2. Set the graph field: this.graph = graph
+      statements += builder.irSetField(
+        receiver = builder.irGet(thisRef),
+        field = graphField,
+        value = builder.irGet(graphParameter)
+      )
+
+      // 3. Call instance initializer
+      statements += builder.irInstanceInitializerCall(shardClass.symbol)
+
+      // 4. Call this.initializeFields() if provided
+      if (initializeFieldsFunction != null) {
+        statements += builder.irCall(initializeFieldsFunction.symbol).also { call ->
+          call.dispatchReceiver = builder.irGet(thisRef)
         }
       }
     }
-    
+
     return shardClass
   }
 
@@ -294,16 +321,33 @@ internal class ShardGenerator(
    * Generates a complete shard class with field initialization.
    * This method coordinates the generation of both the shard class and its initialization method,
    * ensuring the constructor properly calls initializeFields().
-   * 
+   *
    * @param initializers List of (field, typeKey, initializerFunction) triples for this shard
    * @return The generated shard class with initialization
    */
   fun generateShardClassWithInitialization(
     initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>
   ): IrClass {
-    // First generate the shard class without initialization
-    val shardClass = generateShardClass()
-    
+    // First, create a basic shard class structure
+    val shardClassName = shard.shardClassName()
+
+    // Create the shard class using the IR factory
+    val shardClass = pluginContext.irFactory.buildClass {
+      name = shardClassName.asName()
+      kind = ClassKind.CLASS
+      visibility = DescriptorVisibilities.INTERNAL
+      modality = Modality.FINAL
+      origin = Origins.Default
+    }
+
+    // Make it a nested class of the parent component
+    parentClass.addChild(shardClass)
+
+    // Ensure thisReceiver is created
+    if (shardClass.thisReceiver == null) {
+      shardClass.createThisReceiverParameter()
+    }
+
     // Create ShardInfo to use with the field initialization method
     val shardInfo = ShardInfo(
       shard = shard,
@@ -311,35 +355,59 @@ internal class ShardGenerator(
       shardField = null, // Will be set later
       generator = this
     )
-    
-    // Generate the initializeFields method
+
+    // Generate the initializeFields method FIRST
     val initializeFieldsMethod = generateShardFieldInitialization(shardInfo, initializers)
-    
-    // Now update the constructor to call the initialization method
-    val constructor = requireNotNull(shardClass.primaryConstructor) {
-      "Shard class ${shardClass.name} missing primary constructor"
+
+    // Add backing field for graph parameter
+    val graphField = shardClass.addField {
+      name = "graph".asName()
+      type = parentClass.defaultType
+      visibility = DescriptorVisibilities.PRIVATE
+      isFinal = true
+      origin = Origins.Default
     }
-    
-    // Add constructor body that calls initializeFields
-    constructor.body = context.createIrBuilder(constructor.symbol).irBlockBody {
-      // Call the super constructor first
-      +irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.primaryConstructor!!)
-      // Initialize the instance
-      +IrInstanceInitializerCallImpl(
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET,
-        shardClass.symbol,
-        shardClass.defaultType,
-      )
-      // Call this.initializeFields() at the end of constructor
-      val thisReceiver = requireNotNull(shardClass.thisReceiver) {
+
+    // Add primary constructor
+    val constructor = shardClass.addConstructor {
+      visibility = DescriptorVisibilities.PUBLIC
+      isPrimary = true
+      returnType = shardClass.defaultType
+    }
+
+    // Add parameters for main graph and modules
+    val graphParameter = constructor.addValueParameter("graph", parentClass.defaultType)
+    // Module parameters will be added based on shard requirements
+
+    // Store the graph parameter symbol in metadata for robust access
+    setShardMetadata(shardClass, ShardMetadata(graphParameterSymbol = graphParameter.symbol))
+
+    // Add constructor body WITH proper field assignment
+    constructor.body = context.irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+      val builder = context.createIrBuilder(constructor.symbol)
+      val thisRef = requireNotNull(shardClass.thisReceiver) {
         "Shard class ${shardClass.name} missing this receiver"
       }
-      +irCall(initializeFieldsMethod.symbol).also { call ->
-        call.dispatchReceiver = irGet(thisReceiver)
+
+      // 1. Call super constructor (Any.<init>())
+      statements += builder.irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.constructors.single())
+
+      // 2. Set the graph field: this.graph = graph
+      statements += builder.irSetField(
+        receiver = builder.irGet(thisRef),
+        field = graphField,
+        value = builder.irGet(graphParameter)
+      )
+
+      // 3. Call instance initializer
+      statements += builder.irInstanceInitializerCall(shardClass.symbol)
+
+      // 4. Call this.initializeFields()
+      statements += builder.irCall(initializeFieldsMethod.symbol).also { call ->
+        call.dispatchReceiver = builder.irGet(thisRef)
       }
     }
-    
+
     return shardClass
   }
 
