@@ -4,16 +4,20 @@
 
 package dev.zacsweers.metro.compiler.ir
 
+import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
+import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 
 internal class SwitchingProviderGenerator(
   private val context: IrMetroContext,
+  private val bindingFieldContext: BindingFieldContext? = null,
+  private val shardFieldRegistry: ShardFieldRegistry? = null,
 ) : IrMetroContext by context {
 
   @Suppress("DEPRECATION")
@@ -81,20 +85,61 @@ internal class SwitchingProviderGenerator(
     binding: IrBinding,
     thisGraphParamName: String
   ): IrExpression {
-    // For now, we'll delegate to the existing provider field on the graph
-    // This is simpler than recreating the entire binding expression
+    // Delegate to the existing provider field on the graph
     val dispatchThis = owner.dispatchReceiverParameter!!
     val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
       .firstOrNull { it.name.asString() == thisGraphParamName }
       ?: error("SwitchingProvider must have field: $thisGraphParamName")
     val graphGet = irGetField(irGet(dispatchThis), graphField)
 
-    // For simplicity, just return a stub error for now
-    // In a full implementation, we'd generate the actual binding expression
-    // or delegate to existing provider fields
+    // Check if sharding is enabled and find which shard contains this binding
+    val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+
+    val providerAccess = when {
+      shardInfo != null -> {
+        // Field is in a shard - need to access through shard instance
+        val shardIndex = shardInfo.shardIndex
+        val field = shardInfo.field
+
+        if (shardIndex == 0) {
+          // Main graph - direct access
+          irGetField(graphGet, field)
+        } else {
+          // Access through shard instance: graph.shardN.fieldProvider
+          val shardField = graphGet.type.getClass()?.declarations
+            ?.filterIsInstance<IrField>()
+            ?.firstOrNull { shardField -> shardField.name.asString() == "shard$shardIndex" }
+
+          if (shardField != null) {
+            val shardAccess = irGetField(graphGet, shardField)
+            irGetField(shardAccess, field)
+          } else {
+            // Shard field not found, try direct access as fallback
+            irGetField(graphGet, field)
+          }
+        }
+      }
+      bindingFieldContext != null -> {
+        // No sharding, use binding field context
+        val field = bindingFieldContext.providerField(binding.typeKey)
+        if (field != null) {
+          irGetField(graphGet, field)
+        } else {
+          null
+        }
+      }
+      else -> null
+    }
+
+    if (providerAccess != null) {
+      // Invoke the provider to get the instance
+      return irInvoke(providerAccess, callee = symbols.providerInvoke)
+    }
+
+    // Fallback: If we can't find the provider field, generate error
     return irInvoke(
       callee = symbols.stdlibErrorFunction,
-      args = listOf(irString("SwitchingProvider case for ${binding.typeKey} not yet implemented"))
+      args = listOf(irString("Provider field not found for ${binding.typeKey}"))
     )
   }
 }

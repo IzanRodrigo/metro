@@ -927,7 +927,11 @@ internal class IrGraphGenerator(
 
     if (idToBinding.isNotEmpty()) {
       // Call the SwitchingProviderGenerator to populate the invoke() method
-      SwitchingProviderGenerator(this@IrGraphGenerator).populateInvokeBody(
+      SwitchingProviderGenerator(
+        context = this@IrGraphGenerator,
+        bindingFieldContext = bindingFieldContext,
+        shardFieldRegistry = shardFieldRegistry
+      ).populateInvokeBody(
         graphClass = this,
         switchingProviderClass = switchingProviderClass,
         idToBinding = idToBinding
