@@ -611,6 +611,11 @@ internal class IrGraphGenerator(
         }
       }
 
+      // Populate SwitchingProvider if it exists
+      parentTracer.traceNested("Populate SwitchingProvider") {
+        populateSwitchingProviderIfExists()
+      }
+
       parentTracer.traceNested("Implement overrides") { node.implementOverrides() }
 
       if (graphClass.origin != Origins.GeneratedGraphExtension) {
@@ -846,6 +851,48 @@ internal class IrGraphGenerator(
     }
   }
   
+  /**
+   * Populates the SwitchingProvider invoke() method if it exists.
+   * This should be called after all fields are created and initialized.
+   */
+  private fun IrClass.populateSwitchingProviderIfExists() {
+    // Find the nested SwitchingProvider class if it exists
+    val switchingProviderClass = declarations
+      .filterIsInstance<IrClass>()
+      .firstOrNull { it.name.asString() == "SwitchingProvider" }
+
+    if (switchingProviderClass == null) {
+      // No SwitchingProvider, nothing to do
+      return
+    }
+
+    // Collect all bindings that have provider fields
+    // We need bindings with their assigned IDs
+    val idToBinding = mutableListOf<IrBinding>()
+
+    // For now, we'll just collect provider-backed bindings from the main graph
+    // In a full implementation, we'd need to track the actual ID assignments
+    this@IrGraphGenerator.bindingGraph.bindingsSnapshot().values.forEach { binding ->
+      // Only include bindings that would have provider fields
+      if (binding is IrBinding.ConstructorInjected ||
+          binding is IrBinding.Provided ||
+          binding is IrBinding.BoundInstance ||
+          binding is IrBinding.Alias ||
+          binding is IrBinding.GraphExtension) {
+        idToBinding.add(binding)
+      }
+    }
+
+    if (idToBinding.isNotEmpty()) {
+      // Call the SwitchingProviderGenerator to populate the invoke() method
+      SwitchingProviderGenerator(this@IrGraphGenerator).populateInvokeBody(
+        graphClass = this,
+        switchingProviderClass = switchingProviderClass,
+        idToBinding = idToBinding
+      )
+    }
+  }
+
   /**
    * Generates shard classes and their initialization.
    * Following Dagger's pattern, shards are initialized in the constructor before other bindings.
