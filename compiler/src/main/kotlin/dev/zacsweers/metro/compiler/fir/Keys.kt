@@ -132,4 +132,12 @@ internal object Keys {
   data object GeneratedShardClass : GeneratedDeclarationKey() {
     override fun toString() = "GeneratedShardClass"
   }
+
+  data object SwitchingProviderDeclaration : GeneratedDeclarationKey() {
+    override fun toString() = "SwitchingProviderDeclaration"
+  }
+
+  data object ShardClassDeclaration : GeneratedDeclarationKey() {
+    override fun toString() = "ShardClassDeclaration"
+  }
 }
