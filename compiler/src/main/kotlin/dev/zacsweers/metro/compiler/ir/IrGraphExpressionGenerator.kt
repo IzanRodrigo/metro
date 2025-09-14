@@ -94,7 +94,7 @@ private constructor(
       } else {
         null
       }
-      
+
       // Determine the shard context from the thisReceiver
       // If the parent class is a shard class, extract its index
       val actualShardIndex = if (shardingPlan != null) {
@@ -109,6 +109,7 @@ private constructor(
             className.startsWith("Shard") -> {
               className.removePrefix("Shard").toIntOrNull() ?: currentShardIndex
             }
+
             else -> currentShardIndex
           }
         } else {
@@ -117,7 +118,7 @@ private constructor(
       } else {
         null
       }
-      
+
       return IrGraphExpressionGenerator(
         context = context,
         node = node,
@@ -137,7 +138,6 @@ private constructor(
     }
   }
 
-  
 
   /** Resolve correct receiver for a field's owning shard. */
   enum class AccessType {
@@ -156,8 +156,11 @@ private constructor(
         AccessType.INSTANCE
       },
     fieldInitKey: IrTypeKey? = null,
+    bypassProviderFor: IrTypeKey? = null,
   ): IrExpression =
     with(scope) {
+      if (bypassProviderFor != null && binding.typeKey == bypassProviderFor) return@with generateInlineInstance(binding)
+
       if (binding is IrBinding.Absent) {
         reportCompilerBug(
           "Absent bindings need to be checked prior to generateBindingCode(). ${binding.typeKey} missing."
@@ -203,11 +206,11 @@ private constructor(
         // Fallback to bindingFieldContext for backward compatibility (non-sharded case)
         bindingFieldContext.providerField(binding.typeKey)?.let { field ->
           log("generateBindingCode: Found field in bindingFieldContext for ${binding.typeKey.render(short = true)}")
-          
+
           // Even in fallback, we must check if this field belongs to the current context
           // When sharding is enabled, fields may belong to different classes
           val fieldOwner = resolveFieldOwnerForBindingContext(field, binding.typeKey)
-          
+
           val providerInstance =
             safeGetField(fieldOwner, field, contextualTypeKey.typeKey).let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
@@ -260,6 +263,7 @@ private constructor(
             aliasedBinding,
             accessType = accessType,
             fieldInitKey = fieldInitKey,
+            bypassProviderFor = bypassProviderFor,
           )
         }
 
@@ -312,8 +316,8 @@ private constructor(
                 .simpleFunctions()
                 .first {
                   it.isStatic &&
-                    (it.name == Symbols.Names.create ||
-                      it.name == Symbols.Names.createFactoryProvider)
+                      (it.name == Symbols.Names.create ||
+                          it.name == Symbols.Names.createFactoryProvider)
                 }
                 .symbol
             dispatchReceiver = null
@@ -384,22 +388,22 @@ private constructor(
                 fieldInitKey = fieldInitKey,
               )
             instanceFactory(
-                injectedType,
-                // InjectableClass_MembersInjector.create(stringValueProvider,
-                // exampleComponentProvider)
-                irInvoke(
-                  dispatchReceiver =
-                    if (injectorCreatorClass.isObject) {
-                      irGetObject(injectorCreatorClass.symbol)
-                    } else {
-                      // It's static from java, dagger interop
-                      check(createFunction.owner.isStatic)
-                      null
-                    },
-                  callee = createFunction,
-                  args = args,
-                ),
-              )
+              injectedType,
+              // InjectableClass_MembersInjector.create(stringValueProvider,
+              // exampleComponentProvider)
+              irInvoke(
+                dispatchReceiver =
+                  if (injectorCreatorClass.isObject) {
+                    irGetObject(injectorCreatorClass.symbol)
+                  } else {
+                    // It's static from java, dagger interop
+                    check(createFunction.owner.isStatic)
+                    null
+                  },
+                callee = createFunction,
+                args = args,
+              ),
+            )
               .let { with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) } }
           }
         }
@@ -416,6 +420,7 @@ private constructor(
                 // Get it directly
                 irGet(binding.classReceiverParameter)
               }
+
               AccessType.PROVIDER -> {
                 // We need the provider
                 safeGetField(
@@ -468,6 +473,7 @@ private constructor(
               // Already not a provider
               instanceExpression
             }
+
             AccessType.PROVIDER -> {
               instanceFactory(binding.typeKey.type, instanceExpression)
             }
@@ -497,9 +503,9 @@ private constructor(
           val parameters = constructor.parameters()
           val factoryInstance =
             irCallConstructor(
-                constructor.symbol,
-                binding.accessor.typeParameters.map { it.defaultType },
-              )
+              constructor.symbol,
+              binding.accessor.typeParameters.map { it.defaultType },
+            )
               .apply {
                 // Pass the parent graph instance
                 arguments[0] =
@@ -517,6 +523,7 @@ private constructor(
               // Factories are not providers, return directly
               factoryInstance
             }
+
             AccessType.PROVIDER -> {
               // Wrap in an instance factory
               instanceFactory(binding.typeKey.type, factoryInstance)
@@ -541,7 +548,7 @@ private constructor(
                 )
 
             val getterContextKey = IrContextualTypeKey.from(binding.getter)
-            
+
             // Use proper owner resolution for the instance field
             val fieldOwner = resolveFieldOwnerForBindingContext(graphInstanceField, ownerKey)
 
@@ -632,7 +639,7 @@ private constructor(
   private fun safeGetField(
     receiver: IrExpression,
     field: IrField,
-    typeKey: IrTypeKey? = null
+    typeKey: IrTypeKey? = null,
   ): IrExpression = with(scope) {
     // If we have sharding information and a typeKey, check for cross-shard access
     if (shardFieldRegistry != null && typeKey != null && shardingPlan != null) {
@@ -673,7 +680,7 @@ private constructor(
     thisReceiver: IrValueParameter,
     currentShard: Int?,
     targetShard: Int,
-    plan: ShardingPlan
+    plan: ShardingPlan,
   ): IrExpression = with(scope) {
     when {
       // Same shard/graph - use thisReceiver directly
@@ -735,7 +742,7 @@ private constructor(
   context(scope: IrBuilderWithScope)
   private fun resolveFieldOwnerForBindingContext(
     field: IrField,
-    typeKey: IrTypeKey
+    typeKey: IrTypeKey,
   ): IrExpression = with(scope) {
     // If sharding is enabled, check if this field might be in a different shard
     if (shardingPlan != null && shardFieldRegistry != null) {
@@ -770,7 +777,7 @@ private constructor(
       var paramsToMap = buildList {
         if (
           binding is IrBinding.Provided &&
-            targetParams.dispatchReceiverParameter?.type?.rawTypeOrNull()?.isObject != true
+          targetParams.dispatchReceiverParameter?.type?.rawTypeOrNull()?.isObject != true
         ) {
           targetParams.dispatchReceiverParameter?.let(::add)
         }
@@ -816,7 +823,7 @@ private constructor(
 
       if (
         binding is IrBinding.Provided &&
-          binding.providerFactory.function.correspondingPropertySymbol == null
+        binding.providerFactory.function.correspondingPropertySymbol == null
       ) {
         check(params.regularParameters.size == paramsToMap.size) {
           """
@@ -865,7 +872,7 @@ private constructor(
             null
           }
         }
-        
+
         if (fieldFromRegistry != null) {
           // We found the field in the registry, use it
           return@mapIndexed if (accessType == AccessType.INSTANCE) {
@@ -876,7 +883,7 @@ private constructor(
             fieldFromRegistry
           }
         }
-        
+
         // Check bindingFieldContext for backward compatibility
         if (accessType == AccessType.INSTANCE) {
           // IFF the parameter can take a direct instance, try our instance fields
@@ -891,11 +898,11 @@ private constructor(
 
         val providerInstance =
           bindingFieldContext.providerField(typeKey)?.let { field ->
-              // If it's in provider fields, invoke that field
-              log("generateBindingArguments: Found provider field in bindingFieldContext for ${typeKey.render(short = true)}")
-              val fieldOwner = resolveFieldOwnerForBindingContext(field, typeKey)
-              safeGetField(fieldOwner, field, typeKey)
-            }
+            // If it's in provider fields, invoke that field
+            log("generateBindingArguments: Found provider field in bindingFieldContext for ${typeKey.render(short = true)}")
+            val fieldOwner = resolveFieldOwnerForBindingContext(field, typeKey)
+            safeGetField(fieldOwner, field, typeKey)
+          }
             ?: run {
               log("generateBindingArguments: No existing field found for ${typeKey.render(short = true)}, calling generateBindingCode")
               // Generate binding code for each param
@@ -1044,10 +1051,10 @@ private constructor(
       }
 
       return irCall(
-          callee = callee,
-          type = binding.typeKey.type,
-          typeArguments = listOf(elementType),
-        )
+        callee = callee,
+        type = binding.typeKey.type,
+        typeArguments = listOf(elementType),
+      )
         .apply {
           for ((i, arg) in args.withIndex()) {
             arguments[i] = arg
@@ -1270,10 +1277,10 @@ private constructor(
                 listOf(
                   generateMapKeyLiteral(sourceBinding),
                   generateBindingCode(
-                      sourceBinding,
-                      accessType = AccessType.PROVIDER,
-                      fieldInitKey = fieldInitKey,
-                    )
+                    sourceBinding,
+                    accessType = AccessType.PROVIDER,
+                    fieldInitKey = fieldInitKey,
+                  )
                     .let {
                       with(valueProviderSymbols) {
                         transformMetroProvider(it, originalValueContextKey)
@@ -1315,4 +1322,75 @@ private constructor(
         isGraphInstance = false,
       )
     }
+
+  private fun IrBuilderWithScope.generateInlineInstance(binding: IrBinding): IrExpression {
+    return when (binding) {
+      is IrBinding.ConstructorInjected -> {
+        with(binding.classFactory) {
+          invokeCreateExpression { createFunction ->
+            val remapper = createFunction.typeRemapperFor(binding.typeKey.type)
+            generateBindingArguments(
+              targetParams = createFunction.parameters(remapper = remapper),
+              function = createFunction.symbol.owner,
+              binding = binding,
+              fieldInitKey = null,
+            )
+          }
+        }
+      }
+
+      is IrBinding.Provided -> {
+        val factoryClass =
+          bindingContainerTransformer.getOrLookupProviderFactory(binding)?.clazz
+            ?: reportCompilerBug("No factory found for Provided binding ${binding.typeKey}")
+
+        val creatorClass =
+          if (factoryClass.isObject) {
+            factoryClass
+          } else {
+            requireNotNull(factoryClass.companionObject()) {
+              "Factory class ${factoryClass.name} missing companion object"
+            }
+          }
+
+        val createFunction = creatorClass.requireSimpleFunction(Symbols.StringNames.CREATE)
+
+        val args =
+          generateBindingArguments(
+            targetParams = binding.parameters,
+            function = createFunction.owner,
+            binding = binding,
+            fieldInitKey = null,
+          )
+
+        irInvoke(
+          dispatchReceiver = irGetObject(creatorClass.symbol),
+          callee = createFunction,
+          args = args,
+        )
+      }
+
+      is IrBinding.ObjectClass -> {
+        irGetObject(binding.type.symbol)
+      }
+
+      is IrBinding.BoundInstance -> {
+        require(binding.classReceiverParameter != null) {
+          "BoundInstance without receiver parameter: $binding"
+        }
+        irGet(binding.classReceiverParameter)
+      }
+
+      is IrBinding.Alias -> {
+        val aliased = binding.aliasedBinding(bindingGraph, IrBindingStack.empty())
+        check(aliased != binding) { "Aliased binding aliases itself: $binding" }
+        generateInlineInstance(aliased)
+      }
+
+      else -> {
+        // Anything else should be unsupported here, better to fail at compile time.
+        reportCompilerBug("Unsupported binding type in generateInlineInstance: $binding")
+      }
+    }
+  }
 }

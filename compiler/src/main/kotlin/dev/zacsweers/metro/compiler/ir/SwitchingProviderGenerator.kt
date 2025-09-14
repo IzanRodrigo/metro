@@ -55,13 +55,10 @@ internal class SwitchingProviderGenerator(
 
       // Add a branch for each binding ID
       idToBinding.forEachIndexed { id, binding ->
-        val resultExpr = generateReturnExprViaGraph(
-          builder = this,
-          switchingProviderClass = switchingProviderClass,
-          graphField = graphField,
-          binding = binding,
-          invokeFun = invokeFun,
-          graphClass = graphClass
+        val expr = expressionGenerator!!.generateBindingCode(
+          binding,
+          accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+          bypassProviderFor = binding.typeKey
         )
 
         // Create a fresh field access for each branch to avoid duplicate IR nodes
@@ -71,7 +68,7 @@ internal class SwitchingProviderGenerator(
           UNDEFINED_OFFSET,
           UNDEFINED_OFFSET,
           condition = irEquals(idFieldAccess, irInt(id)),
-          result = resultExpr
+          result = irReturn(expr)
         )
       }
 

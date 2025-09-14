@@ -100,10 +100,10 @@ internal class IrGraphGenerator(
   private val fieldNameAllocator: NameAllocator,
   private val parentTracer: Tracer,
   // TODO move these accesses to irAttributes
-  bindingContainerTransformer: BindingContainerTransformer,
+  private val bindingContainerTransformer: BindingContainerTransformer,
   private val membersInjectorTransformer: MembersInjectorTransformer,
-  assistedFactoryTransformer: AssistedFactoryTransformer,
-  graphExtensionGenerator: IrGraphExtensionGenerator,
+  private val assistedFactoryTransformer: AssistedFactoryTransformer,
+  private val graphExtensionGenerator: IrGraphExtensionGenerator,
   private val shardingPlan: ShardingPlan? = null,
 ) : IrMetroContext by metroContext {
 
@@ -349,7 +349,7 @@ internal class IrGraphGenerator(
               call.arguments[1] = irInt(id) // id
             }
 
-            // Wrap in appropriate caching mechanism
+            // Wrap in the appropriate caching mechanism
             val binding = bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
             val wrapped = if (binding.isScoped()) {
               irInvoke(
@@ -1064,7 +1064,7 @@ internal class IrGraphGenerator(
       return
     }
 
-    // If we have SwitchingProvider but no bindings, provide dummy implementation
+    // If we have SwitchingProvider but no bindings, provide a fake implementation
     if (switchingIds.isEmpty()) {
       val invokeFunction = switchingProviderClass.declarations
         .filterIsInstance<IrSimpleFunction>()
@@ -1090,11 +1090,28 @@ internal class IrGraphGenerator(
         this@IrGraphGenerator.bindingGraph.bindingsSnapshot()[typeKey]
       }
 
+    // Create IrGraphExpressionGenerator for inline instance generation
+    val expressionGenerator = IrGraphExpressionGenerator.Factory(
+      context = this@IrGraphGenerator,
+      node = node,
+      bindingFieldContext = bindingFieldContext,
+      bindingGraph = bindingGraph,
+      bindingContainerTransformer = bindingContainerTransformer,
+      membersInjectorTransformer = membersInjectorTransformer,
+      assistedFactoryTransformer = assistedFactoryTransformer,
+      graphExtensionGenerator = graphExtensionGenerator,
+      parentTracer = parentTracer,
+      shardFieldRegistry = shardFieldRegistry,
+      shardingPlan = shardingPlan,
+      currentShardIndex = null,
+    ).create(graphClass.thisReceiverOrFail)
+
     // Call the SwitchingProviderGenerator to populate the invoke() method
     SwitchingProviderGenerator(
       context = this@IrGraphGenerator,
       bindingFieldContext = bindingFieldContext,
-      shardFieldRegistry = shardFieldRegistry
+      shardFieldRegistry = shardFieldRegistry,
+      expressionGenerator = expressionGenerator
     ).populateInvokeBody(
       graphClass = this,
       switchingProviderClass = switchingProviderClass,
