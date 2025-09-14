@@ -28,6 +28,10 @@ internal class SwitchingProviderGenerator(
   /**
    * Helper to resolve the owner of a field when it might be in a shard.
    * Returns the appropriate receiver expression (main graph or shard instance).
+   *
+   * IMPORTANT: This method does NOT add any caching wrappers (DoubleCheck).
+   * Caching is handled at the field initialization level in IrGraphGenerator,
+   * not in the SwitchingProvider's invoke() dispatch logic.
    */
   context(scope: IrBuilderWithScope)
   private fun resolveOwnerForShard(
@@ -48,6 +52,22 @@ internal class SwitchingProviderGenerator(
     }
   }
 
+  /**
+   * Populates the invoke() body of SwitchingProvider with a when(id) expression.
+   *
+   * IMPORTANT: This method MUST NOT add any caching wrappers (DoubleCheck/SingleCheck).
+   * Caching is already applied at the field initialization level when the provider
+   * fields are created. The invoke() method should only dispatch to the appropriate
+   * binding code without additional wrapping.
+   *
+   * @param builder The IR builder for creating expressions
+   * @param graphClass The main graph class containing the SwitchingProvider
+   * @param switchingProviderClass The SwitchingProvider class itself
+   * @param idToBinding Ordered list of bindings by their assigned IDs
+   * @param graphExpr Expression to access the graph instance from SwitchingProvider.graph
+   * @param idExpr Expression to access the id from SwitchingProvider.id
+   * @param returnType The return type of invoke() (typically T from Provider<T>)
+   */
   @Suppress("DEPRECATION")
   fun populateInvokeBody(
     builder: IrBuilderWithScope,

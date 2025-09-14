@@ -672,6 +672,10 @@ internal class IrGraphGenerator(
                 call.arguments[1] = irInt(id) // id
               }
 
+              // CRITICAL: Caching wrappers (DoubleCheck/SingleCheck) are applied HERE at field
+              // initialization, NOT in SwitchingProvider's invoke() method. This ensures proper
+              // singleton semantics while keeping the dispatch logic simple and efficient.
+              //
               // Wrap in appropriate caching mechanism based on scoping
               if (binding.isScoped()) {
                 // DoubleCheck.provider(<provider>) - Thread-safe for scoped bindings
