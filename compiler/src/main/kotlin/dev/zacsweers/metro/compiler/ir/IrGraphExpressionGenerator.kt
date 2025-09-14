@@ -432,8 +432,9 @@ private constructor(
             val owner = resolveFieldOwnerForBindingContext(provField, binding.typeKey)
             val providerExpr = safeGetField(owner, provField, binding.typeKey)
             return@with if (accessType == AccessType.INSTANCE) {
-              // Invoke the provider to get the instance
-              irInvoke(providerExpr, callee = symbols.providerInvoke)
+              with(symbols.providerSymbolsFor(binding.typeKey.type)) {
+                transformMetroProvider(providerExpr, IrContextualTypeKey.create(binding.typeKey))
+              }
             } else {
               providerExpr
             }
@@ -442,11 +443,8 @@ private constructor(
             ?: reportCompilerBug("No instance/provider field found for @BindsInstance ${binding.typeKey}")
           val owner = resolveFieldOwnerForBindingContext(instField, binding.typeKey)
           val instExpr = safeGetField(owner, instField, binding.typeKey)
-          return@with if (accessType == AccessType.INSTANCE) {
-            instExpr
-          } else {
-            instanceFactory(binding.typeKey.type, instExpr)
-          }
+          return@with if (accessType == AccessType.INSTANCE) instExpr
+          else instanceFactory(binding.typeKey.type, instExpr)
         }
 
         is IrBinding.GraphExtension -> {
