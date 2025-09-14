@@ -29,6 +29,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
   }
 
   @Test
+  @TestMetadata("debug_sharding.kt")
+  public void testDebug_sharding() {
+    runTest("compiler-tests/src/test/data/box/debug_sharding.kt");
+  }
+
+  @Test
   @TestMetadata("sharding_backedge_cycle_guarantee.kt")
   public void testSharding_backedge_cycle_guarantee() {
     runTest("compiler-tests/src/test/data/box/sharding_backedge_cycle_guarantee.kt");

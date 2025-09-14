@@ -55,6 +55,8 @@ internal class SwitchingProviderGenerator(
 
       // Add a branch for each binding ID
       idToBinding.forEachIndexed { id, binding ->
+        // Always use inline generation to avoid provider field lookups
+        // which would cause recursion (since the provider field IS this SwitchingProvider)
         val expr = expressionGenerator!!.generateBindingCode(
           binding,
           accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,

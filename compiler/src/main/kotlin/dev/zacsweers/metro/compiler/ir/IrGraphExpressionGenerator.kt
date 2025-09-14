@@ -41,6 +41,7 @@ import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.symbols.IrSimpleFunctionSymbol
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeWith
@@ -751,6 +752,40 @@ private constructor(
     field: IrField,
     typeKey: IrTypeKey,
   ): IrExpression = with(scope) {
+    // Check if thisReceiver is a SwitchingProvider
+    // If so, we need to access fields through the graph field
+    val receiverType = thisReceiver.type
+    val receiverClass = receiverType.classOrNull?.owner
+    if (receiverClass != null && receiverClass.name.asString().contains("SwitchingProvider")) {
+      // This is a SwitchingProvider, access fields through the graph
+      val graphField = receiverClass.declarations
+        .filterIsInstance<IrField>()
+        .firstOrNull { it.name.asString() == "graph" }
+
+      if (graphField != null) {
+        val graphAccess = irGetField(irGet(thisReceiver), graphField)
+
+        // If sharding is enabled, resolve through the graph's shards
+        if (shardingPlan != null && shardFieldRegistry != null) {
+          val fieldInfo = shardFieldRegistry.findField(typeKey)
+          if (fieldInfo != null && fieldInfo.shardIndex > 0) {
+            // Access through shard: graph.shardN
+            val shardFieldName = "shard${fieldInfo.shardIndex}"
+            val shardField = graphAccess.type.classOrNull?.owner?.declarations
+              ?.filterIsInstance<IrField>()
+              ?.firstOrNull { it.name.asString() == shardFieldName }
+
+            if (shardField != null) {
+              return irGetField(graphAccess, shardField)
+            }
+          }
+        }
+
+        // Return the graph itself for main graph fields
+        return graphAccess
+      }
+    }
+
     // If sharding is enabled, check if this field might be in a different shard
     if (shardingPlan != null && shardFieldRegistry != null) {
       // Try to find the field in the shard registry

@@ -165,7 +165,6 @@ internal class IrGraphGenerator(
    * Graph extensions may reserve field names for their linking, so if they've done that we use the
    * precomputed field rather than generate a new one.
    */
-  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   private inline fun IrClass.getOrCreateBindingField(
     key: IrTypeKey,
     name: () -> String,
@@ -176,7 +175,6 @@ internal class IrGraphGenerator(
       ?: addField(fieldName = name().asName(), fieldType = type(), fieldVisibility = visibility)
   }
 
-  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   fun generate() =
     with(graphClass) {
       val ctor = primaryConstructor!!
@@ -200,7 +198,6 @@ internal class IrGraphGenerator(
       val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
 
       // Populate SwitchingProvider constructor body if it exists
-      @Suppress("DEPRECATION", "DEPRECATION_ERROR")
       if (switchingProviderClass != null && spCtor != null) {
         // Add Provider<T> supertype if not already present
         if (switchingProviderClass.superTypes.isEmpty() ||
@@ -1153,7 +1150,6 @@ internal class IrGraphGenerator(
    * Generates shard classes and their initialization.
    * Following Dagger's pattern, shards are initialized in the constructor before other bindings.
    */
-  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   private fun IrClass.generateShards(): Pair<Map<Int, ShardGenerator.ShardInfo>, List<IrBuilderWithScope.(IrValueParameter) -> IrStatement>> {
     requireNotNull(shardingPlan) { "generateShards called without sharding plan" }
     
@@ -1295,7 +1291,6 @@ internal class IrGraphGenerator(
   // The SwitchingProvider pattern requires more careful integration with the
   // existing provider field generation logic
   /*
-  @Suppress("DEPRECATION", "DEPRECATION_ERROR")
   private fun IrClass.generateSwitchingProvider(
     providerCases: Map<Int, IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrExpression>,
     typeParameter: IrType = context.irBuiltIns.anyNType
