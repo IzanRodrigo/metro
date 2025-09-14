@@ -162,9 +162,9 @@
 @Inject class CyclicB(val c: Provider<CyclicC>, val vm: ViewModel002)
 @Inject class CyclicC(val a: Provider<CyclicA>, val vm: ViewModel003)
 
-// Module with many provisions
-@Module
-class MassiveModule {
+// Binding container with many provisions
+@BindingContainer
+class MassiveBindingContainer {
   @Provides fun provideString1(): String = "str1"
   @Provides fun provideString2(): String = "str2"
   @Provides fun provideString3(): String = "str3"
@@ -194,7 +194,7 @@ class MassiveModule {
   val cyclicC: Provider<CyclicC>
 )
 
-@DependencyGraph
+@DependencyGraph(bindingContainers = [MassiveBindingContainer::class])
 interface MassiveShardedGraph {
   // Sample of services (not all exposed for brevity)
   val service001: Service001
@@ -237,9 +237,6 @@ interface MassiveShardedGraph {
   val int5: Int
   val long1: Long
   val long5: Long
-  
-  @Module
-  val massiveModule: MassiveModule = MassiveModule()
 }
 
 fun box(): String {

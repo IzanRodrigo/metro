@@ -1366,78 +1366,14 @@ private constructor(
     }
 
   private fun IrBuilderWithScope.generateInlineInstance(binding: IrBinding): IrExpression {
-    return when (binding) {
-      is IrBinding.ConstructorInjected -> {
-        with(binding.classFactory) {
-          invokeCreateExpression { createFunction ->
-            val remapper = createFunction.typeRemapperFor(binding.typeKey.type)
-            generateBindingArguments(
-              targetParams = createFunction.parameters(remapper = remapper),
-              function = createFunction.symbol.owner,
-              binding = binding,
-              fieldInitKey = null,
-            )
-          }
-        }
-      }
-
-      is IrBinding.Provided -> {
-        val factoryClass =
-          bindingContainerTransformer.getOrLookupProviderFactory(binding)?.clazz
-            ?: reportCompilerBug("No factory found for Provided binding ${binding.typeKey}")
-
-        val creatorClass =
-          if (factoryClass.isObject) {
-            factoryClass
-          } else {
-            requireNotNull(factoryClass.companionObject()) {
-              "Factory class ${factoryClass.name} missing companion object"
-            }
-          }
-
-        val createFunction = creatorClass.requireSimpleFunction(Symbols.StringNames.CREATE)
-
-        val args =
-          generateBindingArguments(
-            targetParams = binding.parameters,
-            function = createFunction.owner,
-            binding = binding,
-            fieldInitKey = null,
-          )
-
-        irInvoke(
-          dispatchReceiver = irGetObject(creatorClass.symbol),
-          callee = createFunction,
-          args = args,
-        )
-      }
-
-      is IrBinding.ObjectClass -> {
-        irGetObject(binding.type.symbol)
-      }
-
-      is IrBinding.BoundInstance -> {
-        if (binding.classReceiverParameter != null) {
-          // Outer-class receiver case
-          return irGet(binding.classReceiverParameter)
-        }
-        // True @BindsInstance param: load from BindingFieldContext.instanceField
-        val instField = bindingFieldContext.instanceField(binding.typeKey)
-          ?: reportCompilerBug("No instance field found for @BindsInstance ${binding.typeKey}")
-        val owner = resolveFieldOwnerForBindingContext(instField, binding.typeKey)
-        return safeGetField(owner, instField, binding.typeKey)
-      }
-
-      is IrBinding.Alias -> {
-        val aliased = binding.aliasedBinding(bindingGraph, IrBindingStack.empty())
-        check(aliased != binding) { "Aliased binding aliases itself: $binding" }
-        generateInlineInstance(aliased)
-      }
-
-      else -> {
-        // Anything else should be unsupported here, better to fail at compile time.
-        reportCompilerBug("Unsupported binding type in generateInlineInstance: $binding")
-      }
-    }
+    // Produce a direct instance. Setting fieldInitKey to this key prevents
+    // provider-field reuse and avoids recursion via SwitchingProvider.
+    return generateBindingCode(
+      binding = binding,
+      contextualTypeKey = binding.contextualTypeKey,
+      accessType = AccessType.INSTANCE,
+      fieldInitKey = binding.typeKey,
+      bypassProviderFor = null
+    )
   }
 }

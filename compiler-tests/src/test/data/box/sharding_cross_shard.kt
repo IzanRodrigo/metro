@@ -34,9 +34,9 @@
   val shard3: Shard3Service5
 )
 
-// Module with provisions that reference cross-shard dependencies
-@Module
-class CrossShardModule {
+// Binding container with provisions that reference cross-shard dependencies
+@BindingContainer
+class CrossShardBindings {
   @Provides
   fun provideAggregatedData(
     s1: Shard1Service1,
@@ -45,7 +45,7 @@ class CrossShardModule {
   ): String = "${s1.hashCode()}-${s2.hashCode()}-${s3.hashCode()}"
 }
 
-@DependencyGraph
+@DependencyGraph(bindingContainers = [CrossShardBindings::class])
 interface CrossShardGraph {
   // Shard 1 services
   val shard1Service1: Shard1Service1
@@ -73,9 +73,6 @@ interface CrossShardGraph {
   
   // Module provision with cross-shard deps
   val aggregatedData: String
-  
-  @Module
-  val crossShardModule: CrossShardModule = CrossShardModule()
 }
 
 fun box(): String {

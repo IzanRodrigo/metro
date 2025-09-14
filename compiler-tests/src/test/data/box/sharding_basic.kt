@@ -12,8 +12,8 @@
 @Inject class UserRepository(val auth: AuthService, val network: NetworkService)
 @Inject class AnalyticsService(val logging: LoggingService)
 
-// Module with @Provides methods
-@Module
+// Binding container with @Provides methods
+@BindingContainer
 class AppModule {
   @Provides fun provideConfig(): String = "production"
   
@@ -25,7 +25,7 @@ class AppModule {
 }
 
 // Multibinding contributions
-@Module
+@BindingContainer
 interface FeatureModule {
   @Binds @IntoSet fun bindFeature1(impl: Feature1): Feature
   @Binds @IntoSet fun bindFeature2(impl: Feature2): Feature
@@ -35,7 +35,7 @@ interface Feature
 @Inject class Feature1 : Feature
 @Inject class Feature2 : Feature
 
-@DependencyGraph
+@DependencyGraph(bindingContainers = [AppModule::class, FeatureModule::class])
 interface BasicShardedGraph {
   // Constructor injected
   val databaseService: DatabaseService
