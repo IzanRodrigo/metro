@@ -10,6 +10,8 @@ import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
+import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
@@ -18,6 +20,7 @@ import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classifierOrNull
 import org.jetbrains.kotlin.ir.types.getClass
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.nonDispatchParameters
@@ -279,7 +282,7 @@ internal class SwitchingProviderGenerator(
 
                     // If getter returns Lazy<T>, get value to get T
                     returnType.isLazy() -> {
-                      irCall(symbols.lazyValue).apply {
+                      irCall(symbols.lazyGetValue).apply {
                         dispatchReceiver = getterResult
                       }
                     }
@@ -299,7 +302,7 @@ internal class SwitchingProviderGenerator(
               // Only allow inline generation for safe binding types
               // All other types must be resolved via fields to avoid unsupported binding errors
               val canGenerateInline = when (binding) {
-                is IrBinding.ConstructorInjected -> !binding.assisted // Non-assisted only
+                is IrBinding.ConstructorInjected -> !binding.isAssisted // Non-assisted only
                 is IrBinding.Provided -> true
                 is IrBinding.ObjectClass -> true
                 else -> false // Alias, Assisted, MembersInjected, Multibinding, etc. require fields
@@ -514,7 +517,7 @@ internal class SwitchingProviderGenerator(
     returnType: IrType,
     graphClass: IrClass
   ) {
-    // Create the helper method
+    // Create the helper method using the correct pattern
     val helperMethod = switchingProviderClass.addFunction {
       name = Name.identifier("invoke\$chunk$chunkIndex")
       visibility = DescriptorVisibilities.PRIVATE
@@ -530,7 +533,7 @@ internal class SwitchingProviderGenerator(
 
     val idParam = helperMethod.addValueParameter {
       name = Name.identifier("id")
-      type = irBuiltIns.intType
+      type = symbols.irBuiltIns.intType
     }
 
     // Add dispatch receiver
@@ -730,7 +733,7 @@ internal class SwitchingProviderGenerator(
 
                 // If getter returns Lazy<T>, get value to get T
                 returnType.isLazy() -> {
-                  irCall(symbols.lazyValue).apply {
+                  irCall(symbols.lazyGetValue).apply {
                     dispatchReceiver = getterResult
                   }
                 }
@@ -750,7 +753,7 @@ internal class SwitchingProviderGenerator(
           // Only allow inline generation for safe binding types
           // All other types must be resolved via fields to avoid unsupported binding errors
           val canGenerateInline = when (binding) {
-            is IrBinding.ConstructorInjected -> !binding.assisted // Non-assisted only
+            is IrBinding.ConstructorInjected -> !binding.isAssisted // Non-assisted only
             is IrBinding.Provided -> true
             is IrBinding.ObjectClass -> true
             else -> false // Alias, Assisted, MembersInjected, Multibinding, etc. require fields

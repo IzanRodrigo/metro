@@ -648,7 +648,7 @@ private constructor(
    * IMPORTANT: Use this instead of direct irGetField() to avoid NoSuchFieldError at runtime.
    */
   context(scope: IrBuilderWithScope)
-  private fun safeGetField(
+  internal fun safeGetField(
     receiver: IrExpression,
     field: IrField,
     typeKey: IrTypeKey? = null,
