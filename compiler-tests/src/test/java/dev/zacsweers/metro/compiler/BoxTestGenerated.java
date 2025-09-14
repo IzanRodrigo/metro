@@ -23,6 +23,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
   }
 
   @Test
+  @TestMetadata("binds_instance_inline.kt")
+  public void testBinds_instance_inline() {
+    runTest("compiler-tests/src/test/data/box/binds_instance_inline.kt");
+  }
+
+  @Test
   @TestMetadata("sharding_backedge_cycle_guarantee.kt")
   public void testSharding_backedge_cycle_guarantee() {
     runTest("compiler-tests/src/test/data/box/sharding_backedge_cycle_guarantee.kt");
@@ -98,6 +104,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
   @TestMetadata("sharding_scc.kt")
   public void testSharding_scc() {
     runTest("compiler-tests/src/test/data/box/sharding_scc.kt");
+  }
+
+  @Test
+  @TestMetadata("switching_provider_no_recursion.kt")
+  public void testSwitching_provider_no_recursion() {
+    runTest("compiler-tests/src/test/data/box/switching_provider_no_recursion.kt");
   }
 
   @Nested

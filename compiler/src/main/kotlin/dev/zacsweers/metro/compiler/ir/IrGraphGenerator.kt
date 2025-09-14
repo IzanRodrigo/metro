@@ -395,7 +395,20 @@ internal class IrGraphGenerator(
           //  together
           val irParam = ctor.regularParameters[i]
 
-          if (isBindsInstance || creator.bindingContainersParameterIndices.isSet(i)) {
+          if (isBindsInstance) {
+            // 1) Create instance field to back true @BindsInstance reads
+            val instFieldName = fieldNameAllocator.newName(
+              param.name.asString().removePrefix("$").decapitalizeUS().suffixIfNot("Instance")
+            )
+            val instanceField = graphClass.addSimpleInstanceField(
+              name = instFieldName,
+              typeKey = param.typeKey
+            ) { irGet(irParam) }
+            bindingFieldContext.putInstanceField(param.typeKey, instanceField)
+
+            // 2) Create provider field that wraps the instance (SwitchingProvider or instanceFactory path)
+            addBoundInstanceField(param.typeKey, param.name) { _, _ -> irGet(irParam) }
+          } else if (creator.bindingContainersParameterIndices.isSet(i)) {
             addBoundInstanceField(param.typeKey, param.name) { _, _ -> irGet(irParam) }
           } else {
             // It's a graph dep. Add all its accessors as available keys and point them at
@@ -898,13 +911,19 @@ internal class IrGraphGenerator(
               //  one and make the rest call that one. Not multibinding specific. Maybe
               //  groupBy { typekey }?
             }
+            // Determine the access type based on whether the property returns a Provider
+            val accessType = if (contextualTypeKey.requiresProviderInstance) {
+              IrGraphExpressionGenerator.AccessType.PROVIDER
+            } else {
+              IrGraphExpressionGenerator.AccessType.INSTANCE
+            }
             irExprBodySafe(
               symbol,
               typeAsProviderArgument(
                 contextualTypeKey,
                 expressionGeneratorFactory
                   .create(irFunction.dispatchReceiverParameter!!)
-                  .generateBindingCode(binding, contextualTypeKey = contextualTypeKey),
+                  .generateBindingCode(binding, contextualTypeKey = contextualTypeKey, accessType = accessType),
                 isAssisted = false,
                 isGraphInstance = false,
               ),
@@ -1090,7 +1109,18 @@ internal class IrGraphGenerator(
         this@IrGraphGenerator.bindingGraph.bindingsSnapshot()[typeKey]
       }
 
+    // Find the invoke function to get its dispatch receiver
+    @Suppress("DEPRECATION")
+    val invokeFunction = switchingProviderClass.declarations
+      .filterIsInstance<IrSimpleFunction>()
+      .firstOrNull { it.name.asString() == "invoke" && it.nonDispatchParameters.isEmpty() }
+      ?: error("SwitchingProvider must have invoke() function")
+
+    val invokeDispatchReceiver = invokeFunction.dispatchReceiverParameter
+      ?: error("invoke() must have dispatch receiver")
+
     // Create IrGraphExpressionGenerator for inline instance generation
+    // Pass the invoke function's dispatch receiver so it can access the graph field
     val expressionGenerator = IrGraphExpressionGenerator.Factory(
       context = this@IrGraphGenerator,
       node = node,
@@ -1104,7 +1134,7 @@ internal class IrGraphGenerator(
       shardFieldRegistry = shardFieldRegistry,
       shardingPlan = shardingPlan,
       currentShardIndex = null,
-    ).create(graphClass.thisReceiverOrFail)
+    ).create(invokeDispatchReceiver)
 
     // Call the SwitchingProviderGenerator to populate the invoke() method
     SwitchingProviderGenerator(

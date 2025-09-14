@@ -414,30 +414,37 @@ private constructor(
         }
 
         is IrBinding.BoundInstance -> {
+          // Outer-class receiver
           if (binding.classReceiverParameter != null) {
-            when (accessType) {
-              AccessType.INSTANCE -> {
-                // Get it directly
-                irGet(binding.classReceiverParameter)
-              }
-
+            return@with when (accessType) {
+              AccessType.INSTANCE -> irGet(binding.classReceiverParameter)
               AccessType.PROVIDER -> {
-                // We need the provider
-                safeGetField(
-                  irGet(binding.classReceiverParameter),
-                  requireNotNull(binding.providerFieldAccess) {
-                    "GraphDependency binding missing provider field access"
-                  }.field,
-                  binding.typeKey
-                )
+                val pf = binding.providerFieldAccess?.field
+                  ?: reportCompilerBug("Missing provider field for receiver-based BoundInstance ${binding.typeKey}")
+                safeGetField(irGet(binding.classReceiverParameter), pf, binding.typeKey)
               }
             }
+          }
+          // True @BindsInstance param: prefer provider field if present, else instance field
+          val provField = bindingFieldContext.providerField(binding.typeKey)
+          if (provField != null) {
+            val owner = resolveFieldOwnerForBindingContext(provField, binding.typeKey)
+            val providerExpr = safeGetField(owner, provField, binding.typeKey)
+            return@with if (accessType == AccessType.INSTANCE) {
+              // Invoke the provider to get the instance
+              irInvoke(providerExpr, callee = symbols.providerInvoke)
+            } else {
+              providerExpr
+            }
+          }
+          val instField = bindingFieldContext.instanceField(binding.typeKey)
+            ?: reportCompilerBug("No instance/provider field found for @BindsInstance ${binding.typeKey}")
+          val owner = resolveFieldOwnerForBindingContext(instField, binding.typeKey)
+          val instExpr = safeGetField(owner, instField, binding.typeKey)
+          return@with if (accessType == AccessType.INSTANCE) {
+            instExpr
           } else {
-            // Should never happen, this should get handled in the provider/instance fields logic
-            // above.
-            reportCompilerBug(
-              "Unable to generate code for unexpected BoundInstance binding: $binding"
-            )
+            instanceFactory(binding.typeKey.type, instExpr)
           }
         }
 
@@ -1375,10 +1382,15 @@ private constructor(
       }
 
       is IrBinding.BoundInstance -> {
-        require(binding.classReceiverParameter != null) {
-          "BoundInstance without receiver parameter: $binding"
+        if (binding.classReceiverParameter != null) {
+          // Outer-class receiver case
+          return irGet(binding.classReceiverParameter)
         }
-        irGet(binding.classReceiverParameter)
+        // True @BindsInstance param: load from BindingFieldContext.instanceField
+        val instField = bindingFieldContext.instanceField(binding.typeKey)
+          ?: reportCompilerBug("No instance field found for @BindsInstance ${binding.typeKey}")
+        val owner = resolveFieldOwnerForBindingContext(instField, binding.typeKey)
+        return safeGetField(owner, instField, binding.typeKey)
       }
 
       is IrBinding.Alias -> {

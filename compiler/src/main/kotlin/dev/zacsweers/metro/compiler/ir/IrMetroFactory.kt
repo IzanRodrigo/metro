@@ -78,7 +78,8 @@ internal sealed interface ClassFactory : IrMetroFactory {
         dispatchReceiver = irGetObject(creatorClass.symbol),
         callee = createFunction,
         args = args,
-        typeHint = factoryClass.typeWith(),
+        // Use the return type of create function, not the factory class type
+        typeHint = createFunction.owner.returnType,
       )
     }
   }
