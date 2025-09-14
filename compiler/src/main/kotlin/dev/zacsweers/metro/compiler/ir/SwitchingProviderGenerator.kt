@@ -4,6 +4,7 @@
 
 package dev.zacsweers.metro.compiler.ir
 
+import dev.zacsweers.metro.compiler.ir.parameters.parameters
 import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
@@ -445,27 +446,28 @@ internal class SwitchingProviderGenerator(
           irEquals(idExpr, irInt(startId))
         } else {
           // Range check: id >= startId && id <= endId
-          // Using irCall to create binary operations
-          val geOp = irCall(symbols.irBuiltIns.greaterOrEqualFunByOperandType[symbols.irBuiltIns.intType]!!).apply {
-            putValueArgument(0, idExpr)
-            putValueArgument(1, irInt(startId))
+          // Create comparison operations - the map expects a classifier symbol, not a type
+          val intClassifier = symbols.irBuiltIns.intClass
+          val geOp = irCall(symbols.irBuiltIns.greaterOrEqualFunByOperandType[intClassifier]!!).apply {
+            arguments[0] = idExpr
+            arguments[1] = irInt(startId)
           }
-          val leOp = irCall(symbols.irBuiltIns.lessOrEqualFunByOperandType[symbols.irBuiltIns.intType]!!).apply {
-            putValueArgument(0, idExpr)
-            putValueArgument(1, irInt(endId))
+          val leOp = irCall(symbols.irBuiltIns.lessOrEqualFunByOperandType[intClassifier]!!).apply {
+            arguments[0] = idExpr
+            arguments[1] = irInt(startId)
           }
           // Combine with AND
           irCall(symbols.irBuiltIns.andandSymbol).apply {
-            putValueArgument(0, geOp)
-            putValueArgument(1, leOp)
+            arguments[0] = geOp
+            arguments[1] = leOp
           }
         }
 
         // Call the helper method
         val helperCall = irCall(helperMethod.symbol).apply {
           dispatchReceiver = irGet(switchingProviderClass.thisReceiver!!)
-          putValueArgument(0, graphExpr)
-          putValueArgument(1, idExpr)
+          arguments[0] = idExpr
+          arguments[1] = graphExpr
         }
 
         branches += IrBranchImpl(
@@ -537,7 +539,7 @@ internal class SwitchingProviderGenerator(
     }
 
     // Add dispatch receiver
-    helperMethod.dispatchReceiverParameter = switchingProviderClass.thisReceiver
+    helperMethod.setExtensionReceiver(switchingProviderClass.thisReceiver)
 
     // Build the method body with the subset of cases
     helperMethod.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {

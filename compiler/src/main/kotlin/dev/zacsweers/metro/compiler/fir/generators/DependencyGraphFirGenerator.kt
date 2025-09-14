@@ -27,6 +27,7 @@ import org.jetbrains.kotlin.descriptors.Visibilities
 import org.jetbrains.kotlin.fir.FirSession
 import org.jetbrains.kotlin.fir.declarations.DirectDeclarationsAccess
 import org.jetbrains.kotlin.fir.declarations.FirTypeParameter
+import org.jetbrains.kotlin.fir.declarations.builder.buildTypeParameter
 import org.jetbrains.kotlin.fir.declarations.utils.isCompanion
 import org.jetbrains.kotlin.fir.declarations.utils.isInterface
 import org.jetbrains.kotlin.fir.declarations.utils.isLocal
@@ -197,14 +198,16 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       modality = Modality.FINAL
 
       // Add type parameter T
-      val typeParam = typeParameter(Name.identifier("T"))
+      val typeParam = buildTypeParameter {
+        this.name = Name.identifier("T")
+      }
 
       // Add supertype: Provider<T>
       // Build the Provider<T> type using the type parameter
-      val providerClassId = session.metroFirBuiltIns.providerClassId
+      val providerClassId = session.metroFirBuiltIns.providesClassSymbol
       val providerTypeWithT = providerClassId.toLookupTag().constructType(
         arrayOf(typeParam.toConeType()),
-        isNullable = false
+        isMarkedNullable = false,
       )
       superType(providerTypeWithT)
     }
