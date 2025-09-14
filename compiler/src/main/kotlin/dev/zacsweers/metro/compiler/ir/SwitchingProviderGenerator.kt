@@ -64,28 +64,27 @@ internal class SwitchingProviderGenerator(
     // Add a branch for each binding ID
     idToBinding.forEachIndexed { id, binding ->
       val bindingExpr = builder.run {
-        // Strategy: Prefer existing provider fields over inline generation
-        
-        // First, check if we have a provider field for this binding
+        // Strategy: Prefer existing provider fields over inline generation to avoid recursion
+
+        // First, check bindingFieldContext for a provider field
         val providerField = bindingFieldContext?.providerField(binding.typeKey)
-          ?: shardFieldRegistry?.findField(binding.typeKey)?.field
-        
+
         if (providerField != null) {
-          // Found a provider field - use it and invoke to get the instance
+          // Found a provider field in bindingFieldContext - use it with proper owner resolution
+          // Check if this field might be in a shard
           val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
           val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
 
-          // Get the provider field and invoke it
+          // Get the provider field and invoke it to get the instance
           val providerExpr = irGetField(owner, providerField)
-          
+
           // Invoke the provider to get the instance
-          // Use symbols.providerInvoke directly since that's what Metro uses
           irCall(symbols.providerInvoke).apply {
             dispatchReceiver = providerExpr
           }
         } else {
           // No provider field found - need to handle special cases or generate inline
-          
+
           when (binding) {
             // BoundInstance must always be read from fields, never constructed inline
             is IrBinding.BoundInstance -> {
