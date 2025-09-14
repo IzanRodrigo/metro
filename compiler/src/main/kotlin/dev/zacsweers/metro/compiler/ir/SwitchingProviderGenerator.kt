@@ -154,14 +154,49 @@ internal class SwitchingProviderGenerator(
             }
             
             else -> {
-              // For other bindings, generate inline but with bypassProviderFor to prevent recursion
-              expressionGenerator?.generateBindingCode(
-                binding = binding,
-                contextualTypeKey = binding.contextualTypeKey,
-                accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
-                fieldInitKey = null,
-                bypassProviderFor = binding.typeKey  // Prevent re-routing through SwitchingProvider
-              ) ?: error("ExpressionGenerator is required for inline generation")
+              // Only allow inline generation for safe binding types
+              // All other types must be resolved via fields to avoid unsupported binding errors
+              val canGenerateInline = when (binding) {
+                is IrBinding.ConstructorInjected -> !binding.assisted // Non-assisted only
+                is IrBinding.Provided -> true
+                is IrBinding.ObjectClass -> true
+                else -> false // Alias, Assisted, MembersInjected, Multibinding, etc. require fields
+              }
+
+              if (canGenerateInline) {
+                // Safe to generate inline with bypassProviderFor to prevent recursion
+                expressionGenerator?.generateBindingCode(
+                  binding = binding,
+                  contextualTypeKey = binding.contextualTypeKey,
+                  accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+                  fieldInitKey = null,
+                  bypassProviderFor = binding.typeKey  // Prevent re-routing through SwitchingProvider
+                ) ?: error("ExpressionGenerator is required for inline generation")
+              } else {
+                // These binding types require field resolution
+                // Try to find the field in bindingFieldContext or shardFieldRegistry
+                val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+                val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+
+                when {
+                  instanceField != null -> {
+                    // Found instance field - use it with proper owner resolution
+                    val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                    irGetField(owner, instanceField)
+                  }
+
+                  shardInfo != null -> {
+                    // Field exists in shard registry
+                    val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+                    irGetField(owner, shardInfo.field)
+                  }
+
+                  else -> {
+                    // No field found - this is an error for unsupported inline types
+                    error("Binding type ${binding::class.simpleName} requires a field but none found: ${binding.typeKey}")
+                  }
+                }
+              }
             }
           }
         }
