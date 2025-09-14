@@ -25,6 +25,29 @@ internal class SwitchingProviderGenerator(
   private val expressionGenerator: IrGraphExpressionGenerator? = null,
 ) : IrMetroContext by context {
 
+  /**
+   * Helper to resolve the owner of a field when it might be in a shard.
+   * Returns the appropriate receiver expression (main graph or shard instance).
+   */
+  context(scope: IrBuilderWithScope)
+  private fun resolveOwnerForShard(
+    graphExpr: IrExpression,
+    graphClass: IrClass,
+    shardIndex: Int?
+  ): IrExpression = with(scope) {
+    if (shardIndex == null || shardIndex == 0) {
+      // Field is in main graph
+      graphExpr
+    } else {
+      // Field is in a shard, access via graph.shardN
+      val shardFieldOnGraph = graphClass.declarations
+        .filterIsInstance<IrField>()
+        .firstOrNull { it.name.asString() == "shard$shardIndex" }
+        ?: error("Missing shard field: shard$shardIndex")
+      irGetField(graphExpr, shardFieldOnGraph)
+    }
+  }
+
   @Suppress("DEPRECATION")
   fun populateInvokeBody(
     builder: IrBuilderWithScope,
@@ -49,26 +72,9 @@ internal class SwitchingProviderGenerator(
         
         if (providerField != null) {
           // Found a provider field - use it and invoke to get the instance
-          val owner = when {
-            // Check if field is in a shard
-            shardFieldRegistry != null -> {
-              val shardInfo = shardFieldRegistry.findField(binding.typeKey)
-              val shardIndex = shardInfo?.shardIndex
-              if (shardIndex != null && shardIndex != 0) {
-                // Field is in a shard, access via graph.shardN
-                val shardField = graphClass.declarations
-                  .filterIsInstance<IrField>()
-                  .firstOrNull { it.name.asString() == "shard$shardIndex" }
-                  ?: error("Missing shard field: shard$shardIndex")
-                irGetField(graphExpr, shardField)
-              } else {
-                // Field is in main graph
-                graphExpr
-              }
-            }
-            else -> graphExpr // No sharding, use graph directly
-          }
-          
+          val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+          val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+
           // Get the provider field and invoke it
           val providerExpr = irGetField(owner, providerField)
           
@@ -81,29 +87,70 @@ internal class SwitchingProviderGenerator(
           // No provider field found - need to handle special cases or generate inline
           
           when (binding) {
-            // BoundInstance and GraphDependency should never inline - they must have fields
+            // BoundInstance must always be read from fields, never constructed inline
             is IrBinding.BoundInstance -> {
-              // For BoundInstance, we should have an instance field
-              val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
-                ?: error("BoundInstance must have an instance field: ${binding.typeKey}")
+              // Try to resolve the field in order of preference:
+              // 1. Instance field (most common for BoundInstance)
+              // 2. Provider field (if caller expects a provider)
+              // 3. Shard registry (if sharding is active)
 
-              // BoundInstance fields are always on the main graph
-              irGetField(graphExpr, instanceField)
+              val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+              val providerField = bindingFieldContext?.providerField(binding.typeKey)
+              val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+
+              when {
+                instanceField != null -> {
+                  // Resolve the owner (could be main graph or shard)
+                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  // Return the instance directly
+                  irGetField(owner, instanceField)
+                }
+
+                providerField != null -> {
+                  // If we have a provider field, use it and invoke
+                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  // Get the provider and invoke it
+                  val providerExpr = irGetField(owner, providerField)
+                  irCall(symbols.providerInvoke).apply {
+                    dispatchReceiver = providerExpr
+                  }
+                }
+
+                shardInfo != null -> {
+                  // Only shard registry has the field
+                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+                  irGetField(owner, shardInfo.field)
+                }
+
+                else -> {
+                  error("BoundInstance must have a field (instance or provider): ${binding.typeKey}")
+                }
+              }
             }
 
             is IrBinding.GraphDependency -> {
-              // GraphDependency should read from the appropriate field
-              if (binding.fieldAccess != null) {
-                val field = bindingFieldContext?.instanceField(binding.typeKey)
-                  ?: error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
-                irGetField(graphExpr, field)
-              } else if (binding.getter != null) {
-                // Call the getter on the graph
-                irCall(binding.getter).apply {
-                  dispatchReceiver = graphExpr
+              // GraphDependency should read from the appropriate field or call getter
+              when {
+                binding.fieldAccess != null -> {
+                  val field = bindingFieldContext?.instanceField(binding.typeKey)
+                    ?: error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+
+                  // Check if field might be in a shard
+                  val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  irGetField(owner, field)
                 }
-              } else {
-                error("GraphDependency must have either fieldAccess or getter")
+
+                binding.getter != null -> {
+                  // Call the getter on the graph (getters are always on main graph)
+                  irCall(binding.getter).apply {
+                    dispatchReceiver = graphExpr
+                  }
+                }
+
+                else -> {
+                  error("GraphDependency must have either fieldAccess or getter")
+                }
               }
             }
             
