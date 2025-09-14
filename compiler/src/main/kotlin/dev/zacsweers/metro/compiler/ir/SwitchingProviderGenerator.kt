@@ -14,8 +14,11 @@ import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrStringConcatenationImpl
+import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.classifierOrNull
 import org.jetbrains.kotlin.ir.types.getClass
+import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.nonDispatchParameters
 import org.jetbrains.kotlin.ir.util.primaryConstructor
@@ -27,6 +30,22 @@ internal class SwitchingProviderGenerator(
   private val shardFieldRegistry: ShardFieldRegistry? = null,
   private val expressionGenerator: IrGraphExpressionGenerator? = null,
 ) : IrMetroContext by context {
+
+  // Helper extension functions for type checking
+  private fun IrType.isProvider(): Boolean {
+    val classifier = this.classifierOrNull
+    return classifier is IrClassSymbol &&
+           classifier.owner.fqNameWhenAvailable?.asString()?.let { fqName ->
+             fqName == "javax.inject.Provider" ||
+             fqName == "dev.zacsweers.metro.runtime.MetroProvider"
+           } == true
+  }
+
+  private fun IrType.isLazy(): Boolean {
+    val classifier = this.classifierOrNull
+    return classifier is IrClassSymbol &&
+           classifier.owner.fqNameWhenAvailable?.asString() == "kotlin.Lazy"
+  }
 
   /**
    * Helper to resolve the owner of a field when it might be in a shard.
@@ -169,21 +188,78 @@ internal class SwitchingProviderGenerator(
 
             is IrBinding.GraphDependency -> {
               // GraphDependency should read from the appropriate field or call getter
+              // NEVER call inline or constructor paths for GraphDependency
               when {
                 binding.fieldAccess != null -> {
-                  val field = bindingFieldContext?.instanceField(binding.typeKey)
-                    ?: error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+                  // Use safeGetField for proper cross-shard access
+                  // First try to get the instance field
+                  val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+                  val providerField = bindingFieldContext?.providerField(binding.typeKey)
 
-                  // Check if field might be in a shard
-                  val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
-                  irGetField(owner, field)
+                  when {
+                    instanceField != null -> {
+                      // Check if field might be in a shard
+                      val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+                      val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+
+                      // Use expressionGenerator's safeGetField if available for proper cross-shard handling
+                      if (expressionGenerator != null) {
+                        expressionGenerator.safeGetField(owner, instanceField, binding.typeKey)
+                      } else {
+                        // Fallback to direct field access
+                        irGetField(owner, instanceField)
+                      }
+                    }
+
+                    providerField != null -> {
+                      // We have a provider field - get it and invoke if instance is needed
+                      val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+                      val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+
+                      val providerExpr = if (expressionGenerator != null) {
+                        expressionGenerator.safeGetField(owner, providerField, binding.typeKey)
+                      } else {
+                        irGetField(owner, providerField)
+                      }
+
+                      // Invoke the provider to get the instance
+                      irCall(symbols.providerInvoke).apply {
+                        dispatchReceiver = providerExpr
+                      }
+                    }
+
+                    else -> {
+                      error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+                    }
+                  }
                 }
 
                 binding.getter != null -> {
-                  // Call the getter on the graph (getters are always on main graph)
-                  irCall(binding.getter).apply {
+                  // Build irInvoke(getter) using the resolved graph or included graph instance
+                  val getterResult = irCall(binding.getter).apply {
+                    // Getters are always on the main graph or included graph
                     dispatchReceiver = graphExpr
+                  }
+
+                  // Check if we need to unwrap provider/lazy
+                  val returnType = binding.getter.returnType
+                  when {
+                    // If getter returns Provider<T>, invoke it to get T
+                    returnType.isProvider() -> {
+                      irCall(symbols.providerInvoke).apply {
+                        dispatchReceiver = getterResult
+                      }
+                    }
+
+                    // If getter returns Lazy<T>, get value to get T
+                    returnType.isLazy() -> {
+                      irCall(symbols.lazyValue).apply {
+                        dispatchReceiver = getterResult
+                      }
+                    }
+
+                    // Otherwise return the direct result
+                    else -> getterResult
                   }
                 }
 
@@ -559,21 +635,78 @@ internal class SwitchingProviderGenerator(
 
         is IrBinding.GraphDependency -> {
           // GraphDependency should read from the appropriate field or call getter
+          // NEVER call inline or constructor paths for GraphDependency
           when {
             binding.fieldAccess != null -> {
-              val field = bindingFieldContext?.instanceField(binding.typeKey)
-                ?: error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+              // Use safeGetField for proper cross-shard access
+              // First try to get the instance field
+              val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+              val providerField = bindingFieldContext?.providerField(binding.typeKey)
 
-              // Check if field might be in a shard
-              val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
-              irGetField(owner, field)
+              when {
+                instanceField != null -> {
+                  // Check if field might be in a shard
+                  val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+
+                  // Use expressionGenerator's safeGetField if available for proper cross-shard handling
+                  if (expressionGenerator != null) {
+                    expressionGenerator.safeGetField(owner, instanceField, binding.typeKey)
+                  } else {
+                    // Fallback to direct field access
+                    irGetField(owner, instanceField)
+                  }
+                }
+
+                providerField != null -> {
+                  // We have a provider field - get it and invoke if instance is needed
+                  val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+
+                  val providerExpr = if (expressionGenerator != null) {
+                    expressionGenerator.safeGetField(owner, providerField, binding.typeKey)
+                  } else {
+                    irGetField(owner, providerField)
+                  }
+
+                  // Invoke the provider to get the instance
+                  irCall(symbols.providerInvoke).apply {
+                    dispatchReceiver = providerExpr
+                  }
+                }
+
+                else -> {
+                  error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+                }
+              }
             }
 
             binding.getter != null -> {
-              // Call the getter on the graph (getters are always on main graph)
-              irCall(binding.getter).apply {
+              // Build irInvoke(getter) using the resolved graph or included graph instance
+              val getterResult = irCall(binding.getter).apply {
+                // Getters are always on the main graph or included graph
                 dispatchReceiver = graphExpr
+              }
+
+              // Check if we need to unwrap provider/lazy
+              val returnType = binding.getter.returnType
+              when {
+                // If getter returns Provider<T>, invoke it to get T
+                returnType.isProvider() -> {
+                  irCall(symbols.providerInvoke).apply {
+                    dispatchReceiver = getterResult
+                  }
+                }
+
+                // If getter returns Lazy<T>, get value to get T
+                returnType.isLazy() -> {
+                  irCall(symbols.lazyValue).apply {
+                    dispatchReceiver = getterResult
+                  }
+                }
+
+                // Otherwise return the direct result
+                else -> getterResult
               }
             }
 
