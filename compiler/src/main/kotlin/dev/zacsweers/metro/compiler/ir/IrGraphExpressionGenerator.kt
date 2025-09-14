@@ -647,37 +647,46 @@ private constructor(
     field: IrField,
     typeKey: IrTypeKey? = null,
   ): IrExpression = with(scope) {
-    // If we have sharding information and a typeKey, check for cross-shard access
-    if (shardFieldRegistry != null && typeKey != null && shardingPlan != null) {
+    // If sharding is enabled and we have a typeKey, check if cross-shard access is needed
+    if (shardingPlan != null && shardFieldRegistry != null && typeKey != null) {
       val fieldInfo = shardFieldRegistry.findField(typeKey)
       if (fieldInfo != null) {
-        val targetShard = fieldInfo.shardIndex
-        val currentShard = currentShardIndex ?: 0
+        val targetShardIndex = fieldInfo.shardIndex
+        // currentShardIndex is null for main graph, treat as 0 for comparison
+        val currentShardIndex = currentShardIndex ?: 0
 
-        if (targetShard != currentShard) {
-          log("safeGetField: Cross-shard access needed for ${typeKey.render(short = true)} (current=$currentShard, target=$targetShard)")
-          // Need cross-shard access - resolve the proper owner
-          val owner = resolveFieldOwner(
-            thisReceiver,
-            currentShardIndex,
-            targetShard,
-            shardingPlan
+        // Only re-route if accessing a field in a different shard
+        if (targetShardIndex != currentShardIndex) {
+          log("safeGetField: Cross-shard access detected for ${typeKey.render(short = true)}")
+          log("  Current context: ${if (currentShardIndex == 0) "main" else "shard$currentShardIndex"}")
+          log("  Target location: ${if (targetShardIndex == 0) "main" else "shard$targetShardIndex"}")
+
+          // Resolve the correct owner for cross-shard access
+          // Pass null for main graph, actual index for shards
+          val correctOwner = resolveFieldOwner(
+            thisReceiver = thisReceiver,
+            currentShard = if (currentShardIndex == 0) null else currentShardIndex,
+            targetShard = targetShardIndex,
+            plan = shardingPlan
           )
-          return irGetField(owner, field)
+
+          // Access the field from the correct owner
+          return irGetField(correctOwner, field)
         }
       }
     }
 
-    // Direct access - field is in current context or no sharding
+    // Same-shard access or no sharding - use the provided receiver directly
     irGetField(receiver, field)
   }
 
   /**
    * Resolves the correct receiver for accessing a field based on shard ownership.
+   * Handles exactly 4 cases: main→main, main→shardN, shardA→main, shardA→shardB
    *
    * @param thisReceiver The current this receiver
-   * @param currentShard The current shard index (null for main graph)
-   * @param targetShard The target shard index where the field is located
+   * @param currentShard The current shard index (null for main graph, >0 for shards)
+   * @param targetShard The target shard index where the field is located (0 for main, >0 for shards)
    * @param plan The sharding plan containing shard information
    * @return The correct receiver expression to access the field
    */
@@ -688,51 +697,79 @@ private constructor(
     targetShard: Int,
     plan: ShardingPlan,
   ): IrExpression = with(scope) {
+    // Normalize the comparison: null means main graph (0)
+    val normalizedCurrent = currentShard ?: 0
+
     when {
-      // Same shard/graph - use thisReceiver directly
-      (currentShard == null && targetShard == 0) || (currentShard != null && currentShard == targetShard) -> {
-        log("resolveFieldOwner: Using local field access (current=$currentShard, target=$targetShard)")
+      // Case 1: Same location (main→main or shardN→shardN)
+      normalizedCurrent == targetShard -> {
+        log("resolveFieldOwner: Same-context access (both in ${if (targetShard == 0) "main" else "shard$targetShard"})")
         irGet(thisReceiver)
       }
-      // Main → shardN - access through this.shardN field
-      currentShard == null && targetShard != 0 -> {
+
+      // Case 2: Main → shardN - access through this.shardN field
+      currentShard == null && targetShard > 0 -> {
         log("resolveFieldOwner: Main → shard$targetShard access")
         val shardFieldName = "shard$targetShard"
-        val componentClass = thisReceiver.parent as? IrClass
-          ?: reportCompilerBug("thisReceiver parent is not an IrClass")
+
+        // Get the main graph class from thisReceiver's parent chain
+        val parentFunction = thisReceiver.parent as? IrFunction
+          ?: reportCompilerBug("thisReceiver parent is not a function")
+        val componentClass = parentFunction.parent as? IrClass
+          ?: reportCompilerBug("Function parent is not a class")
+
+        // Find the shard field in the main graph class
         val shardField = componentClass.declarations
           .filterIsInstance<IrField>()
           .find { it.name.asString() == shardFieldName }
-          ?: reportCompilerBug("Shard field '$shardFieldName' not found in component class")
+          ?: reportCompilerBug("Shard field '$shardFieldName' not found in component class ${componentClass.name}")
+
         irGetField(irGet(thisReceiver), shardField)
       }
-      // Shard → main - access through this.graph parameter
-      currentShard != null && targetShard == 0 -> {
+
+      // Case 3: ShardA → main - access through this.graph field
+      currentShard != null && currentShard > 0 && targetShard == 0 -> {
         log("resolveFieldOwner: Shard$currentShard → main access")
+        // Use irThisGraph which handles getting the graph field from shard
         irThisGraph(thisReceiver)
       }
-      // ShardA → shardB - access through this.graph.shardB
-      else -> {
-        log("resolveFieldOwner: Shard$currentShard → shard$targetShard access")
-        // First get the graph from the backing field
-        val parentGraph = irThisGraph(thisReceiver)
-        // Then access the target shard field through the graph
+
+      // Case 4: ShardA → shardB - access through this.graph.shardB
+      currentShard != null && currentShard > 0 && targetShard > 0 && currentShard != targetShard -> {
+        log("resolveFieldOwner: Shard$currentShard → shard$targetShard access (via main graph)")
+
+        // First get the main graph reference from this shard
+        val mainGraph = irThisGraph(thisReceiver)
+
+        // Then access the target shard field through the main graph
         val shardFieldName = "shard$targetShard"
 
-        // Get the main graph class to find the shard field
-        val mainGraphType = when (val parentExpr = parentGraph) {
-          is IrGetField -> parentExpr.type
-          is IrGetValue -> parentExpr.type
-          else -> reportCompilerBug("Unexpected parent graph expression type: ${parentExpr::class.simpleName}")
+        // Get the type of the main graph to find its class
+        val mainGraphType = when (mainGraph) {
+          is IrGetField -> mainGraph.type
+          is IrGetValue -> mainGraph.type
+          else -> reportCompilerBug("Unexpected main graph expression type: ${mainGraph::class.simpleName}")
         }
-        val mainGraphClass = mainGraphType.expectAs<IrSimpleType>().classifier.expectAs<IrClassSymbol>().owner
 
-        val shardField = mainGraphClass.declarations
+        // Get the main graph class
+        val mainGraphClass = mainGraphType
+          .expectAs<IrSimpleType>()
+          .classifier
+          .expectAs<IrClassSymbol>()
+          .owner
+
+        // Find the target shard field in the main graph
+        val targetShardField = mainGraphClass.declarations
           .filterIsInstance<IrField>()
           .find { it.name.asString() == shardFieldName }
-          ?: reportCompilerBug("Shard field '$shardFieldName' not found in main graph class")
+          ?: reportCompilerBug("Shard field '$shardFieldName' not found in main graph class ${mainGraphClass.name}")
 
-        irGetField(parentGraph, shardField)
+        irGetField(mainGraph, targetShardField)
+      }
+
+      // This should never happen if inputs are valid
+      else -> {
+        reportCompilerBug("Invalid shard routing: current=$currentShard, target=$targetShard")
       }
     }
   }
