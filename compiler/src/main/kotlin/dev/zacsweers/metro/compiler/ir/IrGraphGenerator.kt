@@ -323,17 +323,39 @@ internal class IrGraphGenerator(
         if (typeKey !in sealResult.reachableKeys) return
 
         val target = ownerClassFor(typeKey)
-        val fieldName = fieldNameAllocator.newName(
+        
+        // 1. Create the instance field first
+        val instanceFieldName = fieldNameAllocator.newName(
           name
             .asString()
-            .removePrefix("$$")
+            .removePrefix("$")
+            .decapitalizeUS()
+            .suffixIfNot("Instance")
+        )
+        
+        val instanceField = target.addSimpleInstanceField(
+          name = instanceFieldName,
+          typeKey = typeKey
+        ) {
+          initializer(thisReceiverParameter, typeKey)
+        }
+        
+        // Register the instance field
+        bindingFieldContext.putInstanceField(typeKey, instanceField)
+        
+        // 2. Create the provider field that wraps the instance
+        val providerFieldName = fieldNameAllocator.newName(
+          name
+            .asString()
+            .removePrefix("$")
             .decapitalizeUS()
             .suffixIfNot("Instance")
             .suffixIfNot("Provider")
         )
-        val field = target.getOrCreateBindingField(
+        
+        val providerField = target.getOrCreateBindingField(
           typeKey,
-          { fieldName },
+          { providerFieldName },
           { symbols.metroProvider.typeWith(typeKey.type) },
         ).initFinal {
           if (switchingProviderClass != null && spCtor != null) {
@@ -363,23 +385,35 @@ internal class IrGraphGenerator(
             }
             wrapped
           } else {
-            // Fallback to original instanceFactory
-            instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
+            // Fallback to original instanceFactory wrapping the instance field
+            instanceFactory(typeKey.type, irGetField(irGet(thisReceiverParameter), instanceField))
           }
         }
 
-        bindingFieldContext.putProviderField(typeKey, field)
+        // Register the provider field
+        bindingFieldContext.putProviderField(typeKey, providerField)
         
-        // Register the field in the shard field registry if sharding is enabled
+        // Register both fields in the shard field registry if sharding is enabled
         if (shardingPlan != null) {
           val shardIndex = shardingPlan.bindingToShard[typeKey] ?: 0
           // We need to get the binding for this typeKey
           val binding = bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
+          
+          // Register instance field
           shardFieldRegistry.registerField(
             typeKey = typeKey,
             shardIndex = shardIndex,
-            field = field,
-            fieldName = fieldName,
+            field = instanceField,
+            fieldName = instanceFieldName,
+            binding = binding
+          )
+          
+          // Register provider field
+          shardFieldRegistry.registerField(
+            typeKey = typeKey,
+            shardIndex = shardIndex,
+            field = providerField,
+            fieldName = providerFieldName,
             binding = binding
           )
         }
