@@ -9,7 +9,10 @@ import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrStringConcatenationImpl
+import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.nonDispatchParameters
@@ -24,142 +27,137 @@ internal class SwitchingProviderGenerator(
 
   @Suppress("DEPRECATION")
   fun populateInvokeBody(
+    builder: IrBuilderWithScope,
     graphClass: IrClass,
     switchingProviderClass: IrClass,
     idToBinding: List<IrBinding>, // same order as assigned IDs
-    thisGraphParamName: String = "graph",
-    idParamName: String = "id",
-  ) {
-    // Resolve fields safely at the top
-    val idField = switchingProviderClass.declarations.filterIsInstance<IrField>()
-      .firstOrNull { it.name.asString() == idParamName }
-      ?: error("SwitchingProvider must have field: $idParamName")
+    graphExpr: IrExpression,      // The graph instance from SwitchingProvider.graph field
+    idExpr: IrExpression,          // The id from SwitchingProvider.id field
+    returnType: IrType
+  ): List<IrStatement> {
+    // Build branches for when(id) expression
+    val branches = mutableListOf<IrBranchImpl>()
 
-    val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
-      .firstOrNull { it.name.asString() == thisGraphParamName }
-      ?: error("SwitchingProvider must have field: $thisGraphParamName")
-
-    // Find the invoke function
-    val invokeFun = switchingProviderClass.functions
-      .firstOrNull { it.name.asString() == "invoke" && it.nonDispatchParameters.isEmpty() }
-      ?: error("SwitchingProvider must have invoke() function with no parameters")
-
-    // Build the invoke body
-    val builder = createIrBuilder(invokeFun.symbol)
-    invokeFun.body = builder.irBlockBody {
-      val thisParam = invokeFun.dispatchReceiverParameter
-        ?: error("invoke() must have dispatch receiver")
-
-      // Build branches for when(id) expression
-      val branches = mutableListOf<IrBranchImpl>()
-
-      // Add a branch for each binding ID
-      idToBinding.forEachIndexed { id, binding ->
-        // Always use inline generation to avoid provider field lookups
-        // which would cause recursion (since the provider field IS this SwitchingProvider)
-        val expr = expressionGenerator!!.generateBindingCode(
-          binding = binding,
-          contextualTypeKey = binding.contextualTypeKey,
-          accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
-          fieldInitKey = binding.typeKey,   // prevents provider reuse for same key
-          bypassProviderFor = null
-        )
-
-        // Create a fresh field access for each branch to avoid duplicate IR nodes
-        val idFieldAccess = irGetField(irGet(thisParam), idField)
-
-        branches += IrBranchImpl(
-          UNDEFINED_OFFSET,
-          UNDEFINED_OFFSET,
-          condition = irEquals(idFieldAccess, irInt(id)),
-          result = irReturn(expr)
-        )
-      }
-
-      // Default branch: throw error with the unknown id
-      // Use simpler error function instead of AssertionError
-      val defaultThrow = irInvoke(
-        callee = symbols.stdlibErrorFunction,
-        args = listOf(irString("Unknown SwitchingProvider id"))
-      )
-      branches += IrBranchImpl(
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET,
-        condition = irTrue(),
-        result = defaultThrow
-      )
-
-      // Create when expression with all branches
-      val whenExpr = irWhen(
-        type = invokeFun.returnType,
-        branches = branches
-      )
-
-      +irReturn(whenExpr)
-    }
-  }
-
-  private fun IrBuilderWithScope.generateReturnExprViaGraph(
-    builder: IrBuilderWithScope,
-    switchingProviderClass: IrClass,
-    graphField: IrField,
-    binding: IrBinding,
-    invokeFun: IrFunction,
-    graphClass: IrClass
-  ): IrExpression {
-    // Read this.graph
-    val dispatchThis = invokeFun.dispatchReceiverParameter
-      ?: error("invoke() must have dispatch receiver")
-    val graphGet = irGetField(irGet(dispatchThis), graphField)
-
-    // Check if sharding is enabled and find which shard contains this binding
-    val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-
-    val providerAccess = when {
-      shardInfo != null -> {
-        // Field is in a shard - need to access through shard instance
-        val shardIndex = shardInfo.shardIndex
-        val field = shardInfo.field
-
-        if (shardIndex == 0) {
-          // Main graph - direct access
-          irGetField(graphGet, field)
+    // Add a branch for each binding ID
+    idToBinding.forEachIndexed { id, binding ->
+      val bindingExpr = builder.run {
+        // Strategy: Prefer existing provider fields over inline generation
+        
+        // First, check if we have a provider field for this binding
+        val providerField = bindingFieldContext?.providerField(binding.typeKey)
+          ?: shardFieldRegistry?.findField(binding.typeKey)?.field
+        
+        if (providerField != null) {
+          // Found a provider field - use it and invoke to get the instance
+          val owner = when {
+            // Check if field is in a shard
+            shardFieldRegistry != null -> {
+              val shardInfo = shardFieldRegistry.findField(binding.typeKey)
+              val shardIndex = shardInfo?.shardIndex
+              if (shardIndex != null && shardIndex != 0) {
+                // Field is in a shard, access via graph.shardN
+                val shardField = graphClass.declarations
+                  .filterIsInstance<IrField>()
+                  .firstOrNull { it.name.asString() == "shard$shardIndex" }
+                  ?: error("Missing shard field: shard$shardIndex")
+                irGetField(graphExpr, shardField)
+              } else {
+                // Field is in main graph
+                graphExpr
+              }
+            }
+            else -> graphExpr // No sharding, use graph directly
+          }
+          
+          // Get the provider field and invoke it
+          val providerExpr = irGetField(owner, providerField)
+          
+          // Invoke the provider to get the instance
+          // Use symbols.providerInvoke directly since that's what Metro uses
+          irCall(symbols.providerInvoke).apply {
+            dispatchReceiver = providerExpr
+          }
         } else {
-          // Access through shard instance: graph.shardN.fieldProvider
-          val shardField = graphGet.type.getClass()?.declarations
-            ?.filterIsInstance<IrField>()
-            ?.firstOrNull { shardField -> shardField.name.asString() == "shard$shardIndex" }
+          // No provider field found - need to handle special cases or generate inline
+          
+          when (binding) {
+            // BoundInstance and GraphDependency should never inline - they must have fields
+            is IrBinding.BoundInstance -> {
+              // For BoundInstance, we should have an instance field
+              val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+                ?: error("BoundInstance must have an instance field: ${binding.typeKey}")
 
-          if (shardField != null) {
-            val shardAccess = irGetField(graphGet, shardField)
-            irGetField(shardAccess, field)
-          } else {
-            // Shard field not found, try direct access as fallback
-            irGetField(graphGet, field)
+              // BoundInstance fields are always on the main graph
+              irGetField(graphExpr, instanceField)
+            }
+
+            is IrBinding.GraphDependency -> {
+              // GraphDependency should read from the appropriate field
+              if (binding.fieldAccess != null) {
+                val field = bindingFieldContext?.instanceField(binding.typeKey)
+                  ?: error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+                irGetField(graphExpr, field)
+              } else if (binding.getter != null) {
+                // Call the getter on the graph
+                irCall(binding.getter).apply {
+                  dispatchReceiver = graphExpr
+                }
+              } else {
+                error("GraphDependency must have either fieldAccess or getter")
+              }
+            }
+            
+            else -> {
+              // For other bindings, generate inline but with bypassProviderFor to prevent recursion
+              expressionGenerator?.generateBindingCode(
+                binding = binding,
+                contextualTypeKey = binding.contextualTypeKey,
+                accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+                fieldInitKey = null,
+                bypassProviderFor = binding.typeKey  // Prevent re-routing through SwitchingProvider
+              ) ?: error("ExpressionGenerator is required for inline generation")
+            }
           }
         }
       }
-      bindingFieldContext != null -> {
-        // No sharding, use binding field context
-        val field = bindingFieldContext.providerField(binding.typeKey)
-        if (field != null) {
-          irGetField(graphGet, field)
-        } else {
-          null
-        }
+
+      branches += IrBranchImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        condition = builder.irEquals(idExpr, builder.irInt(id)),
+        result = bindingExpr
+      )
+    }
+
+    // Default branch: throw error with the unknown id
+    val defaultBranch = builder.run {
+      val errorMessage = IrStringConcatenationImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        symbols.irBuiltIns.stringType
+      ).apply {
+        arguments.add(irString("Unknown SwitchingProvider id: "))
+        arguments.add(idExpr)
       }
-      else -> null
-    }
 
-    if (providerAccess != null) {
-      // Invoke the provider to get the instance
-      return irInvoke(providerAccess, callee = symbols.providerInvoke)
+      IrBranchImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        condition = irTrue(),
+        result = irInvoke(
+          callee = symbols.stdlibErrorFunction,
+          args = listOf(errorMessage)
+        )
+      )
     }
+    branches += defaultBranch
 
-    // Fallback: If we can't find the provider field, generate error
-    return irInvoke(
-      callee = symbols.stdlibErrorFunction,
-      args = listOf(irString("Provider field not found for ${binding.typeKey}"))
+    // Create and return the when expression
+    val whenExpr = builder.irWhen(
+      type = returnType,
+      branches = branches
     )
+    
+    return listOf(builder.irReturn(whenExpr))
   }
 }

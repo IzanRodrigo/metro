@@ -1082,21 +1082,22 @@ internal class IrGraphGenerator(
       return
     }
 
+    // Find the invoke function
+    val invokeFun = switchingProviderClass.declarations
+      .filterIsInstance<IrSimpleFunction>()
+      .firstOrNull { it.name.asString() == "invoke" }
+      ?: error("SwitchingProvider must have invoke() function")
+
     // If we have SwitchingProvider but no bindings, provide a fake implementation
     if (switchingIds.isEmpty()) {
-      val invokeFunction = switchingProviderClass.declarations
-        .filterIsInstance<IrSimpleFunction>()
-        .firstOrNull { it.name.asString() == "invoke" }
-      if (invokeFunction != null && invokeFunction.body == null) {
-        invokeFunction.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
-          val builder = createIrBuilder(invokeFunction.symbol)
-          statements += builder.irReturn(
-            builder.irInvoke(
-              callee = symbols.stdlibErrorFunction,
-              args = listOf(builder.irString("SwitchingProvider not implemented - no bindings registered"))
-            )
+      invokeFun.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+        val builder = createIrBuilder(invokeFun.symbol)
+        statements += builder.irReturn(
+          builder.irInvoke(
+            callee = symbols.stdlibErrorFunction,
+            args = listOf(builder.irString("SwitchingProvider not implemented - no bindings registered"))
           )
-        }
+        )
       }
       return
     }
@@ -1108,31 +1109,52 @@ internal class IrGraphGenerator(
         this@IrGraphGenerator.bindingGraph.bindingsSnapshot()[typeKey]
       }
 
-    // Find the invoke function to get its dispatch receiver
-    @Suppress("DEPRECATION")
-    val invokeFunction = switchingProviderClass.declarations
-      .filterIsInstance<IrSimpleFunction>()
-      .firstOrNull { it.name.asString() == "invoke" && it.nonDispatchParameters.isEmpty() }
-      ?: error("SwitchingProvider must have invoke() function")
+    // Get the dispatch receiver of invoke (the SwitchingProvider instance)
+    val spThis = requireNotNull(invokeFun.dispatchReceiverParameter) {
+      "invoke() must have dispatch receiver"
+    }
+    
+    // Find graph and id fields in SwitchingProvider
+    val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+      .firstOrNull { it.name.asString() == "graph" }
+      ?: error("SwitchingProvider must have field: graph")
+    val idField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+      .firstOrNull { it.name.asString() == "id" }
+      ?: error("SwitchingProvider must have field: id")
 
-    val invokeDispatchReceiver = invokeFunction.dispatchReceiverParameter
-      ?: error("invoke() must have dispatch receiver")
+    // Build the invoke body
+    invokeFun.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+      val builder = createIrBuilder(invokeFun.symbol)
+      
+      // Get graph and id from SwitchingProvider fields
+      val graphExpr = builder.irGetField(builder.irGet(spThis), graphField)
+      val idExpr = builder.irGetField(builder.irGet(spThis), idField)
 
-    // Create IrGraphExpressionGenerator for inline instance generation
-    // Use the SwitchingProvider's invoke dispatch receiver so it can access the graph field
-    val expressionGenerator = expressionGeneratorFactory.create(invokeDispatchReceiver)
+      // CRITICAL: Build expression generator with the GRAPH receiver, not the provider
+      // This ensures field access resolves correctly for cross-shard routing
+      val graphReceiver = this@populateSwitchingProviderIfExists.thisReceiverOrFail
+      val expressionGenerator = expressionGeneratorFactory.create(graphReceiver)
 
-    // Call the SwitchingProviderGenerator to populate the invoke() method
-    SwitchingProviderGenerator(
-      context = this@IrGraphGenerator,
-      bindingFieldContext = bindingFieldContext,
-      shardFieldRegistry = shardFieldRegistry,
-      expressionGenerator = expressionGenerator
-    ).populateInvokeBody(
-      graphClass = this,
-      switchingProviderClass = switchingProviderClass,
-      idToBinding = idToBinding
-    )
+      // Call the SwitchingProviderGenerator with the new API
+      val switchingGenerator = SwitchingProviderGenerator(
+        context = this@IrGraphGenerator,
+        bindingFieldContext = bindingFieldContext,
+        shardFieldRegistry = shardFieldRegistry,
+        expressionGenerator = expressionGenerator
+      )
+
+      // Populate the body with graph-aware expressions
+      val invokeStatements = switchingGenerator.populateInvokeBody(
+        builder = builder,
+        graphClass = this@populateSwitchingProviderIfExists,
+        switchingProviderClass = switchingProviderClass,
+        idToBinding = idToBinding,
+        graphExpr = graphExpr,
+        idExpr = idExpr,
+        returnType = invokeFun.returnType
+      )
+      statements.addAll(invokeStatements)
+    }
   }
 
   /**
