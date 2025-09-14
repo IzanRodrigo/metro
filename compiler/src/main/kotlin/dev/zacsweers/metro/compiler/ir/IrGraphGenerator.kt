@@ -134,6 +134,8 @@ internal class IrGraphGenerator(
       graphExtensionGenerator = graphExtensionGenerator,
       parentTracer = parentTracer,
       shardFieldRegistry = shardFieldRegistry,
+      shardingPlan = shardingPlan,
+      currentShardIndex = null,
     )
   
   private var shardInfos: Map<Int, ShardGenerator.ShardInfo> = emptyMap()
@@ -1117,21 +1119,8 @@ internal class IrGraphGenerator(
       ?: error("invoke() must have dispatch receiver")
 
     // Create IrGraphExpressionGenerator for inline instance generation
-    // Pass the invoke function's dispatch receiver so it can access the graph field
-    val expressionGenerator = IrGraphExpressionGenerator.Factory(
-      context = this@IrGraphGenerator,
-      node = node,
-      bindingFieldContext = bindingFieldContext,
-      bindingGraph = bindingGraph,
-      bindingContainerTransformer = bindingContainerTransformer,
-      membersInjectorTransformer = membersInjectorTransformer,
-      assistedFactoryTransformer = assistedFactoryTransformer,
-      graphExtensionGenerator = graphExtensionGenerator,
-      parentTracer = parentTracer,
-      shardFieldRegistry = shardFieldRegistry,
-      shardingPlan = shardingPlan,
-      currentShardIndex = null,
-    ).create(invokeDispatchReceiver)
+    // Use the SwitchingProvider's invoke dispatch receiver so it can access the graph field
+    val expressionGenerator = expressionGeneratorFactory.create(invokeDispatchReceiver)
 
     // Call the SwitchingProviderGenerator to populate the invoke() method
     SwitchingProviderGenerator(
