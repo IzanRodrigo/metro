@@ -47,7 +47,9 @@ import org.jetbrains.kotlin.fir.symbols.impl.FirClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirConstructorSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirFunctionSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirNamedFunctionSymbol
+import org.jetbrains.kotlin.fir.symbols.impl.FirPropertySymbol
 import org.jetbrains.kotlin.fir.types.constructType
+import org.jetbrains.kotlin.fir.types.toLookupTag
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.name.SpecialNames
@@ -198,14 +200,17 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       val typeParam = typeParameter(Name.identifier("T"))
 
       // Add supertype: Provider<T>
-      // For now, we don't add the supertype here since it requires the type parameter
-      // It will be handled properly in the IR phase where we have full type information
+      // Build the Provider<T> type using the type parameter
+      val providerClassId = session.metroFirBuiltIns.providerClassId
+      val providerTypeWithT = providerClassId.toLookupTag().constructType(
+        arrayOf(typeParam.toConeType()),
+        isNullable = false
+      )
+      superType(providerTypeWithT)
     }
 
-    // Note: According to GPT5 prompt, we should add explicit backing field properties here.
-    // However, the Kotlin FIR plugin API doesn't easily support adding properties in this context.
-    // The IR phase will handle creating the backing fields when it processes the constructor parameters.
-    // The constructor already has 'graph' and 'id' parameters which will be materialized as fields in IR.
+    // Properties will be generated via generateProperties when getCallableNamesForClass
+    // returns "graph" and "id" for SwitchingProviderDeclaration
 
     return switchingProviderClass.symbol
   }
@@ -440,6 +445,57 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
         return emptyList()
       }
     return listOf(constructor.symbol)
+  }
+
+  override fun generateProperties(
+    callableId: CallableId,
+    context: MemberGenerationContext?
+  ): List<FirPropertySymbol> {
+    log("Generating property $callableId")
+    val owner = context?.owner ?: return emptyList()
+
+    val properties = mutableListOf<FirPropertySymbol>()
+
+    if (owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
+      // Generate backing field properties for SwitchingProvider
+      when (callableId.callableName.asString()) {
+        "graph" -> {
+          // Generate private val graph: GraphImpl
+          val graphClass = owner.requireContainingClassSymbol()
+          val property = createMemberProperty(
+            owner,
+            Keys.Default,
+            Name.identifier("graph"),
+            returnType = graphClass.constructType(),
+            isVal = true,
+            hasBackingField = true
+          ) {
+            visibility = Visibilities.Private
+          }
+          properties += property.symbol
+        }
+        "id" -> {
+          // Generate private val id: Int
+          val property = createMemberProperty(
+            owner,
+            Keys.Default,
+            Name.identifier("id"),
+            returnType = session.builtinTypes.intType.coneType,
+            isVal = true,
+            hasBackingField = true
+          ) {
+            visibility = Visibilities.Private
+          }
+          properties += property.symbol
+        }
+      }
+    }
+
+    if (properties.isNotEmpty()) {
+      log("Generated ${properties.size} properties for ${owner.classId}: ${properties.joinToString { it.name.asString() }}")
+    }
+
+    return properties
   }
 
   override fun generateFunctions(
