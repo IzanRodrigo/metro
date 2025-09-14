@@ -301,18 +301,17 @@ internal class IrGraphGenerator(
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
 
       val thisReceiverParameter = thisReceiverOrFail
-      
-      // Generate shard classes and fields if sharding is enabled
-      val (shardInfos, shardInitializers) = if (shardingPlan?.requiresSharding() == true) {
-        parentTracer.traceNested("Generate shards") {
-          generateShards()
+
+      // Generate shard class shells early if sharding is enabled
+      // This must happen BEFORE field creation so ownerClassFor() can find the shard classes
+      if (shardingPlan?.requiresSharding() == true) {
+        parentTracer.traceNested("Generate shard shells") {
+          generateShardShells()
         }
-      } else {
-        emptyMap<Int, ShardGenerator.ShardInfo>() to emptyList()
       }
-      
-      // Add shard initializations to constructor statements (BEFORE other field initializations)
-      constructorStatements.addAll(shardInitializers)
+
+      // Shard field initializers will be collected later
+      val shardInitializers = mutableListOf<IrBuilderWithScope.(IrValueParameter) -> IrStatement>()
 
       fun addBoundInstanceField(
         typeKey: IrTypeKey,
@@ -602,15 +601,6 @@ internal class IrGraphGenerator(
           val targetShardIndex = shardingPlan?.bindingToShard?.get(key)
           val targetShard = targetShardIndex?.let { shardInfos[it] }
           
-          // If sharding is enabled and this binding is assigned to a non-component shard,
-          // generate it in that shard instead of the main class
-          if (targetShard != null && !targetShard.shard.isComponentShard) {
-            // This binding goes into a shard
-            // For now, we'll just track it - Phase 3 will handle the actual generation
-            // TODO: Generate field in shard class instead of main class
-            // TODO: Update bindingFieldContext to track shard location
-          }
-          
           // Since assisted and member injections don't implement Factory, we can't just type these
           // as Provider<*> fields
           var isProviderType = true
@@ -708,13 +698,7 @@ internal class IrGraphGenerator(
                 }
             }
           }
-          
-          // Track the field location for cross-shard access
-          if (targetShard != null && !targetShard.shard.isComponentShard) {
-            // Store shard reference in binding field context for Phase 3
-            // Phase 3 will use this to generate proper cross-shard access
-          }
-          
+
           bindingFieldContext.putProviderField(key, field)
         }
 
@@ -750,9 +734,19 @@ internal class IrGraphGenerator(
         }
       }
 
+      // Complete shard initialization after all fields are created
+      if (shardingPlan?.requiresSharding() == true) {
+        parentTracer.traceNested("Complete shard initialization") {
+          completeShardInitialization(shardInitializers)
+        }
+      }
+
+      // Add shard initializations to constructor statements (BEFORE other field initializations)
+      constructorStatements.addAll(shardInitializers)
+
       // Get field initializers for the main graph class
       val mainGraphInitializers = fieldInitializersByClass[this@with] ?: emptyList()
-      
+
       if (
         options.chunkFieldInits &&
           mainGraphInitializers.size + initStatements.size > STATEMENTS_PER_METHOD
@@ -1158,8 +1152,143 @@ internal class IrGraphGenerator(
   }
 
   /**
+   * Generates shard class shells early so that ownerClassFor() can find them during field creation.
+   * This creates the shard classes but doesn't initialize their fields yet.
+   */
+  private fun IrClass.generateShardShells() {
+    requireNotNull(shardingPlan) { "generateShardShells called without sharding plan" }
+
+    if (options.debug) {
+      log("[MetroSharding] Generating ${shardingPlan.additionalShards().size} shard class shells")
+    }
+
+    val infos = mutableMapOf<Int, ShardGenerator.ShardInfo>()
+
+    // Process each shard (skipping shard 0 which is the main component)
+    for (shard in shardingPlan.additionalShards()) {
+      if (options.debug) {
+        log("[MetroSharding] Generating shell for Shard${shard.index} with ${shard.bindings.size} bindings")
+      }
+
+      val generator = ShardGenerator(
+        context = this@IrGraphGenerator,
+        parentClass = this,
+        shard = shard,
+        bindingGraph = bindingGraph,
+        fieldNameAllocator = fieldNameAllocator,
+        shardingPlan = shardingPlan,
+        fieldRegistry = shardFieldRegistry
+      )
+
+      // Generate the shard class shell (without field initialization)
+      val shardClass = generator.generateShardClass(null)
+
+      // Generate the field in the parent class to hold this shard instance
+      val shardField = generator.generateShardField(shardClass)
+
+      // Create ShardInfo
+      val shardInfo = ShardGenerator.ShardInfo(
+        shard = shard,
+        shardClass = shardClass,
+        shardField = shardField,
+        generator = generator
+      )
+
+      infos[shard.index] = shardInfo
+    }
+
+    // Store for later use in binding distribution and initialization
+    shardInfos = infos
+  }
+
+  /**
+   * Completes shard initialization after all fields have been created.
+   * This adds the field initializers and shard instantiation to the constructor.
+   */
+  private fun IrClass.completeShardInitialization(
+    shardInitializers: MutableList<IrBuilderWithScope.(IrValueParameter) -> IrStatement>
+  ) {
+    requireNotNull(shardingPlan) { "completeShardInitialization called without sharding plan" }
+
+    if (options.debug) {
+      log("[MetroSharding] Completing initialization for ${shardInfos.size} shards")
+    }
+
+    // Process each shard to generate initialization methods
+    for ((shardIndex, shardInfo) in shardInfos) {
+      val shardClass = shardInfo.shardClass
+      val shardInitializersForClass = fieldInitializersByClass[shardClass] ?: emptyList()
+
+      if (shardInitializersForClass.isNotEmpty()) {
+        if (options.debug) {
+          log("[MetroSharding] Shard${shardIndex} has ${shardInitializersForClass.size} field initializers")
+        }
+
+        // Generate the initializeFields method for this shard
+        val initMethod = shardInfo.generator.generateShardFieldInitialization(shardInfo, shardInitializersForClass)
+
+        // Update the constructor body to call initializeFields
+        val constructor = shardClass.primaryConstructor
+          ?: error("Shard class missing primary constructor")
+
+        val graphField = shardClass.declarations
+          .filterIsInstance<IrField>()
+          .first { it.name.asString() == "graph" }
+
+        val graphParameter = constructor.nonDispatchParameters.first()
+
+        constructor.body = createIrBuilder(constructor.symbol).irBlockBody {
+          val thisRef = requireNotNull(shardClass.thisReceiver) {
+            "Shard class ${shardClass.name} missing this receiver"
+          }
+
+          // 1. Call super constructor (Any.<init>())
+          +irDelegatingConstructorCall(irBuiltIns.anyClass.owner.primaryConstructor!!)
+
+          // 2. Set the graph field: this.graph = graph
+          +irSetField(
+            receiver = irGet(thisRef),
+            field = graphField,
+            value = irGet(graphParameter)
+          )
+
+          // 3. Call instance initializer
+          +IrInstanceInitializerCallImpl(
+            UNDEFINED_OFFSET,
+            UNDEFINED_OFFSET,
+            shardClass.symbol,
+            shardClass.defaultType
+          )
+
+          // 4. Call this.initializeFields()
+          +irCall(initMethod.symbol).also { call ->
+            call.dispatchReceiver = irGet(thisRef)
+          }
+        }
+      }
+
+      // Add field initialization in the main graph constructor
+      val shardField = shardInfo.shardField
+      shardField?.let { field ->
+        shardInitializers.add { thisReceiver ->
+          // Initialize the shard field with a new instance
+          val initialization = shardInfo.generator.generateShardInitialization(
+            shardClass = shardClass,
+            thisReceiver = thisReceiver,
+            moduleParameters = emptyList() // TODO: Implement proper module detection
+          )
+
+          // Set the field value
+          irSetField(irGet(thisReceiver), field, initialization)
+        }
+      }
+    }
+  }
+
+  /**
    * Generates shard classes and their initialization.
    * Following Dagger's pattern, shards are initialized in the constructor before other bindings.
+   * @deprecated Use generateShardShells() and completeShardInitialization() instead
    */
   private fun IrClass.generateShards(): Pair<Map<Int, ShardGenerator.ShardInfo>, List<IrBuilderWithScope.(IrValueParameter) -> IrStatement>> {
     requireNotNull(shardingPlan) { "generateShards called without sharding plan" }
