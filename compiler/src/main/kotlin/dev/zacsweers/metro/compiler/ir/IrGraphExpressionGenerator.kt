@@ -160,7 +160,13 @@ private constructor(
     bypassProviderFor: IrTypeKey? = null,
   ): IrExpression =
     with(scope) {
-      if (bypassProviderFor != null && binding.typeKey == bypassProviderFor) return@with generateInlineInstance(binding)
+      if (bypassProviderFor != null && binding.typeKey == bypassProviderFor) {
+        if (debug) {
+          log("IrGraphExpressionGenerator: Bypassing provider for ${binding.typeKey.render(short = true)} to prevent recursion")
+          log("  Reason: Direct inline generation requested to avoid infinite loop through SwitchingProvider")
+        }
+        return@with generateInlineInstance(binding)
+      }
 
       if (binding is IrBinding.Absent) {
         reportCompilerBug(
@@ -657,9 +663,11 @@ private constructor(
 
         // Only re-route if accessing a field in a different shard
         if (targetShardIndex != currentShardIndex) {
-          log("safeGetField: Cross-shard access detected for ${typeKey.render(short = true)}")
-          log("  Current context: ${if (currentShardIndex == 0) "main" else "shard$currentShardIndex"}")
-          log("  Target location: ${if (targetShardIndex == 0) "main" else "shard$targetShardIndex"}")
+          if (debug) {
+            log("IrGraphExpressionGenerator.safeGetField: Cross-shard access detected for ${typeKey.render(short = true)}")
+            log("  Current context: ${if (currentShardIndex == 0) "main" else "shard$currentShardIndex"}")
+            log("  Target location: ${if (targetShardIndex == 0) "main" else "shard$targetShardIndex"}")
+          }
 
           // Resolve the correct owner for cross-shard access
           // Pass null for main graph, actual index for shards
@@ -703,13 +711,17 @@ private constructor(
     when {
       // Case 1: Same location (main→main or shardN→shardN)
       normalizedCurrent == targetShard -> {
-        log("resolveFieldOwner: Same-context access (both in ${if (targetShard == 0) "main" else "shard$targetShard"})")
+        if (debug) {
+          log("IrGraphExpressionGenerator.resolveFieldOwner: Same-context access (both in ${if (targetShard == 0) "main" else "shard$targetShard"})")
+        }
         irGet(thisReceiver)
       }
 
       // Case 2: Main → shardN - access through this.shardN field
       currentShard == null && targetShard > 0 -> {
-        log("resolveFieldOwner: Main → shard$targetShard access")
+        if (debug) {
+          log("IrGraphExpressionGenerator.resolveFieldOwner: Cross-shard path main → shard$targetShard")
+        }
         val shardFieldName = "shard$targetShard"
 
         // Get the main graph class from thisReceiver's parent chain
@@ -729,14 +741,18 @@ private constructor(
 
       // Case 3: ShardA → main - access through this.graph field
       currentShard != null && currentShard > 0 && targetShard == 0 -> {
-        log("resolveFieldOwner: Shard$currentShard → main access")
+        if (debug) {
+          log("IrGraphExpressionGenerator.resolveFieldOwner: Cross-shard path shard$currentShard → main")
+        }
         // Use irThisGraph which handles getting the graph field from shard
         irThisGraph(thisReceiver)
       }
 
       // Case 4: ShardA → shardB - access through this.graph.shardB
       currentShard != null && currentShard > 0 && targetShard > 0 && currentShard != targetShard -> {
-        log("resolveFieldOwner: Shard$currentShard → shard$targetShard access (via main graph)")
+        if (debug) {
+          log("IrGraphExpressionGenerator.resolveFieldOwner: Cross-shard path shard$currentShard → shard$targetShard (via main graph)")
+        }
 
         // First get the main graph reference from this shard
         val mainGraph = irThisGraph(thisReceiver)

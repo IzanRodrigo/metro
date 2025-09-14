@@ -360,7 +360,13 @@ internal class IrGraphGenerator(
         ).initFinal {
           if (switchingProviderClass != null && spCtor != null) {
             // Use SwitchingProvider wrapped in caching
-            val id = switchingIds.getOrPut(typeKey) { nextSwitchId++ }
+            val id = switchingIds.getOrPut(typeKey) {
+              val newId = nextSwitchId++
+              if (debug) {
+                log("IrGraphGenerator: Registering BoundInstance ${typeKey.render(short = true)} with SwitchingProvider id=$newId")
+              }
+              newId
+            }
             val spNew = irCall(spCtor.symbol).also { call ->
               // Set type arguments - the SwitchingProvider has one type parameter
               call.typeArguments[0] = typeKey.type
@@ -506,7 +512,13 @@ internal class IrGraphGenerator(
           ).initFinal {
             if (switchingProviderClass != null && spCtor != null) {
               // Use SwitchingProvider wrapped in caching for graph provider too
-              val id = switchingIds.getOrPut(node.typeKey) { nextSwitchId++ }
+              val id = switchingIds.getOrPut(node.typeKey) {
+                val newId = nextSwitchId++
+                if (debug) {
+                  log("IrGraphGenerator: Registering Graph ${node.typeKey.render(short = true)} with SwitchingProvider id=$newId")
+                }
+                newId
+              }
               val spNew = irCall(spCtor.symbol).also { call ->
                 // Set type arguments - the SwitchingProvider has one type parameter
                 call.typeArguments[0] = node.typeKey.type
@@ -697,7 +709,13 @@ internal class IrGraphGenerator(
           field.withInit(key) { thisReceiver, typeKey ->
             if (switchingProviderClass != null && spCtor != null && isProviderType) {
               // Use SwitchingProvider wrapped in caching
-              val id = switchingIds.getOrPut(binding.typeKey) { nextSwitchId++ }
+              val id = switchingIds.getOrPut(binding.typeKey) {
+                val newId = nextSwitchId++
+                if (debug) {
+                  log("IrGraphGenerator: Registering binding ${binding.typeKey.render(short = true)} (${binding::class.simpleName}) with SwitchingProvider id=$newId")
+                }
+                newId
+              }
               val spNew = irCall(spCtor.symbol).also { call ->
                 // Set type arguments - the SwitchingProvider has one type parameter
                 call.typeArguments[0] = binding.typeKey.type
@@ -1122,6 +1140,9 @@ internal class IrGraphGenerator(
 
     // If we have SwitchingProvider but no bindings, provide a fake implementation
     if (switchingIds.isEmpty()) {
+      if (debug) {
+        log("IrGraphGenerator: No bindings registered for SwitchingProvider - generating error body")
+      }
       invokeFun.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
         val builder = createIrBuilder(invokeFun.symbol)
         statements += builder.irReturn(
@@ -1132,6 +1153,10 @@ internal class IrGraphGenerator(
         )
       }
       return
+    }
+
+    if (debug) {
+      log("IrGraphGenerator: Populating SwitchingProvider with ${switchingIds.size} bindings")
     }
 
     // Build the ordered list of bindings based on their IDs

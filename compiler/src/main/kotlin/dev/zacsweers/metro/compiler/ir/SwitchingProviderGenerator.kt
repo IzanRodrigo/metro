@@ -63,9 +63,15 @@ internal class SwitchingProviderGenerator(
   ): IrExpression = with(scope) {
     if (shardIndex == null || shardIndex == 0) {
       // Field is in main graph
+      if (debug && shardIndex == 0) {
+        log("SwitchingProviderGenerator: Accessing field in main graph")
+      }
       graphExpr
     } else {
       // Field is in a shard, access via graph.shardN
+      if (debug) {
+        log("SwitchingProviderGenerator: Cross-shard access - main -> shard$shardIndex")
+      }
       val shardFieldOnGraph = graphClass.declarations
         .filterIsInstance<IrField>()
         .firstOrNull { it.name.asString() == "shard$shardIndex" }
@@ -109,8 +115,28 @@ internal class SwitchingProviderGenerator(
     idExpr: IrExpression,          // The id from SwitchingProvider.id field
     returnType: IrType
   ): List<IrStatement> {
+    // Defensive check: empty bindings list
+    if (idToBinding.isEmpty()) {
+      if (debug) {
+        log("SwitchingProviderGenerator: No bindings registered for SwitchingProvider")
+      }
+      return builder.run {
+        listOf(
+          irReturn(
+            irInvoke(
+              callee = symbols.stdlibErrorFunction,
+              args = listOf(irString("SwitchingProvider not implemented - no bindings registered"))
+            )
+          )
+        )
+      }
+    }
+
     // Check if we need to split into helper methods
     if (idToBinding.size > MAX_CASES_PER_METHOD) {
+      if (debug) {
+        log("SwitchingProviderGenerator: Splitting ${idToBinding.size} bindings into helper methods")
+      }
       // Generate helper methods and dispatch to them
       return generateSplitInvokeBody(
         builder, graphClass, switchingProviderClass,
@@ -281,6 +307,10 @@ internal class SwitchingProviderGenerator(
 
               if (canGenerateInline) {
                 // Safe to generate inline with bypassProviderFor to prevent recursion
+                if (debug) {
+                  log("SwitchingProviderGenerator: Falling back to inline generation for ${binding.typeKey.render(short = true)}")
+                  log("  Reason: No provider field found, generating inline with bypass to prevent recursion")
+                }
                 expressionGenerator?.generateBindingCode(
                   binding = binding,
                   contextualTypeKey = binding.contextualTypeKey,
