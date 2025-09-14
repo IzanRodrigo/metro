@@ -5,11 +5,13 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
+import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
+import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
+import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.*
 import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.expressions.IrExpression
-import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrStringConcatenationImpl
 import org.jetbrains.kotlin.ir.types.IrType
@@ -17,6 +19,7 @@ import org.jetbrains.kotlin.ir.types.getClass
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.nonDispatchParameters
 import org.jetbrains.kotlin.ir.util.primaryConstructor
+import org.jetbrains.kotlin.name.Name
 
 internal class SwitchingProviderGenerator(
   private val context: IrMetroContext,
@@ -52,6 +55,11 @@ internal class SwitchingProviderGenerator(
     }
   }
 
+  companion object {
+    // Maximum number of cases per method to avoid hitting JVM method size limits
+    private const val MAX_CASES_PER_METHOD = 100
+  }
+
   /**
    * Populates the invoke() body of SwitchingProvider with a when(id) expression.
    *
@@ -59,6 +67,10 @@ internal class SwitchingProviderGenerator(
    * Caching is already applied at the field initialization level when the provider
    * fields are created. The invoke() method should only dispatch to the appropriate
    * binding code without additional wrapping.
+   *
+   * For large numbers of bindings (> 100), this will generate helper methods to avoid
+   * hitting JVM method size limits. The main invoke() method will dispatch to the
+   * appropriate helper based on ID ranges.
    *
    * @param builder The IR builder for creating expressions
    * @param graphClass The main graph class containing the SwitchingProvider
@@ -78,6 +90,14 @@ internal class SwitchingProviderGenerator(
     idExpr: IrExpression,          // The id from SwitchingProvider.id field
     returnType: IrType
   ): List<IrStatement> {
+    // Check if we need to split into helper methods
+    if (idToBinding.size > MAX_CASES_PER_METHOD) {
+      // Generate helper methods and dispatch to them
+      return generateSplitInvokeBody(
+        builder, graphClass, switchingProviderClass,
+        idToBinding, graphExpr, idExpr, returnType
+      )
+    }
     // Build branches for when(id) expression
     val branches = mutableListOf<IrBranchImpl>()
 
@@ -260,5 +280,355 @@ internal class SwitchingProviderGenerator(
     )
     
     return listOf(builder.irReturn(whenExpr))
+  }
+
+  /**
+   * Generates a split invoke body that delegates to helper methods for large switch statements.
+   * Each helper method handles up to MAX_CASES_PER_METHOD cases.
+   */
+  private fun generateSplitInvokeBody(
+    builder: IrBuilderWithScope,
+    graphClass: IrClass,
+    switchingProviderClass: IrClass,
+    idToBinding: List<IrBinding>,
+    graphExpr: IrExpression,
+    idExpr: IrExpression,
+    returnType: IrType
+  ): List<IrStatement> {
+    // Calculate how many helper methods we need
+    val numChunks = (idToBinding.size + MAX_CASES_PER_METHOD - 1) / MAX_CASES_PER_METHOD
+
+    // Generate helper methods
+    for (chunkIndex in 0 until numChunks) {
+      val startId = chunkIndex * MAX_CASES_PER_METHOD
+      val endId = minOf(startId + MAX_CASES_PER_METHOD - 1, idToBinding.size - 1)
+      val chunkBindings = idToBinding.subList(startId, endId + 1)
+
+      generateHelperMethod(
+        switchingProviderClass,
+        chunkIndex,
+        startId,
+        endId,
+        chunkBindings,
+        returnType,
+        graphClass
+      )
+    }
+
+    // Generate main invoke body that dispatches to helpers
+    return builder.run {
+      val branches = mutableListOf<IrBranchImpl>()
+
+      // Add a branch for each chunk
+      for (chunkIndex in 0 until numChunks) {
+        val startId = chunkIndex * MAX_CASES_PER_METHOD
+        val endId = minOf(startId + MAX_CASES_PER_METHOD - 1, idToBinding.size - 1)
+
+        // Find the helper method
+        val helperMethod = switchingProviderClass.declarations
+          .filterIsInstance<IrSimpleFunction>()
+          .firstOrNull { it.name.asString() == "invoke\$chunk$chunkIndex" }
+          ?: error("Helper method invoke\$chunk$chunkIndex not found")
+
+        // Create condition: id in startId..endId
+        val condition = if (startId == endId) {
+          // Single case
+          irEquals(idExpr, irInt(startId))
+        } else {
+          // Range check: id >= startId && id <= endId
+          // Using irCall to create binary operations
+          val geOp = irCall(symbols.irBuiltIns.greaterOrEqualFunByOperandType[symbols.irBuiltIns.intType]!!).apply {
+            putValueArgument(0, idExpr)
+            putValueArgument(1, irInt(startId))
+          }
+          val leOp = irCall(symbols.irBuiltIns.lessOrEqualFunByOperandType[symbols.irBuiltIns.intType]!!).apply {
+            putValueArgument(0, idExpr)
+            putValueArgument(1, irInt(endId))
+          }
+          // Combine with AND
+          irCall(symbols.irBuiltIns.andandSymbol).apply {
+            putValueArgument(0, geOp)
+            putValueArgument(1, leOp)
+          }
+        }
+
+        // Call the helper method
+        val helperCall = irCall(helperMethod.symbol).apply {
+          dispatchReceiver = irGet(switchingProviderClass.thisReceiver!!)
+          putValueArgument(0, graphExpr)
+          putValueArgument(1, idExpr)
+        }
+
+        branches += IrBranchImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          condition = condition,
+          result = helperCall
+        )
+      }
+
+      // Default branch: throw error with the unknown id
+      val errorMessage = IrStringConcatenationImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        symbols.irBuiltIns.stringType
+      ).apply {
+        arguments.add(irString("Unknown SwitchingProvider id: "))
+        arguments.add(idExpr)
+      }
+
+      branches += IrBranchImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        condition = irTrue(),
+        result = irInvoke(
+          callee = symbols.stdlibErrorFunction,
+          args = listOf(errorMessage)
+        )
+      )
+
+      val whenExpr = irWhen(
+        type = returnType,
+        branches = branches
+      )
+
+      listOf(irReturn(whenExpr))
+    }
+  }
+
+  /**
+   * Generates a helper method that handles a chunk of switch cases.
+   */
+  private fun generateHelperMethod(
+    switchingProviderClass: IrClass,
+    chunkIndex: Int,
+    startId: Int,
+    endId: Int,
+    chunkBindings: List<IrBinding>,
+    returnType: IrType,
+    graphClass: IrClass
+  ) {
+    // Create the helper method
+    val helperMethod = switchingProviderClass.addFunction {
+      name = Name.identifier("invoke\$chunk$chunkIndex")
+      visibility = DescriptorVisibilities.PRIVATE
+      modality = Modality.FINAL
+      this.returnType = returnType
+    }
+
+    // Add parameters: graph and id
+    val graphParam = helperMethod.addValueParameter {
+      name = Name.identifier("graph")
+      type = graphClass.defaultType
+    }
+
+    val idParam = helperMethod.addValueParameter {
+      name = Name.identifier("id")
+      type = irBuiltIns.intType
+    }
+
+    // Add dispatch receiver
+    helperMethod.dispatchReceiverParameter = switchingProviderClass.thisReceiver
+
+    // Build the method body with the subset of cases
+    helperMethod.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+      val builder = createIrBuilder(helperMethod.symbol)
+      val branches = mutableListOf<IrBranchImpl>()
+
+      // Generate branches for this chunk's bindings
+      chunkBindings.forEachIndexed { index, binding ->
+        val actualId = startId + index
+        val bindingExpr = generateBindingExpression(
+          builder,
+          binding,
+          builder.irGet(graphParam),
+          graphClass
+        )
+
+        branches += IrBranchImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          condition = builder.irEquals(builder.irGet(idParam), builder.irInt(actualId)),
+          result = bindingExpr
+        )
+      }
+
+      // Default case (should not happen if main dispatch is correct)
+      val errorMessage = builder.run {
+        IrStringConcatenationImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          symbols.irBuiltIns.stringType
+        ).apply {
+          arguments.add(irString("Unexpected id in chunk $chunkIndex: "))
+          arguments.add(irGet(idParam))
+        }
+      }
+
+      branches += IrBranchImpl(
+        UNDEFINED_OFFSET,
+        UNDEFINED_OFFSET,
+        condition = builder.irTrue(),
+        result = builder.irInvoke(
+          callee = symbols.stdlibErrorFunction,
+          args = listOf(errorMessage)
+        )
+      )
+
+      val whenExpr = builder.irWhen(
+        type = returnType,
+        branches = branches
+      )
+
+      statements += builder.irReturn(whenExpr)
+    }
+  }
+
+  /**
+   * Generates the expression for a single binding.
+   * This is extracted from the original populateInvokeBody logic.
+   */
+  private fun generateBindingExpression(
+    builder: IrBuilderWithScope,
+    binding: IrBinding,
+    graphExpr: IrExpression,
+    graphClass: IrClass
+  ): IrExpression = builder.run {
+    // Strategy: Prefer existing provider fields over inline generation to avoid recursion
+
+    // First, check bindingFieldContext for a provider field
+    val providerField = bindingFieldContext?.providerField(binding.typeKey)
+
+    if (providerField != null) {
+      // Found a provider field in bindingFieldContext - use it with proper owner resolution
+      // Check if this field might be in a shard
+      val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+      val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+
+      // Get the provider field and invoke it to get the instance
+      val providerExpr = irGetField(owner, providerField)
+
+      // Invoke the provider to get the instance
+      irCall(symbols.providerInvoke).apply {
+        dispatchReceiver = providerExpr
+      }
+    } else {
+      // No provider field found - need to handle special cases or generate inline
+
+      when (binding) {
+        // BoundInstance must always be read from fields, never constructed inline
+        is IrBinding.BoundInstance -> {
+          // Try to resolve the field in order of preference:
+          // 1. Instance field (most common for BoundInstance)
+          // 2. Provider field (if caller expects a provider)
+          // 3. Shard registry (if sharding is active)
+
+          val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+          val providerField = bindingFieldContext?.providerField(binding.typeKey)
+          val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+
+          when {
+            instanceField != null -> {
+              // Resolve the owner (could be main graph or shard)
+              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+              // Return the instance directly
+              irGetField(owner, instanceField)
+            }
+
+            providerField != null -> {
+              // If we have a provider field, use it and invoke
+              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+              // Get the provider and invoke it
+              val providerExpr = irGetField(owner, providerField)
+              irCall(symbols.providerInvoke).apply {
+                dispatchReceiver = providerExpr
+              }
+            }
+
+            shardInfo != null -> {
+              // Only shard registry has the field
+              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+              irGetField(owner, shardInfo.field)
+            }
+
+            else -> {
+              error("BoundInstance must have a field (instance or provider): ${binding.typeKey}")
+            }
+          }
+        }
+
+        is IrBinding.GraphDependency -> {
+          // GraphDependency should read from the appropriate field or call getter
+          when {
+            binding.fieldAccess != null -> {
+              val field = bindingFieldContext?.instanceField(binding.typeKey)
+                ?: error("GraphDependency with fieldAccess must have field: ${binding.typeKey}")
+
+              // Check if field might be in a shard
+              val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+              irGetField(owner, field)
+            }
+
+            binding.getter != null -> {
+              // Call the getter on the graph (getters are always on main graph)
+              irCall(binding.getter).apply {
+                dispatchReceiver = graphExpr
+              }
+            }
+
+            else -> {
+              error("GraphDependency must have either fieldAccess or getter")
+            }
+          }
+        }
+
+        else -> {
+          // Only allow inline generation for safe binding types
+          // All other types must be resolved via fields to avoid unsupported binding errors
+          val canGenerateInline = when (binding) {
+            is IrBinding.ConstructorInjected -> !binding.assisted // Non-assisted only
+            is IrBinding.Provided -> true
+            is IrBinding.ObjectClass -> true
+            else -> false // Alias, Assisted, MembersInjected, Multibinding, etc. require fields
+          }
+
+          if (canGenerateInline) {
+            // Safe to generate inline with bypassProviderFor to prevent recursion
+            expressionGenerator?.generateBindingCode(
+              binding = binding,
+              contextualTypeKey = binding.contextualTypeKey,
+              accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+              fieldInitKey = null,
+              bypassProviderFor = binding.typeKey  // Prevent re-routing through SwitchingProvider
+            ) ?: error("ExpressionGenerator is required for inline generation")
+          } else {
+            // These binding types require field resolution
+            // Try to find the field in bindingFieldContext or shardFieldRegistry
+            val instanceField = bindingFieldContext?.instanceField(binding.typeKey)
+            val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
+
+            when {
+              instanceField != null -> {
+                // Found instance field - use it with proper owner resolution
+                val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                irGetField(owner, instanceField)
+              }
+
+              shardInfo != null -> {
+                // Field exists in shard registry
+                val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+                irGetField(owner, shardInfo.field)
+              }
+
+              else -> {
+                // No field found - this is an error for unsupported inline types
+                error("Binding type ${binding::class.simpleName} requires a field but none found: ${binding.typeKey}")
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }
