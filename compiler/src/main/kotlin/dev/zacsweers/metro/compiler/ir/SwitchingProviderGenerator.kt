@@ -58,9 +58,11 @@ internal class SwitchingProviderGenerator(
         // Always use inline generation to avoid provider field lookups
         // which would cause recursion (since the provider field IS this SwitchingProvider)
         val expr = expressionGenerator!!.generateBindingCode(
-          binding,
+          binding = binding,
+          contextualTypeKey = binding.contextualTypeKey,
           accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
-          bypassProviderFor = binding.typeKey
+          fieldInitKey = binding.typeKey,   // prevents provider reuse for same key
+          bypassProviderFor = null
         )
 
         // Create a fresh field access for each branch to avoid duplicate IR nodes
