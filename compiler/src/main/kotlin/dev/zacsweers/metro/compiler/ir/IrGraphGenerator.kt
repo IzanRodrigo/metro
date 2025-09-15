@@ -20,6 +20,8 @@ import dev.zacsweers.metro.compiler.letIf
 import dev.zacsweers.metro.compiler.proto.MetroMetadata
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.MetroConstants.STATEMENTS_PER_METHOD
+import dev.zacsweers.metro.compiler.reports.IrGenerationReport
+import dev.zacsweers.metro.compiler.reports.FirGenerationReport
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.sharding.ShardingPlan
 import dev.zacsweers.metro.compiler.suffixIfNot
@@ -925,6 +927,100 @@ internal class IrGraphGenerator(
           // looking at and is the most complete view
           graphClass.metroMetadata = metroMetadata
           dependencyGraphNodesByClass(node.sourceGraph.classIdOrFail)?.let { it.proto = graphProto }
+        }
+      }
+
+      // Generate IR report
+      parentTracer.traceNested("Generate IR report") {
+        val startTime = System.currentTimeMillis()
+
+        // Collect field information
+        val fields = bindingFieldContext.getAllFields().map { (key, field) ->
+          val ownerClass = ownerClassFor(key)
+          IrGenerationReport.FieldInfo(
+            name = field.name.asString(),
+            type = field.type.render(short = true),
+            visibility = field.visibility.toString(),
+            isLazy = false, // TODO: detect lazy fields
+            owner = if (ownerClass == graphClass) "Main Graph" else ownerClass.name.asString()
+          )
+        }
+
+        // Collect function information
+        val functions = mutableListOf<IrGenerationReport.FunctionInfo>()
+        graphClass.declarations.filterIsInstance<IrSimpleFunction>().forEach { func ->
+          functions.add(
+            IrGenerationReport.FunctionInfo(
+              name = func.name.asString(),
+              returnType = func.returnType.render(short = true),
+              parameters = func.parameters.map { it.type.render(short = true) },
+              bodyLines = func.body?.statements?.size ?: 0,
+              purpose = when {
+                func.name.asString().startsWith("get") -> "getter"
+                func.name.asString().startsWith("initialize") -> "initializer"
+                func.name.asString().startsWith("provide") -> "provider"
+                else -> "other"
+              }
+            )
+          )
+        }
+
+        // Collect shard information if applicable
+        val shardingInfo = if (shardInfos.isNotEmpty()) {
+          IrGenerationReport.ShardingInfo(
+            enabled = true,
+            shardCount = shardInfos.size,
+            shardsGenerated = shardInfos.values.map { shardInfo ->
+              IrGenerationReport.ShardDetails(
+                name = shardInfo.shardClass.name.asString(),
+                index = shardInfo.shard.index,
+                bindingCount = shardInfo.shard.bindings.size,
+                fieldCount = shardInfo.shardClass.declarations.filterIsInstance<IrField>().size,
+                requiredModules = shardInfo.shard.requiredModules.map { it.render(short = true) }
+              )
+            }
+          )
+        } else null
+
+        val report = IrGenerationReport(
+          graphName = node.sourceGraph.name.asString(),
+          graphFqName = node.sourceGraph.kotlinFqName,
+          bindings = bindingGraph.bindingsSnapshot().map { (key, binding) ->
+            IrGenerationReport.BindingInfo(
+              key = key.render(short = true),
+              type = when (binding) {
+                is IrBinding.ConstructorInjected -> "ConstructorInjected"
+                is IrBinding.Provided -> "Provided"
+                is IrBinding.BoundInstance -> "BoundInstance"
+                is IrBinding.Alias -> "Alias"
+                is IrBinding.Multibinding -> "Multibinding"
+                is IrBinding.ObjectClass -> "ObjectClass"
+                is IrBinding.GraphExtension -> "GraphExtension"
+                is IrBinding.GraphDependency -> "GraphDependency"
+                is IrBinding.MembersInjected -> "MembersInjected"
+                is IrBinding.Absent -> "Absent"
+                else -> "Other"
+              },
+              isScoped = binding.isScoped(),
+              dependencies = binding.dependencies.map { it.typeKey.render(short = true) },
+              location = if (shardingPlan != null) {
+                shardingPlan.bindingToShard[key]?.let { "Shard$it" }
+              } else null
+            )
+          },
+          fields = fields,
+          functions = functions,
+          shardInfo = shardingInfo,
+          generationTimeMs = System.currentTimeMillis() - startTime
+        )
+
+        // Write IR report
+        val graphName = node.sourceGraph.kotlinFqName.asString().replace(".", "-")
+        writeDiagnostic("ir-generation-report-${graphName}.md") {
+          report.toMarkdown()
+        }
+        writeDiagnostic("ir-generation-report-${graphName}.json") {
+          report.toJson()
         }
       }
     }

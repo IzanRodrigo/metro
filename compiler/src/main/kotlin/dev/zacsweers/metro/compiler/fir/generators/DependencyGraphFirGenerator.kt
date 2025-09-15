@@ -22,6 +22,8 @@ import dev.zacsweers.metro.compiler.fir.replaceAnnotationsSafe
 import dev.zacsweers.metro.compiler.fir.requireContainingClassSymbol
 import dev.zacsweers.metro.compiler.mapToArray
 import dev.zacsweers.metro.compiler.reportCompilerBug
+import dev.zacsweers.metro.compiler.reports.FirGenerationReport
+import java.nio.file.Paths
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
@@ -182,6 +184,77 @@ import org.jetbrains.kotlin.types.Variance
 internal class DependencyGraphFirGenerator(session: FirSession) :
   FirDeclarationGenerationExtension(session) {
 
+  // Track FIR generation for reporting
+  private val firReportData = mutableMapOf<String, FirReportCollector>()
+
+  private inner class FirReportCollector(
+    val graphName: String,
+    val classId: org.jetbrains.kotlin.name.ClassId,
+  ) {
+    val startTime = System.currentTimeMillis()
+    val declarations = mutableListOf<FirGenerationReport.FirDeclarationInfo>()
+    val nestedClasses = mutableListOf<FirGenerationReport.NestedClassInfo>()
+
+    fun addDeclaration(
+      name: String,
+      type: FirGenerationReport.DeclarationType,
+      visibility: String = "public",
+      modality: String = "final",
+      additionalInfo: Map<String, String> = emptyMap()
+    ) {
+      declarations.add(
+        FirGenerationReport.FirDeclarationInfo(
+          name = name,
+          type = type,
+          visibility = visibility,
+          modality = modality,
+          additionalInfo = additionalInfo
+        )
+      )
+    }
+
+    fun addNestedClass(
+      name: String,
+      type: String,
+      purpose: String,
+      declarationCount: Int = 0
+    ) {
+      nestedClasses.add(
+        FirGenerationReport.NestedClassInfo(
+          name = name,
+          type = type,
+          purpose = purpose,
+          declarationCount = declarationCount
+        )
+      )
+    }
+
+    fun buildReport(): FirGenerationReport {
+      return FirGenerationReport(
+        graphName = graphName,
+        classId = classId,
+        declarations = declarations.toList(),
+        nestedClasses = nestedClasses.toList(),
+        generationTimeMs = System.currentTimeMillis() - startTime
+      )
+    }
+  }
+
+  private fun getOrCreateReportCollector(owner: FirClassSymbol<*>): FirReportCollector? {
+    // Only track for dependency graphs and graph factories
+    if (!owner.isDependencyGraph(session) && !owner.isGraphFactory(session)) {
+      return null
+    }
+
+    val key = owner.classId.asString()
+    return firReportData.getOrPut(key) {
+      FirReportCollector(
+        graphName = owner.name.asString(),
+        classId = owner.classId
+      )
+    }
+  }
+
   @OptIn(DirectDeclarationsAccess::class)
   private fun createSwitchingProviderSkeleton(
     session: FirSession,
@@ -284,6 +357,8 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
     context: NestedClassGenerationContext,
   ): FirClassLikeSymbol<*>? {
     log("Generating nested class $name into ${owner.classId}")
+    val collector = getOrCreateReportCollector(owner)
+
     // Impl class or companion
     return when (name) {
       SpecialNames.DEFAULT_NAME_FOR_COMPANION_OBJECT -> {
@@ -297,20 +372,34 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           }
 
         log("Generating companion object for ${owner.classId}")
-        createCompanionObject(owner, key).symbol
+        val result = createCompanionObject(owner, key).symbol
+        collector?.addNestedClass(
+          name = "Companion",
+          type = "object",
+          purpose = "Companion object for factory methods",
+          declarationCount = 0
+        )
+        result
       }
       Symbols.Names.MetroGraph -> {
         log("Generating graph class")
-        createNestedClass(owner, name, Keys.MetroGraphDeclaration) {
+        val result = createNestedClass(owner, name, Keys.MetroGraphDeclaration) {
             superType(owner::constructType)
             copyTypeParametersFrom(owner, session)
           }
           .apply { markAsDeprecatedHidden(session) }
           .symbol
+        collector?.addNestedClass(
+          name = name.asString(),
+          type = "class",
+          purpose = "Dependency graph implementation",
+          declarationCount = 0
+        )
+        result
       }
       Symbols.Names.MetroImpl -> {
         log("Generating factory impl")
-        createNestedClass(
+        val result = createNestedClass(
             owner,
             name,
             Keys.MetroGraphFactoryImplDeclaration,
@@ -321,12 +410,19 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           }
           .apply { markAsDeprecatedHidden(session) }
           .symbol
+        collector?.addNestedClass(
+          name = name.asString(),
+          type = "object",
+          purpose = "Factory implementation singleton",
+          declarationCount = 0
+        )
+        result
       }
       Symbols.Names.SwitchingProvider -> {
         // Only generate if enabled
         if (session.metroFirBuiltIns.options.fastInit) {
           log("Generating SwitchingProvider class in ${owner.classId}")
-          createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
+          val result = createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
             visibility = Visibilities.Private
             modality = Modality.FINAL
 
@@ -348,6 +444,13 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           }
           .apply { markAsDeprecatedHidden(session) }
           .symbol
+          collector?.addNestedClass(
+            name = name.asString(),
+            type = "class",
+            purpose = "Fast initialization provider",
+            declarationCount = 0
+          )
+          result
         } else {
           log("Skipping SwitchingProvider generation - disabled by option")
           null
@@ -358,7 +461,14 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
         if (session.metroFirBuiltIns.options.fastInit) {
           log("Generating SwitchingProvider class in ${owner.classId}")
           // Create SwitchingProvider<T> nested class with full FIR structure
-          createSwitchingProviderSkeleton(session, owner, name)
+          val result = createSwitchingProviderSkeleton(session, owner, name)
+          collector?.addNestedClass(
+            name = name.asString(),
+            type = "class",
+            purpose = "Fast initialization provider",
+            declarationCount = 0
+          )
+          result
         } else {
           log("Skipping SwitchingProvider generation - disabled by option")
           null
@@ -411,11 +521,21 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
   }
 
   override fun generateConstructors(context: MemberGenerationContext): List<FirConstructorSymbol> {
+    val collector = getOrCreateReportCollector(context.owner)
+
     val constructor =
       if (context.owner.classKind == ClassKind.OBJECT) {
         log("Generating companion object constructor for ${context.owner.classId}")
         try {
-          createDefaultPrivateConstructor(context.owner, Keys.Default)
+          val result = createDefaultPrivateConstructor(context.owner, Keys.Default)
+          collector?.addDeclaration(
+            name = "constructor",
+            type = FirGenerationReport.DeclarationType.CONSTRUCTOR,
+            visibility = "private",
+            modality = "final",
+            additionalInfo = mapOf("parameters" to "")
+          )
+          result
         } catch (e: IllegalArgumentException) {
           // TODO why does this happen in the IDE?
           throw RuntimeException(

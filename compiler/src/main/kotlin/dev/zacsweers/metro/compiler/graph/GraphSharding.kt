@@ -40,7 +40,7 @@ internal object GraphSharding {
    * @param adjacency a mapping from vertices to the set of vertices they depend upon
    * @param threshold the maximum number of vertices allowed in a single shard
    */
-  internal fun <V : Any> computeShards(
+  internal fun <V : Comparable<V>> computeShards(
     adjacency: SortedMap<V, out SortedSet<V>>, threshold: Int = DEFAULT_BINDINGS_PER_SHARD
   ): List<List<V>> {
     if (adjacency.isEmpty()) return emptyList()
@@ -122,7 +122,7 @@ internal object GraphSharding {
    * @param dependenciesOf a function computing a binding's dependencies
    * @param threshold the maximum number of bindings allowed per shard
    */
-  internal fun <K : Any, B : Any> computeShardsFromBindings(
+  internal fun <K : Comparable<K>, B : Any> computeShardsFromBindings(
     bindings: Map<K, B>,
     dependenciesOf: (B) -> Iterable<K>,
     threshold: Int = DEFAULT_BINDINGS_PER_SHARD
@@ -138,7 +138,6 @@ internal object GraphSharding {
         }
       }
     }
-    @Suppress("UNCHECKED_CAST")
-    return computeShards(adjacency as SortedMap<K, SortedSet<K>>, threshold)
+    return computeShards(adjacency, threshold)
   }
 }

@@ -6,36 +6,34 @@ import dev.zacsweers.metro.compiler.MetroConstants
 import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.asName
-import dev.zacsweers.metro.compiler.ir.IrTypeKey
 import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
 import dev.zacsweers.metro.compiler.sharding.ShardingPlan
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
-import org.jetbrains.kotlin.ir.builders.declarations.addField
-import org.jetbrains.kotlin.ir.builders.declarations.addFunction
-import org.jetbrains.kotlin.ir.builders.declarations.buildReceiverParameter
-import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
-import org.jetbrains.kotlin.ir.builders.declarations.buildClass
-import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
-import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
+import org.jetbrains.kotlin.ir.builders.declarations.*
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
-import org.jetbrains.kotlin.ir.symbols.IrValueParameterSymbol
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.IrGetValue
 import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
-import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
+import org.jetbrains.kotlin.ir.symbols.IrValueParameterSymbol
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
+import org.jetbrains.kotlin.ir.util.deepCopyWithSymbols
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.primaryConstructor
+import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
+import org.jetbrains.kotlin.name.Name
 
 /**
  * Generates IR for shard classes following Dagger's pattern.
@@ -50,7 +48,7 @@ internal class ShardGenerator(
   private val bindingGraph: IrBindingGraph,
   private val fieldNameAllocator: NameAllocator,
   private val shardingPlan: ShardingPlan,
-  private val fieldRegistry: ShardFieldRegistry
+  private val fieldRegistry: ShardFieldRegistry,
 ) : IrMetroContext by context {
 
   /**
@@ -173,7 +171,7 @@ internal class ShardGenerator(
   fun generateShardInitialization(
     shardClass: IrClass,
     thisReceiver: IrValueParameter,
-    moduleParameters: List<IrValueParameter>
+    moduleParameters: List<IrValueParameter>,
   ): IrExpression {
     return with(context.createIrBuilder(parentClass.symbol)) {
       val constructor = shardClass.primaryConstructor
@@ -225,7 +223,7 @@ internal class ShardGenerator(
    */
   fun generateShardFieldInitialization(
     shardInfo: ShardInfo,
-    initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>
+    initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>,
   ): IrFunction {
     val shardClass = shardInfo.shardClass
 
@@ -255,12 +253,41 @@ internal class ShardGenerator(
           val dr = requireNotNull(partMethod.dispatchReceiverParameter) {
             "Part method ${partMethod.name} missing dispatch receiver parameter"
           }
+
+          // Get the graph field to access the main graph instance
+          val graphField = shardClass.declarations
+            .filterIsInstance<IrField>()
+            .firstOrNull { it.name == "graph".asName() }
+            ?: error("Shard class ${shardClass.name} missing 'graph' field")
+
           for ((field, typeKey, fieldInitializer) in chunk) {
             statements += with(context.createIrBuilder(partMethod.symbol)) {
+              // Get the main graph instance from the shard's graph field
+              val graphInstance = irGetField(irGet(dr), graphField)
+
+              // Create a synthetic value parameter to represent the graph
+              val syntheticGraphParam = buildValueParameter(partMethod) {
+                name = Name.identifier("syntheticGraph")
+                type = parentClass.defaultType
+              }
+
               irSetField(
                 receiver = irGet(dr),
                 field = field,
-                value = fieldInitializer(dr, typeKey)
+                // Call the field initializer with a transformed expression that replaces
+                // references to the synthetic parameter with the actual graph instance
+                value = fieldInitializer(syntheticGraphParam, typeKey).transform(
+                  object : IrElementTransformerVoid() {
+                    override fun visitGetValue(expression: IrGetValue): IrExpression {
+                      return if (expression.symbol == syntheticGraphParam.symbol) {
+                        graphInstance.deepCopyWithSymbols()
+                      } else {
+                        super.visitGetValue(expression)
+                      }
+                    }
+                  },
+                  null
+                )
               )
             }
           }
@@ -305,7 +332,7 @@ internal class ShardGenerator(
         returnType = context.irBuiltIns.unitType
       }.apply {
         // Make it an instance method by adding dispatch receiver
-        buildReceiverParameter { type = shardClass.defaultType }
+        parameters = listOf(buildReceiverParameter { type = shardClass.defaultType })
       }
 
       // Create method body with field assignments
@@ -316,14 +343,43 @@ internal class ShardGenerator(
         val dr = requireNotNull(initMethod.dispatchReceiverParameter) {
           "Initialize method missing dispatch receiver parameter"
         }
+
+        // Get the graph field to access the main graph instance
+        val graphField = shardClass.declarations
+          .filterIsInstance<IrField>()
+          .firstOrNull { it.name == "graph".asName() }
+          ?: error("Shard class ${shardClass.name} missing 'graph' field")
+
         // Iterate over each field and its initializer
         for ((field, typeKey, fieldInitializer) in initializers) {
           // Use the stored type key directly, no registry lookup needed
           statements += with(context.createIrBuilder(initMethod.symbol)) {
+            // Get the main graph instance from the shard's graph field
+            val graphInstance = irGetField(irGet(dr), graphField)
+
+            // Create a synthetic value parameter to represent the graph
+            val syntheticGraphParam = buildValueParameter(initMethod) {
+              name = Name.identifier("syntheticGraph")
+              type = parentClass.defaultType
+            }
+
             irSetField(
               receiver = irGet(dr),
               field = field,
-              value = fieldInitializer(dr, typeKey)
+              // Call the field initializer with a transformed expression that replaces
+              // references to the synthetic parameter with the actual graph instance
+              value = fieldInitializer(syntheticGraphParam, typeKey).transform(
+                object : IrElementTransformerVoid() {
+                  override fun visitGetValue(expression: IrGetValue): IrExpression {
+                    return if (expression.symbol == syntheticGraphParam.symbol) {
+                      graphInstance.deepCopyWithSymbols()
+                    } else {
+                      super.visitGetValue(expression)
+                    }
+                  }
+                },
+                null
+              )
             )
           }
         }
@@ -342,7 +398,7 @@ internal class ShardGenerator(
    * @return The generated shard class with initialization
    */
   fun generateShardClassWithInitialization(
-    initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>
+    initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>,
   ): IrClass {
     // First, create a basic shard class structure
     val shardClassName = shard.shardClassName()
@@ -465,7 +521,7 @@ internal class ShardGenerator(
       shardingPlan: ShardingPlan,
       bindingGraph: IrBindingGraph,
       fieldNameAllocator: NameAllocator,
-      fieldRegistry: ShardFieldRegistry
+      fieldRegistry: ShardFieldRegistry,
     ): Map<Int, ShardInfo> {
       val result = mutableMapOf<Int, ShardInfo>()
 
@@ -503,7 +559,7 @@ internal class ShardGenerator(
     val shard: ShardingPlan.Shard,
     val shardClass: IrClass,
     val shardField: IrField?,
-    val generator: ShardGenerator
+    val generator: ShardGenerator,
   )
 
   /**
@@ -511,6 +567,6 @@ internal class ShardGenerator(
    * This allows robust access to shard constructor parameters without relying on names.
    */
   data class ShardMetadata(
-    val graphParameterSymbol: IrValueParameterSymbol
+    val graphParameterSymbol: IrValueParameterSymbol,
   )
 }

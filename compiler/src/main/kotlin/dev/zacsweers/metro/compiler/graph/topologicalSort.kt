@@ -490,7 +490,7 @@ internal data class TarjanResult<V : Comparable<V>>(
  *   href="https://en.wikipedia.org/wiki/Tarjan%27s_strongly_connected_components_algorithm">Tarjan's
  *   algorithm</a>
  */
-internal fun <V : Comparable<V>> SortedMap<V, SortedSet<V>>.computeStronglyConnectedComponents(
+internal fun <V : Comparable<V>> SortedMap<V, out SortedSet<V>>.computeStronglyConnectedComponents(
   roots: SortedSet<V>? = null
 ): TarjanResult<V> {
   var nextIndex = 0

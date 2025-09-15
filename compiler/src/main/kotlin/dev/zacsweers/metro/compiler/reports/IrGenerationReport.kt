@@ -1,0 +1,326 @@
+package dev.zacsweers.metro.compiler.reports
+
+import dev.zacsweers.metro.compiler.capitalizeUS
+import dev.zacsweers.metro.compiler.ir.IrBinding
+import dev.zacsweers.metro.compiler.ir.IrTypeKey
+import org.jetbrains.kotlin.name.FqName
+
+/**
+ * Report capturing IR (Intermediate Representation) generation details.
+ * Documents the actual implementation code generated during the IR phase.
+ */
+internal data class IrGenerationReport(
+  val graphName: String,
+  val graphFqName: FqName,
+  val bindings: List<BindingInfo>,
+  val fields: List<FieldInfo>,
+  val functions: List<FunctionInfo>,
+  val shardInfo: ShardingInfo?,
+  val generationTimeMs: Long,
+) {
+
+  /**
+   * Information about a generated binding
+   */
+  data class BindingInfo(
+    val key: String,
+    val type: String, // ConstructorInjected, Provided, etc.
+    val isScoped: Boolean,
+    val dependencies: List<String>,
+    val location: String?, // Which shard or main graph
+  )
+
+  /**
+   * Information about generated fields
+   */
+  data class FieldInfo(
+    val name: String,
+    val type: String,
+    val visibility: String,
+    val isLazy: Boolean,
+    val owner: String, // Main graph or shard name
+  )
+
+  /**
+   * Information about generated functions
+   */
+  data class FunctionInfo(
+    val name: String,
+    val returnType: String,
+    val parameters: List<String>,
+    val bodyLines: Int,
+    val purpose: String, // e.g., "provider", "initializer", "getter"
+  )
+
+  /**
+   * Sharding-specific information
+   */
+  data class ShardingInfo(
+    val enabled: Boolean,
+    val shardCount: Int,
+    val shardsGenerated: List<ShardDetails>,
+  )
+
+  data class ShardDetails(
+    val name: String,
+    val index: Int,
+    val bindingCount: Int,
+    val fieldCount: Int,
+    val requiredModules: List<String>,
+  )
+
+  /**
+   * Generates a Markdown report of IR generation.
+   */
+  fun toMarkdown(): String = buildString {
+    appendLine("# IR Generation Report")
+    appendLine()
+    appendLine("## Graph Information")
+    appendLine("- **Graph Name**: `$graphName`")
+    appendLine("- **FQ Name**: `$graphFqName`")
+    appendLine("- **Generation Time**: ${generationTimeMs}ms")
+    appendLine("- **Total Bindings**: ${bindings.size}")
+    appendLine("- **Total Fields**: ${fields.size}")
+    appendLine("- **Total Functions**: ${functions.size}")
+    appendLine()
+
+    if (shardInfo != null && shardInfo.enabled) {
+      appendLine("## Sharding Information")
+      appendLine("- **Sharding Enabled**: Yes")
+      appendLine("- **Total Shards**: ${shardInfo.shardCount}")
+      appendLine()
+      appendLine("### Generated Shards")
+      appendLine("| Shard | Bindings | Fields | Required Modules |")
+      appendLine("|-------|----------|--------|------------------|")
+      shardInfo.shardsGenerated.forEach { shard ->
+        val modules = shard.requiredModules.joinToString(", ")
+        appendLine("| ${shard.name} | ${shard.bindingCount} | ${shard.fieldCount} | $modules |")
+      }
+      appendLine()
+    }
+
+    appendLine("## Bindings Summary")
+    val bindingsByType = bindings.groupBy { it.type }
+    appendLine("| Type | Count | Scoped |")
+    appendLine("|------|-------|--------|")
+    bindingsByType.forEach { (type, list) ->
+      val scopedCount = list.count { it.isScoped }
+      appendLine("| $type | ${list.size} | $scopedCount |")
+    }
+    appendLine()
+
+    appendLine("## Generated Fields")
+    val fieldsByOwner = fields.groupBy { it.owner }
+    fieldsByOwner.forEach { (owner, fieldList) ->
+      appendLine()
+      appendLine("### $owner (${fieldList.size} fields)")
+      appendLine("| Field | Type | Visibility | Lazy |")
+      appendLine("|-------|------|------------|------|")
+      fieldList.take(20).forEach { field ->
+        appendLine("| ${field.name} | ${field.type} | ${field.visibility} | ${field.isLazy} |")
+      }
+      if (fieldList.size > 20) {
+        appendLine("| ... | and ${fieldList.size - 20} more | | |")
+      }
+    }
+
+    appendLine()
+    appendLine("## Generated Functions")
+    val functionsByPurpose = functions.groupBy { it.purpose }
+    appendLine("| Purpose | Count | Avg Lines |")
+    appendLine("|---------|-------|-----------|")
+    functionsByPurpose.forEach { (purpose, list) ->
+      val avgLines = list.map { it.bodyLines }.average().toInt()
+      appendLine("| $purpose | ${list.size} | $avgLines |")
+    }
+
+    if (functions.isNotEmpty()) {
+      appendLine()
+      appendLine("### Sample Functions")
+      functions.take(10).forEach { func ->
+        appendLine("- `${func.name}(${func.parameters.size} params): ${func.returnType}` - ${func.purpose} (${func.bodyLines} lines)")
+      }
+    }
+
+    appendLine()
+    appendLine("## IR Code Sample")
+    appendLine()
+    appendLine("```kotlin")
+    appendLine(generateIrCodeSample())
+    appendLine("```")
+
+    appendLine()
+    appendLine("---")
+    appendLine("*Generated by Metro Compiler Plugin - IR Phase*")
+  }
+
+  /**
+   * Generates a sample of the IR code structure
+   */
+  private fun generateIrCodeSample(): String = buildString {
+    appendLine("// IR Generated Implementation for $graphName")
+    appendLine("class ${graphFqName.shortName()} {")
+
+    // Show sample fields
+    appendLine("  // Provider fields")
+    fields.filter { !it.isLazy }.take(3).forEach { field ->
+      appendLine("  ${field.visibility} val ${field.name}: ${field.type}")
+    }
+
+    appendLine()
+    appendLine("  // Lazy fields")
+    fields.filter { it.isLazy }.take(3).forEach { field ->
+      appendLine("  ${field.visibility} val ${field.name}: ${field.type} by lazy { ... }")
+    }
+
+    if (shardInfo != null && shardInfo.enabled) {
+      appendLine()
+      appendLine("  // Shard instances")
+      shardInfo.shardsGenerated.forEach { shard ->
+        appendLine("  private val ${shard.name.lowercase()}: ${shard.name}")
+      }
+    }
+
+    appendLine()
+    appendLine("  init {")
+    if (shardInfo != null && shardInfo.enabled) {
+      appendLine("    // Initialize shards before main graph bindings")
+      shardInfo.shardsGenerated.forEach { shard ->
+        appendLine("    ${shard.name.lowercase()} = ${shard.name}(this, ...)")
+      }
+    }
+    appendLine("    // Initialize provider fields")
+    appendLine("    initializeFields()")
+    appendLine("  }")
+
+    appendLine()
+    appendLine("  private fun initializeFields() {")
+    appendLine("    // Field initialization logic")
+    fields.take(3).forEach { field ->
+      appendLine("    ${field.name} = create${field.name.capitalizeUS()}()")
+    }
+    appendLine("    // ... more field initializations")
+    appendLine("  }")
+
+    appendLine("}")
+
+    if (shardInfo != null && shardInfo.enabled) {
+      appendLine()
+      shardInfo.shardsGenerated.take(1).forEach { shard ->
+        appendLine("// Example shard class")
+        appendLine("internal class ${shard.name}(")
+        appendLine("  private val graph: ${graphFqName.shortName()},")
+        shard.requiredModules.forEach { module ->
+          appendLine("  private val $module,")
+        }
+        appendLine(") {")
+        appendLine("  // Shard-specific provider fields")
+        appendLine("  internal val someProvider: Provider<SomeType>")
+        appendLine("  ")
+        appendLine("  init {")
+        appendLine("    // Initialize shard bindings")
+        appendLine("    initializeFields()")
+        appendLine("  }")
+        appendLine("}")
+      }
+    }
+  }
+
+  /**
+   * Generates a JSON report.
+   */
+  fun toJson(): String = buildString {
+    appendLine("{")
+    appendLine("  \"graphName\": \"$graphName\",")
+    appendLine("  \"graphFqName\": \"$graphFqName\",")
+    appendLine("  \"generationTimeMs\": $generationTimeMs,")
+    appendLine("  \"bindingCount\": ${bindings.size},")
+    appendLine("  \"fieldCount\": ${fields.size},")
+    appendLine("  \"functionCount\": ${functions.size},")
+
+    if (shardInfo != null) {
+      appendLine("  \"sharding\": {")
+      appendLine("    \"enabled\": ${shardInfo.enabled},")
+      appendLine("    \"shardCount\": ${shardInfo.shardCount},")
+      appendLine("    \"shards\": [")
+      shardInfo.shardsGenerated.forEachIndexed { index, shard ->
+        appendLine("      {")
+        appendLine("        \"name\": \"${shard.name}\",")
+        appendLine("        \"index\": ${shard.index},")
+        appendLine("        \"bindingCount\": ${shard.bindingCount},")
+        appendLine("        \"fieldCount\": ${shard.fieldCount}")
+        append("      }")
+        if (index < shardInfo.shardsGenerated.size - 1) append(",")
+        appendLine()
+      }
+      appendLine("    ]")
+      appendLine("  },")
+    }
+
+    appendLine("  \"bindingTypes\": {")
+    val bindingsByType = bindings.groupBy { it.type }
+    bindingsByType.entries.forEachIndexed { index, (type, list) ->
+      append("    \"$type\": ${list.size}")
+      if (index < bindingsByType.size - 1) append(",")
+      appendLine()
+    }
+    appendLine("  },")
+
+    appendLine("  \"functionPurposes\": {")
+    val functionsByPurpose = functions.groupBy { it.purpose }
+    functionsByPurpose.entries.forEachIndexed { index, (purpose, list) ->
+      append("    \"$purpose\": ${list.size}")
+      if (index < functionsByPurpose.size - 1) append(",")
+      appendLine()
+    }
+    appendLine("  }")
+    appendLine("}")
+  }
+
+  companion object {
+    /**
+     * Creates a report from IR generation context
+     */
+    fun fromBindingGraph(
+      graphName: String,
+      graphFqName: FqName,
+      bindingGraph: Map<IrTypeKey, IrBinding>,
+      fields: List<FieldInfo>,
+      functions: List<FunctionInfo>,
+      shardInfo: ShardingInfo?,
+      generationTimeMs: Long,
+    ): IrGenerationReport {
+      val bindings = bindingGraph.map { (key, binding) ->
+        BindingInfo(
+          key = key.render(short = true),
+          type = when (binding) {
+            is IrBinding.ConstructorInjected -> "ConstructorInjected"
+            is IrBinding.Provided -> "Provided"
+            is IrBinding.BoundInstance -> "BoundInstance"
+            is IrBinding.Alias -> "Alias"
+            is IrBinding.Multibinding -> "Multibinding"
+            is IrBinding.ObjectClass -> "ObjectClass"
+            is IrBinding.GraphExtension -> "GraphExtension"
+            is IrBinding.GraphDependency -> "GraphDependency"
+            is IrBinding.MembersInjected -> "MembersInjected"
+            is IrBinding.Absent -> "Absent"
+            else -> "Other"
+          },
+          isScoped = binding.isScoped(),
+          dependencies = binding.dependencies.map { it.typeKey.render(short = true) },
+          location = null, // Can be populated with shard info if available
+        )
+      }
+
+      return IrGenerationReport(
+        graphName = graphName,
+        graphFqName = graphFqName,
+        bindings = bindings,
+        fields = fields,
+        functions = functions,
+        shardInfo = shardInfo,
+        generationTimeMs = generationTimeMs,
+      )
+    }
+  }
+}

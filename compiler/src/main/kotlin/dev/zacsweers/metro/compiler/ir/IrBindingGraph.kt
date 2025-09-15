@@ -230,8 +230,6 @@ internal class IrBindingGraph(
 
       val (sortedKeys, deferredTypes, reachableKeys) = topoResult
 
-      val (sortedKeys, deferredTypes, reachableKeys) = topoResult
-
       writeDiagnostic("keys-validated-${parentTracer.tag}.txt") {
         sortedKeys.joinToString(separator = "\n")
       }

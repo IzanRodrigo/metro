@@ -36,4 +36,8 @@ internal class BindingFieldContext {
   }
 
   operator fun contains(key: IrTypeKey): Boolean = instanceFields.containsKey(key) || providerFields.containsKey(key)
+
+  fun getAllFields(): Map<IrTypeKey, IrField> {
+    return instanceFields + providerFields
+  }
 }
