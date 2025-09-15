@@ -169,19 +169,6 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
-  SHARDING_ENABLED(
-    RawMetroOption.boolean(
-      name = "sharding.enabled",
-      defaultValue = true,
-      valueDescription = "<true | false>",
-      description = "Enable/disable graph sharding for JVM targets to avoid method size limits. " +
-        "Sharding automatically splits large dependency graphs into smaller nested classes " +
-        "to work around JVM limitations (64KB method size, field count limits). " +
-        "This flag is only applicable to JVM/Android targets and is ignored on JS/Native platforms.",
-      required = false,
-      allowMultipleOccurrences = false,
-    )
-  ),
   KEYS_PER_SHARD(
     RawMetroOption(
       name = "sharding.keysPerShard",
@@ -569,7 +556,6 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
-  val shardingEnabled: Boolean = MetroOption.SHARDING_ENABLED.raw.defaultValue.expectAs(),
   val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
   val switchingProviderEnabled: Boolean = MetroOption.SWITCHING_PROVIDER_ENABLED.raw.defaultValue.expectAs(),
   val shardingBreakCycles: Boolean = MetroOption.SHARDING_BREAK_CYCLES.raw.defaultValue.expectAs(),
@@ -709,9 +695,6 @@ public data class MetroOptions(
 
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
-
-          MetroOption.SHARDING_ENABLED ->
-            options = options.copy(shardingEnabled = configuration.getAsBoolean(entry))
 
           MetroOption.KEYS_PER_SHARD ->
             options = options.copy(keysPerShard = configuration.getAsInt(entry))

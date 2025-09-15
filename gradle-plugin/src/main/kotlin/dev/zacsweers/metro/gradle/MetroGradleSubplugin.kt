@@ -167,15 +167,9 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
           )
 
           // Add JVM sharding options
-          add(lazyOption("sharding.enabled", extension.jvmSharding.enabled))
           add(lazyOption("sharding.keysPerShard", extension.jvmSharding.keysPerShard))
           add(lazyOption("sharding.useSwitchingProvider", extension.jvmSharding.useSwitchingProvider))
           add(lazyOption("sharding.breakCycles", extension.jvmSharding.breakCycles))
-          // Map the strategy enum to a string
-          add(SubpluginOption(
-            "sharding.strategy",
-            extension.jvmSharding.strategy.getOrElse(ShardingStrategy.CONSERVATIVE).name
-          ))
         }
 
         with(extension.interop) {

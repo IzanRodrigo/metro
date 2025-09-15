@@ -314,14 +314,8 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   @MetroExtensionMarker
   public abstract class JvmShardingHandler @Inject constructor(objects: ObjectFactory) {
     /**
-     * Enable/disable graph sharding for JVM targets to avoid method size limits.
-     * Enabled by default on JVM/Android targets.
-     */
-    public val enabled: Property<Boolean> =
-      objects.property(Boolean::class.javaObjectType).convention(true)
-
-    /**
      * Maximum number of bindings per shard before a new shard is created.
+     * Set to 0 to disable sharding completely.
      * Default is 150. Lower values create more shards but with smaller method sizes,
      * while higher values create fewer shards but risk hitting JVM limits.
      * Recommended range: 100-5000 depending on binding complexity.
@@ -347,24 +341,5 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
      */
     public val breakCycles: Property<Boolean> =
       objects.property(Boolean::class.javaObjectType).convention(true)
-
-    /**
-     * Sharding strategy to use.
-     * - CONSERVATIVE: Only shard when necessary (default)
-     * - AGGRESSIVE: Shard more aggressively for better performance
-     */
-    public val strategy: Property<ShardingStrategy> =
-      objects.property(ShardingStrategy::class.javaObjectType)
-        .convention(ShardingStrategy.CONSERVATIVE)
   }
-}
-
-/**
- * Strategy for graph sharding.
- */
-public enum class ShardingStrategy {
-  /** Only shard when necessary to avoid JVM limits */
-  CONSERVATIVE,
-  /** Shard more aggressively for potentially better performance */
-  AGGRESSIVE
 }

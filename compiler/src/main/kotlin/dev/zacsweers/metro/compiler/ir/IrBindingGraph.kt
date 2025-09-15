@@ -253,8 +253,8 @@ internal class IrBindingGraph(
         }
       }
       
-      // Analyze for sharding if enabled and on JVM platform
-      val shardingPlan = if (metroContext.options.shardingEnabled && metroContext.platform.isJvm()) {
+      // Analyze for sharding if keysPerShard > 0 and on JVM platform
+      val shardingPlan = if (metroContext.options.keysPerShard > 0 && metroContext.platform.isJvm()) {
         parentTracer.traceNested("analyze sharding") { tracer ->
           val startTime = System.currentTimeMillis()
           
@@ -317,8 +317,8 @@ internal class IrBindingGraph(
           }
         }
       } else {
-        if (metroContext.options.debug && !metroContext.options.shardingEnabled) {
-          metroContext.log("[MetroSharding] Sharding disabled in options")
+        if (metroContext.options.debug && metroContext.options.keysPerShard == 0) {
+          metroContext.log("[MetroSharding] Sharding disabled (keysPerShard=0)")
         }
         null
       }
