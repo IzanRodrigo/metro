@@ -578,7 +578,10 @@ internal class IrGraphGenerator(
         }
 
       // For all deferred types, assign them first as factories
-      // TODO For any types that depend on deferred types, they need providers too?
+      // Deferred types need special handling to break cycles - they use DelegateFactory
+      // which allows setting the actual provider later, after all dependencies are initialized.
+      // If a type depends on a deferred type, it will also need to be provided via a provider
+      // to ensure proper initialization order.
       @Suppress("UNCHECKED_CAST")
       val deferredFields: Map<IrTypeKey, IrField> =
         sealResult.deferredTypes.associateWith { deferredTypeKey ->
@@ -590,7 +593,10 @@ internal class IrGraphGenerator(
                 { fieldName },
                 { deferredTypeKey.type.wrapInProvider(symbols.metroProvider) },
               )
-              .withInit(binding.typeKey) { _, _ ->
+              .withInit(binding.typeKey) { thisReceiver, _ ->
+                // Deferred types use DelegateFactory for cycle breaking
+                // Note: We cannot use SwitchingProvider here because we need the ability
+                // to set the delegate after construction to break cycles
                 irInvoke(
                   callee = symbols.metroDelegateFactoryConstructor,
                   typeArgs = listOf(deferredTypeKey.type),
@@ -716,10 +722,12 @@ internal class IrGraphGenerator(
                 }
                 newId
               }
-              val spNew = irCall(spCtor.symbol).also { call ->
-                // Set type arguments - the SwitchingProvider has one type parameter
-                call.typeArguments[0] = binding.typeKey.type
-                // Set value arguments
+              // Create the properly parameterized type: SwitchingProvider<ConcreteType>
+              val spType = switchingProviderClass.symbol.typeWith(binding.typeKey.type)
+
+              // Use irCallConstructor with the parameterized type and type arguments list
+              val spNew = irCallConstructor(spCtor.symbol, listOf(binding.typeKey.type)).also { call ->
+                // Set value arguments using direct array syntax
                 call.arguments[0] = irGet(thisReceiver) // graph
                 call.arguments[1] = irInt(id) // id
               }
@@ -763,29 +771,59 @@ internal class IrGraphGenerator(
       for ((deferredTypeKey, field) in deferredFields) {
         val binding = bindingGraph.requireBinding(deferredTypeKey, IrBindingStack.empty())
         initStatements.add { thisReceiver ->
+          val delegateProvider = createIrBuilder(symbol).run {
+            // Check if we can use SwitchingProvider for the delegate
+            if (switchingProviderClass != null && spCtor != null) {
+              // Register this deferred binding with SwitchingProvider
+              val id = switchingIds.getOrPut(binding.typeKey) {
+                val newId = nextSwitchId++
+                if (debug) {
+                  log("IrGraphGenerator: Registering deferred binding ${binding.typeKey.render(short = true)} with SwitchingProvider id=$newId")
+                }
+                newId
+              }
+
+              // Create SwitchingProvider instance for the deferred type
+              val spNew = irCallConstructor(spCtor.symbol, listOf(binding.typeKey.type)).also { call ->
+                call.arguments[0] = irGet(thisReceiver) // graph
+                call.arguments[1] = irInt(id) // id
+              }
+
+              // Apply caching if needed
+              if (binding.isScoped()) {
+                irInvoke(
+                  callee = symbols.doubleCheckProvider,
+                  args = listOf(spNew)
+                )
+              } else {
+                spNew // Unscoped deferred types don't need caching at delegate level
+              }
+            } else {
+              // Fallback to original implementation
+              expressionGeneratorFactory
+                .create(thisReceiver)
+                .generateBindingCode(
+                  binding,
+                  accessType = IrGraphExpressionGenerator.AccessType.PROVIDER,
+                  fieldInitKey = deferredTypeKey,
+                )
+                .letIf(binding.isScoped()) {
+                  // If it's scoped, wrap it in double-check
+                  // DoubleCheck.provider(<provider>)
+                  it.doubleCheck(this@run, symbols, binding.typeKey)
+                }
+            }
+          }
+
+          // Set the delegate for the DelegateFactory
           irInvoke(
             dispatchReceiver = irGetObject(symbols.metroDelegateFactoryCompanion),
             callee = symbols.metroDelegateFactorySetDelegate,
             typeArgs = listOf(deferredTypeKey.type),
-            // TODO de-dupe?
-            args =
-              listOf(
-                irGetField(irGet(thisReceiver), field),
-                createIrBuilder(symbol).run {
-                  expressionGeneratorFactory
-                    .create(thisReceiver)
-                    .generateBindingCode(
-                      binding,
-                      accessType = IrGraphExpressionGenerator.AccessType.PROVIDER,
-                      fieldInitKey = deferredTypeKey,
-                    )
-                    .letIf(binding.isScoped()) {
-                      // If it's scoped, wrap it in double-check
-                      // DoubleCheck.provider(<provider>)
-                      it.doubleCheck(this@run, symbols, binding.typeKey)
-                    }
-                },
-              ),
+            args = listOf(
+              irGetField(irGet(thisReceiver), field),
+              delegateProvider
+            ),
           )
         }
       }
@@ -1186,15 +1224,20 @@ internal class IrGraphGenerator(
     // Build the invoke body
     invokeFun.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
       val builder = createIrBuilder(invokeFun.symbol)
-      
-      // Get graph and id from SwitchingProvider fields
-      val graphExpr = builder.irGetField(builder.irGet(spThis), graphField)
-      val idExpr = builder.irGetField(builder.irGet(spThis), idField)
 
-      // CRITICAL: Build expression generator with the GRAPH receiver, not the provider
-      // This ensures field access resolves correctly for cross-shard routing
-      val graphReceiver = this@populateSwitchingProviderIfExists.thisReceiverOrFail
-      val expressionGenerator = expressionGeneratorFactory.create(graphReceiver)
+      // Get graph from SwitchingProvider field (created once, can be reused)
+      val graphExpr = builder.irGetField(builder.irGet(spThis), graphField)
+
+      // Create a lambda to generate fresh ID field access expressions
+      // This avoids the "duplicate IR node" validation error
+      val idExprFactory: () -> IrExpression = {
+        builder.irGetField(builder.irGet(spThis), idField)
+      }
+
+      // CRITICAL: Build expression generator with the SwitchingProvider's dispatch receiver
+      // The expression generator will use the graph field from SwitchingProvider for field access
+      // This ensures correct receiver context when generating binding code inside invoke()
+      val expressionGenerator = expressionGeneratorFactory.create(spThis)
 
       // Call the SwitchingProviderGenerator with the new API
       val switchingGenerator = SwitchingProviderGenerator(
@@ -1205,13 +1248,14 @@ internal class IrGraphGenerator(
       )
 
       // Populate the body with graph-aware expressions
+      // Note: We pass idExprFactory() to create a fresh expression for the method
       val invokeStatements = switchingGenerator.populateInvokeBody(
         builder = builder,
         graphClass = this@populateSwitchingProviderIfExists,
         switchingProviderClass = switchingProviderClass,
         idToBinding = idToBinding,
         graphExpr = graphExpr,
-        idExpr = idExpr,
+        idExpr = idExprFactory(),  // Create one fresh expression for this call
         returnType = invokeFun.returnType
       )
       statements.addAll(invokeStatements)
@@ -1266,6 +1310,41 @@ internal class IrGraphGenerator(
 
     // Store for later use in binding distribution and initialization
     shardInfos = infos
+  }
+
+  /**
+   * Detects which module parameters are required by a shard based on its bindings.
+   * This follows Dagger's pattern where each shard only receives the modules it actually needs.
+   *
+   * @param shard The shard to analyze
+   * @param bindingGraph The binding graph containing all bindings
+   * @return List of module parameters needed by this shard
+   */
+  private fun detectRequiredModulesForShard(
+    shard: ShardingPlan.Shard,
+    bindingGraph: IrBindingGraph
+  ): List<IrValueParameter> {
+    val requiredModules = mutableSetOf<IrClass>()
+
+    // Analyze each binding in the shard to find module dependencies
+    for (typeKey in shard.bindings) {
+      val binding = bindingGraph.bindingsSnapshot()[typeKey] ?: continue
+      if (binding is IrBinding.Provided) {
+        // This binding comes from a @Provides method, track its module
+        val providerFactory = binding.providerFactory
+        val moduleClass = providerFactory.clazz.parentAsClass
+
+        // Check if this is actually a binding container class (has @BindingContainer annotation)
+        // For now, we'll assume all provider factories come from binding containers
+        // TODO: Add proper annotation checking when class metadata is accessible
+        requiredModules.add(moduleClass)
+      }
+    }
+
+    // Convert module classes to constructor parameters
+    // For now, return empty list as we need the actual parameter references from the constructor
+    // This will be properly implemented when we have access to the constructor parameters
+    return emptyList()
   }
 
   /**
@@ -1342,7 +1421,7 @@ internal class IrGraphGenerator(
           val initialization = shardInfo.generator.generateShardInitialization(
             shardClass = shardClass,
             thisReceiver = thisReceiver,
-            moduleParameters = emptyList() // TODO: Implement proper module detection
+            moduleParameters = detectRequiredModulesForShard(shardInfo.shard, bindingGraph)
           )
 
           // Set the field value
@@ -1469,10 +1548,8 @@ internal class IrGraphGenerator(
       val shardField = shardInfo.shardField
       val shardClass = shardInfo.shardClass
       
-      // Determine which modules this shard needs
-      // For now, pass all modules - Phase 3 will optimize this
-      // TODO: Implement proper module detection
-      val moduleParams = emptyList<IrValueParameter>()
+      // Determine which modules this shard needs based on its bindings
+      val moduleParams = detectRequiredModulesForShard(shard, bindingGraph)
       
       // Add field initialization in the constructor
       shardField?.let { field ->

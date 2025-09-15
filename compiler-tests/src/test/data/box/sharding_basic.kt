@@ -54,11 +54,11 @@ interface BasicShardedGraph {
   
   // Multibindings
   val features: Set<Feature>
-  
-  @Module
-  val appModule: AppModule = AppModule()
-  
-  @Module
+
+  @BindingContainer
+  val appModule: AppModule
+
+  @BindingContainer
   val featureModule: FeatureModule
 }
 

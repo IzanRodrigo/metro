@@ -55,22 +55,40 @@ internal class SwitchingProviderGenerator(
    * Helper to resolve the owner of a field when it might be in a shard.
    * Returns the appropriate receiver expression (main graph or shard instance).
    *
+   * IMPORTANT: This method creates FRESH expressions each time to avoid duplicate IR nodes.
+   * This is critical for IR validation - we cannot reuse the same field access node.
+   *
    * IMPORTANT: This method does NOT add any caching wrappers (DoubleCheck).
    * Caching is handled at the field initialization level in IrGraphGenerator,
    * not in the SwitchingProvider's invoke() dispatch logic.
    */
   context(scope: IrBuilderWithScope)
   private fun resolveOwnerForShard(
-    graphExpr: IrExpression,
+    switchingProviderClass: IrClass,
     graphClass: IrClass,
     shardIndex: Int?
   ): IrExpression = with(scope) {
+    // Always create a fresh graph expression to avoid duplicate IR nodes
+    val invokeFunction = switchingProviderClass.declarations
+      .filterIsInstance<IrSimpleFunction>()
+      .firstOrNull { it.name.asString() == "invoke" }
+      ?: error("SwitchingProvider must have invoke() function")
+
+    val spThis = invokeFunction.dispatchReceiverParameter
+      ?: error("invoke() must have dispatch receiver")
+
+    val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+      .firstOrNull { it.name.asString() == "graph" }
+      ?: error("SwitchingProvider must have field: graph")
+
+    val freshGraphExpr = irGetField(irGet(spThis), graphField)
+
     if (shardIndex == null || shardIndex == 0) {
       // Field is in main graph
       if (debug && shardIndex == 0) {
         log("SwitchingProviderGenerator: Accessing field in main graph")
       }
-      graphExpr
+      freshGraphExpr
     } else {
       // Field is in a shard, access via graph.shardN
       if (debug) {
@@ -80,7 +98,7 @@ internal class SwitchingProviderGenerator(
         .filterIsInstance<IrField>()
         .firstOrNull { it.name.asString() == "shard$shardIndex" }
         ?: error("Missing shard field: shard$shardIndex")
-      irGetField(graphExpr, shardFieldOnGraph)
+      irGetField(freshGraphExpr, shardFieldOnGraph)
     }
   }
 
@@ -153,28 +171,13 @@ internal class SwitchingProviderGenerator(
     // Add a branch for each binding ID
     idToBinding.forEachIndexed { id, binding ->
       val bindingExpr = builder.run {
-        // Strategy: Prefer existing provider fields over inline generation to avoid recursion
+        // CRITICAL: Inside SwitchingProvider.invoke(), we must NEVER invoke provider fields
+        // because they might be wrapped in DoubleCheck(SwitchingProvider(...)), causing recursion.
+        // Instead, we always generate the instance directly.
 
-        // First, check bindingFieldContext for a provider field
-        val providerField = bindingFieldContext?.providerField(binding.typeKey)
-
-        if (providerField != null) {
-          // Found a provider field in bindingFieldContext - use it with proper owner resolution
-          // Check if this field might be in a shard
-          val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-          val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
-
-          // Get the provider field and invoke it to get the instance
-          val providerExpr = irGetField(owner, providerField)
-
-          // Invoke the provider to get the instance
-          irCall(symbols.providerInvoke).apply {
-            dispatchReceiver = providerExpr
-          }
-        } else {
-          // No provider field found - need to handle special cases or generate inline
-
-          when (binding) {
+        // For all binding types, we generate the instance creation code directly.
+        // This is what gets called when the provider is invoked.
+        when (binding) {
             // BoundInstance must always be read from fields, never constructed inline
             is IrBinding.BoundInstance -> {
               // Try to resolve the field in order of preference:
@@ -189,14 +192,14 @@ internal class SwitchingProviderGenerator(
               when {
                 instanceField != null -> {
                   // Resolve the owner (could be main graph or shard)
-                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
                   // Return the instance directly
                   irGetField(owner, instanceField)
                 }
 
                 providerField != null -> {
                   // If we have a provider field, use it and invoke
-                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
                   // Get the provider and invoke it
                   val providerExpr = irGetField(owner, providerField)
                   irCall(symbols.providerInvoke).apply {
@@ -206,7 +209,7 @@ internal class SwitchingProviderGenerator(
 
                 shardInfo != null -> {
                   // Only shard registry has the field
-                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+                  val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo.shardIndex)
                   irGetField(owner, shardInfo.field)
                 }
 
@@ -230,7 +233,7 @@ internal class SwitchingProviderGenerator(
                     instanceField != null -> {
                       // Check if field might be in a shard
                       val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-                      val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                      val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
 
                       // Use expressionGenerator's safeGetField if available for proper cross-shard handling
                       if (expressionGenerator != null) {
@@ -244,7 +247,7 @@ internal class SwitchingProviderGenerator(
                     providerField != null -> {
                       // We have a provider field - get it and invoke if instance is needed
                       val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-                      val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                      val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
 
                       val providerExpr = if (expressionGenerator != null) {
                         expressionGenerator.safeGetField(owner, providerField, binding.typeKey)
@@ -266,9 +269,11 @@ internal class SwitchingProviderGenerator(
 
                 binding.getter != null -> {
                   // Build irInvoke(getter) using the resolved graph or included graph instance
+                  // Create fresh graph expression to avoid duplicate IR nodes
+                  val freshGraphExpr = resolveOwnerForShard(switchingProviderClass, graphClass, 0)
                   val getterResult = irCall(binding.getter).apply {
                     // Getters are always on the main graph or included graph
-                    dispatchReceiver = graphExpr
+                    dispatchReceiver = freshGraphExpr
                   }
 
                   // Check if we need to unwrap provider/lazy
@@ -300,28 +305,19 @@ internal class SwitchingProviderGenerator(
             }
             
             else -> {
-              // Only allow inline generation for safe binding types
-              // All other types must be resolved via fields to avoid unsupported binding errors
-              val canGenerateInline = when (binding) {
-                is IrBinding.ConstructorInjected -> !binding.isAssisted // Non-assisted only
-                is IrBinding.Provided -> true
-                is IrBinding.ObjectClass -> true
-                else -> false // Alias, Assisted, MembersInjected, Multibinding, etc. require fields
-              }
+              // For all other binding types, generate the instance directly
+              // NEVER invoke provider fields as they might recursively call back to SwitchingProvider
 
-              if (canGenerateInline) {
-                // Safe to generate inline with bypassProviderFor to prevent recursion
-                if (debug) {
-                  log("SwitchingProviderGenerator: Falling back to inline generation for ${binding.typeKey.render(short = true)}")
-                  log("  Reason: No provider field found, generating inline with bypass to prevent recursion")
-                }
-                expressionGenerator?.generateBindingCode(
+              // Use the expression generator to create the instance
+              if (expressionGenerator != null) {
+                // Generate the instance code directly, bypassing any provider wrappers
+                expressionGenerator.generateBindingCode(
                   binding = binding,
                   contextualTypeKey = binding.contextualTypeKey,
                   accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
                   fieldInitKey = null,
-                  bypassProviderFor = binding.typeKey  // Prevent re-routing through SwitchingProvider
-                ) ?: error("ExpressionGenerator is required for inline generation")
+                  bypassProviderFor = binding.typeKey  // Critical: prevent re-routing through SwitchingProvider
+                )
               } else {
                 // These binding types require field resolution
                 // Try to find the field in bindingFieldContext or shardFieldRegistry
@@ -331,13 +327,13 @@ internal class SwitchingProviderGenerator(
                 when {
                   instanceField != null -> {
                     // Found instance field - use it with proper owner resolution
-                    val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                    val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
                     irGetField(owner, instanceField)
                   }
 
                   shardInfo != null -> {
                     // Field exists in shard registry
-                    val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+                    val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo.shardIndex)
                     irGetField(owner, shardInfo.field)
                   }
 
@@ -348,14 +344,36 @@ internal class SwitchingProviderGenerator(
                 }
               }
             }
-          }
         }
+      }
+
+      // Create a fresh ID expression for each branch to avoid IR validation errors
+      // The IR validator doesn't allow reusing the same field access node in multiple places
+      val freshIdExpr = builder.run {
+        // We need to get the id field from the SwitchingProvider instance
+        // Use the same pattern as the original idExpr but create it fresh
+        // The idExpr parameter can serve as a template, but we need to recreate it
+
+        // Find the invoke function to get its dispatch receiver
+        val invokeFunction = switchingProviderClass.declarations
+          .filterIsInstance<IrSimpleFunction>()
+          .firstOrNull { it.name.asString() == "invoke" }
+          ?: error("SwitchingProvider must have invoke() function")
+
+        val spThis = invokeFunction.dispatchReceiverParameter
+          ?: error("invoke() must have dispatch receiver")
+
+        val idField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+          .firstOrNull { it.name.asString() == "id" }
+          ?: error("SwitchingProvider must have field: id")
+
+        irGetField(irGet(spThis), idField)
       }
 
       branches += IrBranchImpl(
         UNDEFINED_OFFSET,
         UNDEFINED_OFFSET,
-        condition = builder.irEquals(idExpr, builder.irInt(id)),
+        condition = builder.irEquals(freshIdExpr, builder.irInt(id)),
         result = bindingExpr
       )
     }
@@ -553,7 +571,8 @@ internal class SwitchingProviderGenerator(
           builder,
           binding,
           builder.irGet(graphParam),
-          graphClass
+          graphClass,
+          switchingProviderClass
         )
 
         branches += IrBranchImpl(
@@ -603,7 +622,8 @@ internal class SwitchingProviderGenerator(
     builder: IrBuilderWithScope,
     binding: IrBinding,
     graphExpr: IrExpression,
-    graphClass: IrClass
+    graphClass: IrClass,
+    switchingProviderClass: IrClass
   ): IrExpression = builder.run {
     // Strategy: Prefer existing provider fields over inline generation to avoid recursion
 
@@ -614,7 +634,7 @@ internal class SwitchingProviderGenerator(
       // Found a provider field in bindingFieldContext - use it with proper owner resolution
       // Check if this field might be in a shard
       val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-      val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+      val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
 
       // Get the provider field and invoke it to get the instance
       val providerExpr = irGetField(owner, providerField)
@@ -641,14 +661,14 @@ internal class SwitchingProviderGenerator(
           when {
             instanceField != null -> {
               // Resolve the owner (could be main graph or shard)
-              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+              val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
               // Return the instance directly
               irGetField(owner, instanceField)
             }
 
             providerField != null -> {
               // If we have a provider field, use it and invoke
-              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+              val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
               // Get the provider and invoke it
               val providerExpr = irGetField(owner, providerField)
               irCall(symbols.providerInvoke).apply {
@@ -658,7 +678,7 @@ internal class SwitchingProviderGenerator(
 
             shardInfo != null -> {
               // Only shard registry has the field
-              val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+              val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo.shardIndex)
               irGetField(owner, shardInfo.field)
             }
 
@@ -682,7 +702,7 @@ internal class SwitchingProviderGenerator(
                 instanceField != null -> {
                   // Check if field might be in a shard
                   val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
 
                   // Use expressionGenerator's safeGetField if available for proper cross-shard handling
                   if (expressionGenerator != null) {
@@ -696,7 +716,7 @@ internal class SwitchingProviderGenerator(
                 providerField != null -> {
                   // We have a provider field - get it and invoke if instance is needed
                   val shardInfo = shardFieldRegistry?.findField(binding.typeKey)
-                  val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                  val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
 
                   val providerExpr = if (expressionGenerator != null) {
                     expressionGenerator.safeGetField(owner, providerField, binding.typeKey)
@@ -718,6 +738,8 @@ internal class SwitchingProviderGenerator(
 
             binding.getter != null -> {
               // Build irInvoke(getter) using the resolved graph or included graph instance
+              // For getters, we just use the passed graphExpr since it's fresh in helper methods
+              // and we don't need shard resolution for getters (always on main graph)
               val getterResult = irCall(binding.getter).apply {
                 // Getters are always on the main graph or included graph
                 dispatchReceiver = graphExpr
@@ -779,13 +801,13 @@ internal class SwitchingProviderGenerator(
             when {
               instanceField != null -> {
                 // Found instance field - use it with proper owner resolution
-                val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo?.shardIndex)
+                val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo?.shardIndex)
                 irGetField(owner, instanceField)
               }
 
               shardInfo != null -> {
                 // Field exists in shard registry
-                val owner = resolveOwnerForShard(graphExpr, graphClass, shardInfo.shardIndex)
+                val owner = resolveOwnerForShard(switchingProviderClass, graphClass, shardInfo.shardIndex)
                 irGetField(owner, shardInfo.field)
               }
 
