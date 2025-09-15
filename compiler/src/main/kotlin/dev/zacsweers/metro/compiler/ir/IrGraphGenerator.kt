@@ -186,12 +186,22 @@ internal class IrGraphGenerator(
       var nextSwitchId = 0
 
       // Robust lookup of the FIR-declared SwitchingProvider class
-      val switchingProviderClass: IrClass? = declarations
-        .filterIsInstance<IrClass>()
-        .firstOrNull { it.name.asString() == "SwitchingProvider" }
+      // Only look for it if the option is enabled
+      val switchingProviderClass: IrClass? = if (options.switchingProviderEnabled) {
+        declarations
+          .filterIsInstance<IrClass>()
+          .firstOrNull { it.name.asString() == "SwitchingProvider" }
+      } else {
+        if (options.debug) {
+          log("SwitchingProvider disabled via compiler option")
+        }
+        null
+      }
 
-      // Validate SwitchingProvider presence when sharding is enabled
-      if (shardingPlan?.requiresSharding() == true && switchingProviderClass == null) {
+      // Validate SwitchingProvider presence when sharding is enabled and option is on
+      if (shardingPlan?.requiresSharding() == true &&
+          options.switchingProviderEnabled &&
+          switchingProviderClass == null) {
         error("SwitchingProvider skeleton not found in ${graphClass.name}; FIR step missing or failed")
       } else if (switchingProviderClass == null && options.debug) {
         log("SwitchingProvider not found in ${graphClass.name}; using fallback provider generation")

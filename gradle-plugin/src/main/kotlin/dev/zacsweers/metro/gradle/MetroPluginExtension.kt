@@ -18,6 +18,8 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
 
   public val interop: InteropHandler = objects.newInstance(InteropHandler::class.java)
 
+  public val jvmSharding: JvmShardingHandler = objects.newInstance(JvmShardingHandler::class.java)
+
   /** Controls whether Metro's compiler plugin will be enabled on this project. */
   public val enabled: Property<Boolean> =
     objects.property(Boolean::class.javaObjectType).convention(true)
@@ -139,6 +141,17 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
           layout.buildDirectory.dir(it)
         }
       )
+
+  /**
+   * Configures JVM-specific sharding options for large dependency graphs.
+   *
+   * Sharding automatically splits large graphs into smaller nested classes to work around
+   * JVM limitations (64KB method size, field count limits). This configuration only applies
+   * to JVM/Android targets and is ignored on JS/Native platforms.
+   */
+  public fun jvmSharding(action: Action<JvmShardingHandler>) {
+    action.execute(jvmSharding)
+  }
 
   /**
    * Configures interop to support in generated code, usually from another DI framework.
@@ -291,4 +304,67 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
       }
     }
   }
+
+  /**
+   * Configuration for JVM-specific graph sharding options.
+   *
+   * Sharding is a technique to work around JVM limitations by splitting large
+   * dependency graphs into smaller nested classes.
+   */
+  @MetroExtensionMarker
+  public abstract class JvmShardingHandler @Inject constructor(objects: ObjectFactory) {
+    /**
+     * Enable/disable graph sharding for JVM targets to avoid method size limits.
+     * Enabled by default on JVM/Android targets.
+     */
+    public val enabled: Property<Boolean> =
+      objects.property(Boolean::class.javaObjectType).convention(true)
+
+    /**
+     * Maximum number of bindings per shard before a new shard is created.
+     * Default is 150. Lower values create more shards but with smaller method sizes,
+     * while higher values create fewer shards but risk hitting JVM limits.
+     * Recommended range: 100-5000 depending on binding complexity.
+     */
+    public val keysPerShard: Property<Int> =
+      objects.property(Int::class.javaObjectType).convention(150)
+
+    /**
+     * Enable/disable the SwitchingProvider pattern for sharded graphs.
+     * When enabled (default), uses a single SwitchingProvider class with integer-based
+     * dispatch instead of generating N provider classes. This significantly reduces
+     * generated code size and follows Dagger's proven pattern.
+     *
+     * Only disable this for debugging purposes.
+     */
+    public val useSwitchingProvider: Property<Boolean> =
+      objects.property(Boolean::class.javaObjectType).convention(true)
+
+    /**
+     * Enable/disable cycle breaking in sharding.
+     * When enabled (default), the sharding algorithm will attempt to break cycles
+     * by distributing strongly connected components across shards.
+     */
+    public val breakCycles: Property<Boolean> =
+      objects.property(Boolean::class.javaObjectType).convention(true)
+
+    /**
+     * Sharding strategy to use.
+     * - CONSERVATIVE: Only shard when necessary (default)
+     * - AGGRESSIVE: Shard more aggressively for better performance
+     */
+    public val strategy: Property<ShardingStrategy> =
+      objects.property(ShardingStrategy::class.javaObjectType)
+        .convention(ShardingStrategy.CONSERVATIVE)
+  }
+}
+
+/**
+ * Strategy for graph sharding.
+ */
+public enum class ShardingStrategy {
+  /** Only shard when necessary to avoid JVM limits */
+  CONSERVATIVE,
+  /** Shard more aggressively for potentially better performance */
+  AGGRESSIVE
 }

@@ -165,6 +165,17 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
               extension.interop.enableDaggerRuntimeInterop.getOrElse(false).toString(),
             )
           )
+
+          // Add JVM sharding options
+          add(lazyOption("sharding.enabled", extension.jvmSharding.enabled))
+          add(lazyOption("sharding.keysPerShard", extension.jvmSharding.keysPerShard))
+          add(lazyOption("sharding.useSwitchingProvider", extension.jvmSharding.useSwitchingProvider))
+          add(lazyOption("sharding.breakCycles", extension.jvmSharding.breakCycles))
+          // Map the strategy enum to a string
+          add(SubpluginOption(
+            "sharding.strategy",
+            extension.jvmSharding.strategy.getOrElse(ShardingStrategy.CONSERVATIVE).name
+          ))
         }
 
         with(extension.interop) {
@@ -306,6 +317,10 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
 
 @JvmName("booleanPluginOptionOf")
 private fun lazyOption(key: String, value: Provider<Boolean>): SubpluginOption =
+  lazyOption(key, value.map { it.toString() })
+
+@JvmName("intPluginOptionOf")
+private fun lazyOption(key: String, value: Provider<Int>): SubpluginOption =
   lazyOption(key, value.map { it.toString() })
 
 @JvmName("enumPluginOptionOf")

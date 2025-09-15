@@ -196,6 +196,19 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       valueMapper = String::toInt,
     )
   ),
+  SWITCHING_PROVIDER_ENABLED(
+    RawMetroOption.boolean(
+      name = "sharding.useSwitchingProvider",
+      defaultValue = true,
+      valueDescription = "<true | false>",
+      description = "Enable/disable the SwitchingProvider pattern for sharded graphs. " +
+        "When enabled, uses a single SwitchingProvider class with integer-based dispatch " +
+        "instead of generating N provider classes. This significantly reduces generated code size " +
+        "and follows Dagger's proven pattern. Disable this only for debugging purposes.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   SHARDING_BREAK_CYCLES(
     RawMetroOption.boolean(
       name = "sharding.breakCycles",
@@ -558,6 +571,7 @@ public data class MetroOptions(
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
   val shardingEnabled: Boolean = MetroOption.SHARDING_ENABLED.raw.defaultValue.expectAs(),
   val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
+  val switchingProviderEnabled: Boolean = MetroOption.SWITCHING_PROVIDER_ENABLED.raw.defaultValue.expectAs(),
   val shardingBreakCycles: Boolean = MetroOption.SHARDING_BREAK_CYCLES.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
@@ -701,6 +715,9 @@ public data class MetroOptions(
 
           MetroOption.KEYS_PER_SHARD ->
             options = options.copy(keysPerShard = configuration.getAsInt(entry))
+
+          MetroOption.SWITCHING_PROVIDER_ENABLED ->
+            options = options.copy(switchingProviderEnabled = configuration.getAsBoolean(entry))
 
           MetroOption.SHARDING_BREAK_CYCLES ->
             options = options.copy(shardingBreakCycles = configuration.getAsBoolean(entry))
