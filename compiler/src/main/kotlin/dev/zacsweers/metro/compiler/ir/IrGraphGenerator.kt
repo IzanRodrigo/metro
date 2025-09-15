@@ -1128,7 +1128,11 @@ internal class IrGraphGenerator(
     switchingIds: Map<IrTypeKey, Int>
   ) {
     if (switchingProviderClass == null) {
-      // No SwitchingProvider, nothing to do
+      // If we have bindings to handle but no SwitchingProvider class, that's an error
+      if (switchingIds.isNotEmpty()) {
+        error("Missing SwitchingProvider class in ${this.name} with ${switchingIds.size} bindings to handle – did FIR generation run?")
+      }
+      // No SwitchingProvider and no bindings, nothing to do
       return
     }
 
