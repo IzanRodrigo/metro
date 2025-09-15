@@ -187,7 +187,7 @@ internal class IrGraphGenerator(
 
       // Robust lookup of the FIR-declared SwitchingProvider class
       // Only look for it if the option is enabled
-      val switchingProviderClass: IrClass? = if (options.switchingProviderEnabled) {
+      val switchingProviderClass: IrClass? = if (options.fastInit) {
         declarations
           .filterIsInstance<IrClass>()
           .firstOrNull { it.name.asString() == "SwitchingProvider" }
@@ -200,7 +200,7 @@ internal class IrGraphGenerator(
 
       // Validate SwitchingProvider presence when sharding is enabled and option is on
       if (shardingPlan?.requiresSharding() == true &&
-          options.switchingProviderEnabled &&
+          options.fastInit &&
           switchingProviderClass == null) {
         error("SwitchingProvider skeleton not found in ${graphClass.name}; FIR step missing or failed")
       } else if (switchingProviderClass == null && options.debug) {

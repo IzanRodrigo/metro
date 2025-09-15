@@ -253,8 +253,8 @@ internal class IrBindingGraph(
         }
       }
       
-      // Analyze for sharding if keysPerShard > 0 and on JVM platform
-      val shardingPlan = if (metroContext.options.keysPerShard > 0 && metroContext.platform.isJvm()) {
+      // Analyze for sharding if keysPerShard > 0
+      val shardingPlan = if (metroContext.options.keysPerShard > 0) {
         parentTracer.traceNested("analyze sharding") { tracer ->
           val startTime = System.currentTimeMillis()
           

@@ -183,15 +183,15 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       valueMapper = String::toInt,
     )
   ),
-  SWITCHING_PROVIDER_ENABLED(
+  FAST_INIT(
     RawMetroOption.boolean(
-      name = "sharding.useSwitchingProvider",
+      name = "fastInit",
       defaultValue = true,
       valueDescription = "<true | false>",
-      description = "Enable/disable the SwitchingProvider pattern for sharded graphs. " +
+      description = "Enable/disable fast initialization mode (equivalent to Dagger's fastInit). " +
         "When enabled, uses a single SwitchingProvider class with integer-based dispatch " +
         "instead of generating N provider classes. This significantly reduces generated code size " +
-        "and follows Dagger's proven pattern. Disable this only for debugging purposes.",
+        "and compilation time. Disable this only for debugging purposes.",
       required = false,
       allowMultipleOccurrences = false,
     )
@@ -557,7 +557,7 @@ public data class MetroOptions(
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
   val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
-  val switchingProviderEnabled: Boolean = MetroOption.SWITCHING_PROVIDER_ENABLED.raw.defaultValue.expectAs(),
+  val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val shardingBreakCycles: Boolean = MetroOption.SHARDING_BREAK_CYCLES.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
@@ -699,8 +699,8 @@ public data class MetroOptions(
           MetroOption.KEYS_PER_SHARD ->
             options = options.copy(keysPerShard = configuration.getAsInt(entry))
 
-          MetroOption.SWITCHING_PROVIDER_ENABLED ->
-            options = options.copy(switchingProviderEnabled = configuration.getAsBoolean(entry))
+          MetroOption.FAST_INIT ->
+            options = options.copy(fastInit = configuration.getAsBoolean(entry))
 
           MetroOption.SHARDING_BREAK_CYCLES ->
             options = options.copy(shardingBreakCycles = configuration.getAsBoolean(entry))

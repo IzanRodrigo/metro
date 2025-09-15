@@ -31,18 +31,19 @@ public abstract class dev/zacsweers/metro/gradle/MetroPluginExtension {
 	public final fun getEnableStrictValidation ()Lorg/gradle/api/provider/Property;
 	public final fun getEnableTopLevelFunctionInjection ()Lorg/gradle/api/provider/Property;
 	public final fun getEnabled ()Lorg/gradle/api/provider/Property;
+	public final fun getFastInit ()Lorg/gradle/api/provider/Property;
 	public final fun getGenerateAssistedFactories ()Lorg/gradle/api/provider/Property;
 	public final fun getGenerateContributionHints ()Lorg/gradle/api/provider/Property;
 	public final fun getGenerateJvmContributionHintsInFir ()Lorg/gradle/api/provider/Property;
 	public final fun getInterop ()Ldev/zacsweers/metro/gradle/MetroPluginExtension$InteropHandler;
-	public final fun getJvmSharding ()Ldev/zacsweers/metro/gradle/MetroPluginExtension$JvmShardingHandler;
+	public final fun getKeysPerShard ()Lorg/gradle/api/provider/Property;
 	public final fun getPublicProviderSeverity ()Lorg/gradle/api/provider/Property;
 	public final fun getReportsDestination ()Lorg/gradle/api/file/DirectoryProperty;
+	public final fun getShardingBreakCycles ()Lorg/gradle/api/provider/Property;
 	public final fun getShrinkUnusedBindings ()Lorg/gradle/api/provider/Property;
 	public final fun getTransformProvidersToPrivate ()Lorg/gradle/api/provider/Property;
 	public final fun getWarnOnInjectAnnotationPlacement ()Lorg/gradle/api/provider/Property;
 	public final fun interop (Lorg/gradle/api/Action;)V
-	public final fun jvmSharding (Lorg/gradle/api/Action;)V
 }
 
 public abstract class dev/zacsweers/metro/gradle/MetroPluginExtension$InteropHandler {
@@ -86,12 +87,5 @@ public abstract class dev/zacsweers/metro/gradle/MetroPluginExtension$InteropHan
 	public final fun includeJakarta ()V
 	public final fun includeJavax ()V
 	public final fun includeKotlinInject ()V
-}
-
-public abstract class dev/zacsweers/metro/gradle/MetroPluginExtension$JvmShardingHandler {
-	public fun <init> (Lorg/gradle/api/model/ObjectFactory;)V
-	public final fun getBreakCycles ()Lorg/gradle/api/provider/Property;
-	public final fun getKeysPerShard ()Lorg/gradle/api/provider/Property;
-	public final fun getUseSwitchingProvider ()Lorg/gradle/api/provider/Property;
 }
 

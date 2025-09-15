@@ -254,7 +254,7 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       names += Symbols.Names.MetroImpl
     } else if (classSymbol.hasOrigin(Keys.MetroGraphDeclaration)) {
       // For the $$Metro class, generate the SwitchingProvider if enabled
-      if (session.metroFirBuiltIns.options.switchingProviderEnabled) {
+      if (session.metroFirBuiltIns.options.fastInit) {
         log("Found MetroGraph class ${classSymbol.classId}, adding SwitchingProvider")
         names += Name.identifier("SwitchingProvider")
       } else {
@@ -322,7 +322,7 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       }
       Name.identifier("SwitchingProvider") -> {
         // Only generate if enabled
-        if (session.metroFirBuiltIns.options.switchingProviderEnabled) {
+        if (session.metroFirBuiltIns.options.fastInit) {
           log("Generating SwitchingProvider class in ${owner.classId}")
           // Create SwitchingProvider<T> nested class with full FIR structure
           createSwitchingProviderSkeleton(session, owner, name)

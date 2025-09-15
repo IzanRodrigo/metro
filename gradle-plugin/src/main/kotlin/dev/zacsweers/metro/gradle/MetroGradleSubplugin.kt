@@ -166,11 +166,13 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
             )
           )
 
-          // Add JVM sharding options
-          add(lazyOption("sharding.keysPerShard", extension.jvmSharding.keysPerShard))
-          add(lazyOption("sharding.useSwitchingProvider", extension.jvmSharding.useSwitchingProvider))
-          add(lazyOption("sharding.breakCycles", extension.jvmSharding.breakCycles))
+          add(lazyOption("fastInit", extension.fastInit))
         }
+
+        // Sharding options with platform-aware defaults
+        val defaultKeysPerShard = if (isJvmTarget) 150 else 0
+        add(lazyOption("sharding.keysPerShard", extension.keysPerShard.orElse(defaultKeysPerShard)))
+        add(lazyOption("sharding.breakCycles", extension.shardingBreakCycles))
 
         with(extension.interop) {
           provider
