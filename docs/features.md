@@ -68,12 +68,6 @@ Similar bindings:
 
 For more thorough debugging, Metro also has controls to enable debug logging controls and write graph reports to an output directory (configurable via the Gradle extension).
 
-## Graph Sharding (Experimental)
-
-Metro supports automatic graph sharding for large dependency graphs that exceed JVM limitations. When enabled, Metro automatically splits large graphs into smaller "shard" classes while maintaining correct dependency relationships. This is particularly useful for applications with hundreds or thousands of bindings.
-
-See the [sharding documentation](sharding.md) for configuration and details.
-
 ## Advanced interop
 
 Metro has advanced interop with existing DI tools.
