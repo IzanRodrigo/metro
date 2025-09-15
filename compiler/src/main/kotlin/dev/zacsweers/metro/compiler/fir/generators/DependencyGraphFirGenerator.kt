@@ -182,6 +182,48 @@ import org.jetbrains.kotlin.types.Variance
 internal class DependencyGraphFirGenerator(session: FirSession) :
   FirDeclarationGenerationExtension(session) {
 
+  @OptIn(DirectDeclarationsAccess::class)
+  private fun createSwitchingProviderSkeleton(
+    session: FirSession,
+    owner: FirClassSymbol<*>,
+    name: Name
+  ): FirClassLikeSymbol<*> {
+    // Check if already exists (idempotent on incremental builds)
+    val existing = owner.declarationSymbols
+      .filterIsInstance<FirClassSymbol<*>>()
+      .firstOrNull { it.name == name }
+    if (existing != null) return existing
+
+    // Create SwitchingProvider<T> : Provider<T>
+    val switchingProviderClass = createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
+      visibility = Visibilities.Private
+      modality = Modality.FINAL
+
+      // Add type parameter T with OUT variance (covariant)
+      // Use the typeParameter builder method provided by the class configurator
+      typeParameter(Name.identifier("T"), variance = org.jetbrains.kotlin.types.Variance.OUT_VARIANCE)
+
+      // Add supertype: Provider<T>
+      // The typeParameter method adds to typeParameters, and we need to build the supertype
+      // after adding the type parameter but we need to use the superType function to access it
+      superType { typeParameters ->
+        // Build the Provider<T> type using the type parameter
+        val providerClassId = session.metroFirBuiltIns.providesClassSymbol
+        providerClassId.toLookupTag().constructType(
+          arrayOf(typeParameters.first().toConeType()),
+          isMarkedNullable = false,
+        )
+      }
+    }
+
+    // Properties will be generated via generateProperties when getCallableNamesForClass
+    // returns "graph" and "id" for SwitchingProviderDeclaration
+    // These properties are created with hasBackingField = true to ensure IR can populate them
+    // The IR phase will find these backing fields and initialize them in the constructor body
+
+    return switchingProviderClass.symbol
+  }
+
   companion object {
     private val PLACEHOLDER_SAM_FUNCTION = "$\$PLACEHOLDER_FOR_SAM".asName()
   }
@@ -306,6 +348,17 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           }
           .apply { markAsDeprecatedHidden(session) }
           .symbol
+        } else {
+          log("Skipping SwitchingProvider generation - disabled by option")
+          null
+        }
+      }
+      Name.identifier("SwitchingProvider") -> {
+        // Only generate if enabled
+        if (session.metroFirBuiltIns.options.fastInit) {
+          log("Generating SwitchingProvider class in ${owner.classId}")
+          // Create SwitchingProvider<T> nested class with full FIR structure
+          createSwitchingProviderSkeleton(session, owner, name)
         } else {
           log("Skipping SwitchingProvider generation - disabled by option")
           null
