@@ -22,6 +22,7 @@ import dev.zacsweers.metro.compiler.tracing.traceNested
 import java.util.PriorityQueue
 import java.util.SortedMap
 import java.util.SortedSet
+import kotlin.collections.ArrayDeque
 
 /**
  * Returns a new list where each element is preceded by its results in [sourceToTarget]. The first
@@ -125,6 +126,10 @@ internal data class TopoSortResult<T>(
   val sortedKeys: List<T>,
   val deferredTypes: List<T>,
   val reachableKeys: Set<T>,
+  val components: List<Component<T>>,
+  val componentOf: Map<T, Int>,
+  val componentOrder: List<Int>,
+  val adjacency: Map<T, Set<T>>,
 )
 
 /**
@@ -246,11 +251,15 @@ internal fun <V : Comparable<V>> topologicalSort(
         }
       }
     }
+
   return TopoSortResult(
-    // Expand each component back to its original vertices
-    sortedKeys,
-    deferredTypes.toList(),
-    reachableKeys.keys,
+    sortedKeys = sortedKeys,
+    deferredTypes = deferredTypes.toList(),
+    reachableKeys = reachableKeys.keys,
+    components = components,
+    componentOf = componentOf,
+    componentOrder = componentOrder,
+    adjacency = reachableKeys,
   )
 }
 

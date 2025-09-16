@@ -2,22 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
 
-import dev.zacsweers.metro.compiler.MetroAnnotations
-import dev.zacsweers.metro.compiler.Origins
-import dev.zacsweers.metro.compiler.exitProcessing
-import dev.zacsweers.metro.compiler.expectAs
+import dev.zacsweers.metro.compiler.*
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
 import dev.zacsweers.metro.compiler.graph.MutableBindingGraph
+import dev.zacsweers.metro.compiler.graph.ShardingPlan
+import dev.zacsweers.metro.compiler.graph.buildShardingPlan
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
-import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
-import org.jetbrains.kotlin.ir.declarations.IrDeclaration
-import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
-import org.jetbrains.kotlin.ir.declarations.IrFunction
-import org.jetbrains.kotlin.ir.declarations.IrProperty
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
-import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.types.makeNotNull
@@ -26,14 +19,8 @@ import org.jetbrains.kotlin.ir.types.removeAnnotations
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
-import org.jetbrains.kotlin.ir.util.classId
-import org.jetbrains.kotlin.ir.util.defaultType
-import org.jetbrains.kotlin.ir.util.dumpKotlinLike
-import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.util.isSubtypeOf
-import org.jetbrains.kotlin.ir.util.kotlinFqName
-import org.jetbrains.kotlin.ir.util.nestedClasses
-import org.jetbrains.kotlin.ir.util.parentAsClass
 
 internal class IrBindingGraph(
   private val metroContext: IrMetroContext,
@@ -131,6 +118,7 @@ internal class IrBindingGraph(
           val setType = metroContext.irBuiltIns.setClass.typeWith(elementType)
           contextKey.typeKey.copy(type = setType, qualifier = originalQualifier)
         }
+
         annotations.isIntoMap -> {
           val mapKey =
             annotations.mapKeys.firstOrNull()
@@ -193,13 +181,14 @@ internal class IrBindingGraph(
     val sortedKeys: List<IrTypeKey>,
     val deferredTypes: List<IrTypeKey>,
     val reachableKeys: Set<IrTypeKey>,
+    val shardingPlan: ShardingPlan?,
   )
 
   data class GraphError(val declaration: IrDeclaration?, val message: String)
 
   fun seal(parentTracer: Tracer, onError: (List<GraphError>) -> Nothing): BindingGraphResult =
     context(metroContext) {
-      val (sortedKeys, deferredTypes, reachableKeys) =
+      val topoSortResult =
         parentTracer.traceNested("seal graph") { tracer ->
           val roots = buildMap {
             putAll(accessors)
@@ -226,6 +215,7 @@ internal class IrBindingGraph(
             validateBindings = ::validateBindings,
           )
         }
+      val (sortedKeys, deferredTypes, reachableKeys) = topoSortResult
 
       writeDiagnostic("keys-validated-${parentTracer.tag}.txt") {
         sortedKeys.joinToString(separator = "\n")
@@ -249,7 +239,14 @@ internal class IrBindingGraph(
           "Found absent bindings in the binding graph: ${dumpGraph("Absent bindings", short = true)}"
         }
       }
-      return BindingGraphResult(sortedKeys, deferredTypes, reachableKeys)
+
+      val shardingPlan = if (metroContext.options.keysPerShard <= 0) null else {
+        parentTracer.traceNested("analyze sharding") {
+          buildShardingPlan(topoSortResult, metroContext.options.keysPerShard)
+        }
+      }
+
+      return BindingGraphResult(sortedKeys, deferredTypes, reachableKeys, shardingPlan)
     }
 
   fun reportDuplicateBinding(
@@ -409,6 +406,7 @@ internal class IrBindingGraph(
               SimilarBinding(bindingKey, binding, "Different qualifier"),
             )
           }
+
           binding is IrBinding.Multibinding -> {
             val valueType =
               if (binding.isSet) {
@@ -424,13 +422,16 @@ internal class IrBindingGraph(
               )
             }
           }
+
           bindingKey.type == key.type -> {
             // Already covered above but here to avoid falling through to the subtype checks
             // below as they would always return true for this
           }
+
           bindingKey.type.isSubtypeOf(key.type, metroContext.irTypeSystemContext) -> {
             similarBindings.putIfAbsent(bindingKey, SimilarBinding(bindingKey, binding, "Subtype"))
           }
+
           key.type.type.isSubtypeOf(bindingKey.type, metroContext.irTypeSystemContext) -> {
             similarBindings.putIfAbsent(
               bindingKey,
@@ -478,7 +479,7 @@ internal class IrBindingGraph(
 
       return similarBindings.filterNot {
         (it.value.binding as? IrBinding.BindingWithAnnotations)?.annotations?.isIntoMultibinding ==
-          true
+            true
       }
     }
 
@@ -513,12 +514,15 @@ internal class IrBindingGraph(
         val originalParent = parent.originalDeclarationIfOverride()
         return originalParent.parameters[index] as T
       }
+
       is IrSimpleFunction if isFakeOverride -> {
         overriddenSymbolsSequence().last().owner as T
       }
+
       is IrProperty if isFakeOverride -> {
         overriddenSymbolsSequence().last().owner as T
       }
+
       else -> this
     }
   }
@@ -546,7 +550,7 @@ internal class IrBindingGraph(
   }
 
   private fun buildReverseAdjacency(
-    adjacency: Map<IrTypeKey, Set<IrTypeKey>>
+    adjacency: Map<IrTypeKey, Set<IrTypeKey>>,
   ): Map<IrTypeKey, Set<IrTypeKey>> {
     val reverse = mutableMapOf<IrTypeKey, MutableSet<IrTypeKey>>()
     for ((from, tos) in adjacency) {
@@ -629,7 +633,7 @@ internal class IrBindingGraph(
         bindings.values
           .find { it is IrBinding.Assisted && it.target.typeKey == binding.typeKey }
           ?.typeKey
-          // Check in the class itself for @AssistedFactory
+        // Check in the class itself for @AssistedFactory
           ?: binding.typeKey.type.rawTypeOrNull()?.let { rawType ->
             rawType.nestedClasses
               .firstOrNull { nestedClass ->

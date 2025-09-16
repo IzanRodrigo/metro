@@ -5,7 +5,7 @@ package dev.zacsweers.metro.compiler.ir
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.asName
-import dev.zacsweers.metro.compiler.graph.sharding.Shard
+import dev.zacsweers.metro.compiler.graph.Shard
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
