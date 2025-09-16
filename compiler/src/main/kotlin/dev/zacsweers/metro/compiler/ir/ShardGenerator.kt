@@ -6,8 +6,8 @@ import dev.zacsweers.metro.compiler.MetroConstants
 import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.asName
-import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
-import dev.zacsweers.metro.compiler.sharding.ShardingPlan
+import dev.zacsweers.metro.compiler.graph.sharding.ShardFieldRegistry
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingPlan
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
@@ -19,7 +19,6 @@ import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
-import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter

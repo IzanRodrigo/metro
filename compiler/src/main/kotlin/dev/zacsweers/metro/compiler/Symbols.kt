@@ -607,7 +607,6 @@ internal class Symbols(
       )!!
     }
 
-
     private val doubleCheckLazy by lazy { doubleCheckCompanionObject.requireSimpleFunction("lazy") }
 
     override val setFactory: IrClassSymbol by lazy {

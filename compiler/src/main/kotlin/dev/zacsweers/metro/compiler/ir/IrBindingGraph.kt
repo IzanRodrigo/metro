@@ -8,6 +8,9 @@ import dev.zacsweers.metro.compiler.exitProcessing
 import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
 import dev.zacsweers.metro.compiler.graph.MutableBindingGraph
+import dev.zacsweers.metro.compiler.graph.sharding.ShardAnalyzer
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingPlan
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingReport
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
@@ -34,7 +37,6 @@ import org.jetbrains.kotlin.ir.util.isSubtypeOf
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.nestedClasses
 import org.jetbrains.kotlin.ir.util.parentAsClass
-import org.jetbrains.kotlin.platform.jvm.isJvm
 
 internal class IrBindingGraph(
   private val metroContext: IrMetroContext,
@@ -194,7 +196,7 @@ internal class IrBindingGraph(
     val sortedKeys: List<IrTypeKey>,
     val deferredTypes: List<IrTypeKey>,
     val reachableKeys: Set<IrTypeKey>,
-    val shardingPlan: dev.zacsweers.metro.compiler.sharding.ShardingPlan? = null,
+    val shardingPlan: ShardingPlan? = null,
   )
 
   data class GraphError(val declaration: IrDeclaration?, val message: String)
@@ -262,7 +264,7 @@ internal class IrBindingGraph(
             metroContext.log("[MetroSharding] Starting sharding analysis with keysPerShard=${metroContext.options.keysPerShard}")
           }
 
-          val analyzer = dev.zacsweers.metro.compiler.sharding.ShardAnalyzer(
+          val analyzer = ShardAnalyzer(
             keysPerShard = metroContext.options.keysPerShard
           )
           val tarjanResult = topoResult.tarjanResult
@@ -285,7 +287,7 @@ internal class IrBindingGraph(
               // Generate sharding report using the same pattern as other diagnostics
               tracer.traceNested("generate sharding report") {
                 val graphName = node.sourceGraph.kotlinFqName.asString().replace(".", "-")
-                val report = dev.zacsweers.metro.compiler.sharding.ShardingReport.generate(
+                val report = ShardingReport.generate(
                   graphName = node.sourceGraph.kotlinFqName.asString(),
                   shardingPlan = plan,
                   bindingGraph = this,

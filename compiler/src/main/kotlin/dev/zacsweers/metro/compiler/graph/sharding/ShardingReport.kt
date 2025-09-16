@@ -1,11 +1,10 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
-package dev.zacsweers.metro.compiler.sharding
+package dev.zacsweers.metro.compiler.graph.sharding
 
 import dev.zacsweers.metro.compiler.ir.IrBinding
 import dev.zacsweers.metro.compiler.ir.IrBindingGraph
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
-import dev.zacsweers.metro.compiler.ir.render
 
 /**
  * Comprehensive report of sharding analysis and distribution.

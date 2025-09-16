@@ -7,7 +7,7 @@ package dev.zacsweers.metro.compiler.ir
 import dev.zacsweers.metro.compiler.METRO_VERSION
 import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
-import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
+import dev.zacsweers.metro.compiler.graph.sharding.ShardFieldRegistry
 import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.decapitalizeUS
 import dev.zacsweers.metro.compiler.expectAs
@@ -22,7 +22,7 @@ import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.MetroConstants.STATEMENTS_PER_METHOD
 import dev.zacsweers.metro.compiler.reports.IrGenerationReport
 import dev.zacsweers.metro.compiler.Symbols
-import dev.zacsweers.metro.compiler.sharding.ShardingPlan
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingPlan
 import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
