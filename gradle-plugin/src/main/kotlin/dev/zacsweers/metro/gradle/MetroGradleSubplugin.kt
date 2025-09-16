@@ -165,7 +165,13 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
               extension.interop.enableDaggerRuntimeInterop.getOrElse(false).toString(),
             )
           )
+
+          add(lazyOption("fastInit", extension.fastInit))
         }
+
+        // Sharding options with platform-aware defaults
+        val defaultKeysPerShard = if (isJvmTarget) 150 else 0
+        add(lazyOption("sharding.keysPerShard", extension.keysPerShard.orElse(defaultKeysPerShard)))
 
         with(extension.interop) {
           provider
@@ -306,6 +312,10 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
 
 @JvmName("booleanPluginOptionOf")
 private fun lazyOption(key: String, value: Provider<Boolean>): SubpluginOption =
+  lazyOption(key, value.map { it.toString() })
+
+@JvmName("intPluginOptionOf")
+private fun lazyOption(key: String, value: Provider<Int>): SubpluginOption =
   lazyOption(key, value.map { it.toString() })
 
 @JvmName("enumPluginOptionOf")
