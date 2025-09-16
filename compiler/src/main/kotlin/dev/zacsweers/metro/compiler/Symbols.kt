@@ -504,10 +504,6 @@ internal class Symbols(
     val doubleCheckCompanionObject by lazy { doubleCheck.owner.companionObject()!!.symbol }
     val doubleCheckProvider by lazy { doubleCheckCompanionObject.requireSimpleFunction("provider") }
 
-    // SingleCheck support for unscoped bindings (lighter weight than DoubleCheck)
-    // Returns null if SingleCheck is not available in the runtime
-    abstract fun singleCheckProviderOrNull(): IrSimpleFunctionSymbol?
-
     context(context: IrMetroContext)
     protected abstract fun lazyFor(providerType: IrType): IrSimpleFunctionSymbol
 
@@ -612,21 +608,6 @@ internal class Symbols(
       )!!
     }
 
-    override fun singleCheckProviderOrNull(): IrSimpleFunctionSymbol? {
-      return try {
-        // Try to find SingleCheck class in the Metro runtime
-        val singleCheckClass = pluginContext.referenceClass(
-          ClassId(metroRuntimeInternal.packageFqName, "SingleCheck".asName())
-        )?.owner
-
-        singleCheckClass?.companionObject()?.let { companion ->
-          companion.symbol.requireSimpleFunction("provider")
-        }
-      } catch (e: Exception) {
-        // SingleCheck not available in this version of Metro runtime
-        null
-      }
-    }
 
     private val doubleCheckLazy by lazy { doubleCheckCompanionObject.requireSimpleFunction("lazy") }
 
@@ -745,11 +726,6 @@ internal class Symbols(
       )!!
     }
 
-    override fun singleCheckProviderOrNull(): IrSimpleFunctionSymbol? {
-      // Dagger interop doesn't have SingleCheck equivalent - always use DoubleCheck
-      // This is consistent with Dagger's own behavior
-      return null
-    }
 
     private val lazyFromDaggerProvider by lazy {
       doubleCheckCompanionObject.requireSimpleFunction("lazyFromDaggerProvider")

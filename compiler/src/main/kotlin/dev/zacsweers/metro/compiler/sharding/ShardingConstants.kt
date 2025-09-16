@@ -13,13 +13,6 @@ internal object ShardingConstants {
   const val STATEMENTS_PER_METHOD = 100
 
   /**
-   * Maximum expected number of shards for FIR generation.
-   * This is used to pre-generate shard class skeletons.
-   * Actual number of shards used will be determined by the sharding plan.
-   */
-  const val MAX_EXPECTED_SHARDS = 10
-
-  /**
    * Default number of bindings per shard.
    * Can be overridden via compiler options.
    */

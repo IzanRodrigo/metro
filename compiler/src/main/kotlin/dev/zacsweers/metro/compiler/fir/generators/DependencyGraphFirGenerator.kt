@@ -6,7 +6,6 @@ import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.fir.Keys
 import dev.zacsweers.metro.compiler.fir.buildSimpleAnnotation
-import dev.zacsweers.metro.compiler.fir.classIds
 import dev.zacsweers.metro.compiler.fir.constructType
 import dev.zacsweers.metro.compiler.fir.copyTypeParametersFrom
 import dev.zacsweers.metro.compiler.fir.hasOrigin
@@ -22,15 +21,11 @@ import dev.zacsweers.metro.compiler.fir.replaceAnnotationsSafe
 import dev.zacsweers.metro.compiler.fir.requireContainingClassSymbol
 import dev.zacsweers.metro.compiler.mapToArray
 import dev.zacsweers.metro.compiler.reportCompilerBug
-import dev.zacsweers.metro.compiler.reports.FirGenerationReport
-import java.nio.file.Paths
 import org.jetbrains.kotlin.descriptors.ClassKind
-import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.descriptors.Visibilities
 import org.jetbrains.kotlin.fir.FirSession
 import org.jetbrains.kotlin.fir.declarations.DirectDeclarationsAccess
 import org.jetbrains.kotlin.fir.declarations.FirTypeParameter
-import org.jetbrains.kotlin.fir.declarations.builder.buildTypeParameter
 import org.jetbrains.kotlin.fir.declarations.utils.isCompanion
 import org.jetbrains.kotlin.fir.declarations.utils.isInterface
 import org.jetbrains.kotlin.fir.declarations.utils.isLocal
@@ -43,7 +38,6 @@ import org.jetbrains.kotlin.fir.plugin.createCompanionObject
 import org.jetbrains.kotlin.fir.plugin.createConstructor
 import org.jetbrains.kotlin.fir.plugin.createDefaultPrivateConstructor
 import org.jetbrains.kotlin.fir.plugin.createMemberFunction
-import org.jetbrains.kotlin.fir.plugin.createMemberProperty
 import org.jetbrains.kotlin.fir.plugin.createNestedClass
 import org.jetbrains.kotlin.fir.scopes.impl.toConeType
 import org.jetbrains.kotlin.fir.symbols.impl.FirClassLikeSymbol
@@ -51,13 +45,10 @@ import org.jetbrains.kotlin.fir.symbols.impl.FirClassSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirConstructorSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirFunctionSymbol
 import org.jetbrains.kotlin.fir.symbols.impl.FirNamedFunctionSymbol
-import org.jetbrains.kotlin.fir.symbols.impl.FirPropertySymbol
 import org.jetbrains.kotlin.fir.types.constructType
-import org.jetbrains.kotlin.fir.types.toLookupTag
 import org.jetbrains.kotlin.name.CallableId
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.name.SpecialNames
-import org.jetbrains.kotlin.types.Variance
 
 /**
  * Generates implementation class headers for `@DependencyGraph` types.
@@ -184,119 +175,6 @@ import org.jetbrains.kotlin.types.Variance
 internal class DependencyGraphFirGenerator(session: FirSession) :
   FirDeclarationGenerationExtension(session) {
 
-  // Track FIR generation for reporting
-  private val firReportData = mutableMapOf<String, FirReportCollector>()
-
-  private inner class FirReportCollector(
-    val graphName: String,
-    val classId: org.jetbrains.kotlin.name.ClassId,
-  ) {
-    val startTime = System.currentTimeMillis()
-    val declarations = mutableListOf<FirGenerationReport.FirDeclarationInfo>()
-    val nestedClasses = mutableListOf<FirGenerationReport.NestedClassInfo>()
-
-    fun addDeclaration(
-      name: String,
-      type: FirGenerationReport.DeclarationType,
-      visibility: String = "public",
-      modality: String = "final",
-      additionalInfo: Map<String, String> = emptyMap()
-    ) {
-      declarations.add(
-        FirGenerationReport.FirDeclarationInfo(
-          name = name,
-          type = type,
-          visibility = visibility,
-          modality = modality,
-          additionalInfo = additionalInfo
-        )
-      )
-    }
-
-    fun addNestedClass(
-      name: String,
-      type: String,
-      purpose: String,
-      declarationCount: Int = 0
-    ) {
-      nestedClasses.add(
-        FirGenerationReport.NestedClassInfo(
-          name = name,
-          type = type,
-          purpose = purpose,
-          declarationCount = declarationCount
-        )
-      )
-    }
-
-    fun buildReport(): FirGenerationReport {
-      return FirGenerationReport(
-        graphName = graphName,
-        classId = classId,
-        declarations = declarations.toList(),
-        nestedClasses = nestedClasses.toList(),
-        generationTimeMs = System.currentTimeMillis() - startTime
-      )
-    }
-  }
-
-  private fun getOrCreateReportCollector(owner: FirClassSymbol<*>): FirReportCollector? {
-    // Only track for dependency graphs and graph factories
-    if (!owner.isDependencyGraph(session) && !owner.isGraphFactory(session)) {
-      return null
-    }
-
-    val key = owner.classId.asString()
-    return firReportData.getOrPut(key) {
-      FirReportCollector(
-        graphName = owner.name.asString(),
-        classId = owner.classId
-      )
-    }
-  }
-
-  @OptIn(DirectDeclarationsAccess::class)
-  private fun createSwitchingProviderSkeleton(
-    session: FirSession,
-    owner: FirClassSymbol<*>,
-    name: Name
-  ): FirClassLikeSymbol<*> {
-    // Check if already exists (idempotent on incremental builds)
-    val existing = owner.declarationSymbols
-      .filterIsInstance<FirClassSymbol<*>>()
-      .firstOrNull { it.name == name }
-    if (existing != null) return existing
-
-    // Create SwitchingProvider<T> : Provider<T>
-    val switchingProviderClass = createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
-      visibility = Visibilities.Private
-      modality = Modality.FINAL
-
-      // Add type parameter T with OUT variance (covariant)
-      // Use the typeParameter builder method provided by the class configurator
-      typeParameter(Name.identifier("T"), variance = org.jetbrains.kotlin.types.Variance.OUT_VARIANCE)
-
-      // Add supertype: Provider<T>
-      // The typeParameter method adds to typeParameters, and we need to build the supertype
-      // after adding the type parameter but we need to use the superType function to access it
-      superType { typeParameters ->
-        // Build the Provider<T> type using the type parameter
-        val providerClassId = session.metroFirBuiltIns.providesClassSymbol
-        providerClassId.toLookupTag().constructType(
-          arrayOf(typeParameters.first().toConeType()),
-          isMarkedNullable = false,
-        )
-      }
-    }
-
-    // Properties will be generated via generateProperties when getCallableNamesForClass
-    // returns "graph" and "id" for SwitchingProviderDeclaration
-    // These properties are created with hasBackingField = true to ensure IR can populate them
-    // The IR phase will find these backing fields and initialize them in the constructor body
-
-    return switchingProviderClass.symbol
-  }
-
   companion object {
     private val PLACEHOLDER_SAM_FUNCTION = "$\$PLACEHOLDER_FOR_SAM".asName()
   }
@@ -305,7 +183,6 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
     register(session.predicates.dependencyGraphAndFactoryPredicate)
   }
 
-  @OptIn(DirectDeclarationsAccess::class)
   override fun getNestedClassifiersNames(
     classSymbol: FirClassSymbol<*>,
     context: NestedClassGenerationContext,
@@ -327,14 +204,6 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       // Always generate this impl though we may not use it. It's just easier to do it this way in
       // FIR unfortunately due to lifecycles
       names += Symbols.Names.MetroImpl
-    } else if (classSymbol.hasOrigin(Keys.MetroGraphDeclaration)) {
-      // For the $$Metro class, generate the SwitchingProvider if enabled
-      if (session.metroFirBuiltIns.options.fastInit) {
-        log("Found MetroGraph class ${classSymbol.classId}, adding SwitchingProvider")
-        names += Symbols.Names.SwitchingProvider
-      } else {
-        log("Found MetroGraph class ${classSymbol.classId}, SwitchingProvider disabled by option")
-      }
     }
 
     if (names.isNotEmpty()) {
@@ -357,8 +226,6 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
     context: NestedClassGenerationContext,
   ): FirClassLikeSymbol<*>? {
     log("Generating nested class $name into ${owner.classId}")
-    val collector = getOrCreateReportCollector(owner)
-
     // Impl class or companion
     return when (name) {
       SpecialNames.DEFAULT_NAME_FOR_COMPANION_OBJECT -> {
@@ -372,107 +239,30 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           }
 
         log("Generating companion object for ${owner.classId}")
-        val result = createCompanionObject(owner, key).symbol
-        collector?.addNestedClass(
-          name = "Companion",
-          type = "object",
-          purpose = "Companion object for factory methods",
-          declarationCount = 0
-        )
-        result
+        createCompanionObject(owner, key).symbol
       }
       Symbols.Names.MetroGraph -> {
         log("Generating graph class")
-        val result = createNestedClass(owner, name, Keys.MetroGraphDeclaration) {
-            superType(owner::constructType)
-            copyTypeParametersFrom(owner, session)
-          }
+        createNestedClass(owner, name, Keys.MetroGraphDeclaration) {
+          superType(owner::constructType)
+          copyTypeParametersFrom(owner, session)
+        }
           .apply { markAsDeprecatedHidden(session) }
           .symbol
-        collector?.addNestedClass(
-          name = name.asString(),
-          type = "class",
-          purpose = "Dependency graph implementation",
-          declarationCount = 0
-        )
-        result
       }
       Symbols.Names.MetroImpl -> {
         log("Generating factory impl")
-        val result = createNestedClass(
-            owner,
-            name,
-            Keys.MetroGraphFactoryImplDeclaration,
-            classKind = ClassKind.OBJECT,
-          ) {
-            // Owner is always the factory class
-            superType(owner::constructType)
-          }
+        createNestedClass(
+          owner,
+          name,
+          Keys.MetroGraphFactoryImplDeclaration,
+          classKind = ClassKind.OBJECT,
+        ) {
+          // Owner is always the factory class
+          superType(owner::constructType)
+        }
           .apply { markAsDeprecatedHidden(session) }
           .symbol
-        collector?.addNestedClass(
-          name = name.asString(),
-          type = "object",
-          purpose = "Factory implementation singleton",
-          declarationCount = 0
-        )
-        result
-      }
-      Symbols.Names.SwitchingProvider -> {
-        // Only generate if enabled
-        if (session.metroFirBuiltIns.options.fastInit) {
-          log("Generating SwitchingProvider class in ${owner.classId}")
-          val result = createNestedClass(owner, name, Keys.SwitchingProviderDeclaration) {
-            visibility = Visibilities.Private
-            modality = Modality.FINAL
-
-            // Add type parameter T with OUT variance (covariant)
-            // Use the typeParameter builder method provided by the class configurator
-            typeParameter(Name.identifier("T"), variance = Variance.OUT_VARIANCE)
-
-            // Add supertype: Provider<T>
-            // The typeParameter method adds to typeParameters, and we need to build the supertype
-            // after adding the type parameter but we need to use the superType function to access it
-            superType { typeParameters ->
-              // Build the Provider<T> type using the type parameter
-              val providerClassId = session.metroFirBuiltIns.providerClassSymbol
-              providerClassId.toLookupTag().constructType(
-                arrayOf(typeParameters.first().toConeType()),
-                isMarkedNullable = false,
-              )
-            }
-          }
-          .apply { markAsDeprecatedHidden(session) }
-          .symbol
-          collector?.addNestedClass(
-            name = name.asString(),
-            type = "class",
-            purpose = "Fast initialization provider",
-            declarationCount = 0
-          )
-          result
-        } else {
-          log("Skipping SwitchingProvider generation - disabled by option")
-          null
-        }
-      }
-      Name.identifier("SwitchingProvider") -> {
-        // Only generate if enabled
-        if (session.metroFirBuiltIns.options.fastInit) {
-          log("Generating SwitchingProvider class in ${owner.classId}")
-          // Create SwitchingProvider<T> nested class with full FIR structure
-          val result = createSwitchingProviderSkeleton(session, owner, name)
-          collector?.addNestedClass(
-            name = name.asString(),
-            type = "class",
-            purpose = "Fast initialization provider",
-            declarationCount = 0
-          )
-          result
-        } else {
-          log("Skipping SwitchingProvider generation - disabled by option")
-          null
-        }
       }
       else -> null
     }
@@ -493,11 +283,11 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
      * In either case, we'll just generate a constructor and a PLACEHOLDER_SAM_FUNCTION. The
      * placeholder is important because not everything about a creator is resolvable at
      * this point, but we can use this marker later to indicate we expect generateFunctions()
-     * to generate the correct functions.
+     * to generate the correct functions .
      */
     val isGraphCompanion =
       classSymbol.isCompanion &&
-        classSymbol.requireContainingClassSymbol().isDependencyGraph(session)
+          classSymbol.requireContainingClassSymbol().isDependencyGraph(session)
     val isCreatorImpl =
       isGraphCompanion || classSymbol.hasOrigin(Keys.MetroGraphFactoryImplDeclaration)
     if (isCreatorImpl) {
@@ -506,12 +296,6 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
     } else if (classSymbol.hasOrigin(Keys.MetroGraphDeclaration)) {
       // $$MetroGraph, generate a constructor
       names += SpecialNames.INIT
-    } else if (classSymbol.hasOrigin(Keys.SwitchingProviderDeclaration)) {
-      // SwitchingProvider, generate constructor, properties, and invoke method
-      names += SpecialNames.INIT
-      names += Symbols.Names.invoke
-      names += Symbols.Names.graph
-      names += Symbols.Names.id
     }
 
     if (names.isNotEmpty()) {
@@ -521,21 +305,11 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
   }
 
   override fun generateConstructors(context: MemberGenerationContext): List<FirConstructorSymbol> {
-    val collector = getOrCreateReportCollector(context.owner)
-
     val constructor =
       if (context.owner.classKind == ClassKind.OBJECT) {
         log("Generating companion object constructor for ${context.owner.classId}")
         try {
-          val result = createDefaultPrivateConstructor(context.owner, Keys.Default)
-          collector?.addDeclaration(
-            name = "constructor",
-            type = FirGenerationReport.DeclarationType.CONSTRUCTOR,
-            visibility = "private",
-            modality = "final",
-            additionalInfo = mapOf("parameters" to "")
-          )
-          result
+          createDefaultPrivateConstructor(context.owner, Keys.Default)
         } catch (e: IllegalArgumentException) {
           // TODO why does this happen in the IDE?
           throw RuntimeException(
@@ -552,24 +326,24 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
         log("Generating graph has creator? $creator")
         val samFunction = creator?.classSymbol?.findSamFunction(session)
         createConstructor(
-            context.owner,
-            Keys.Default,
-            isPrimary = true,
-            generateDelegatedNoArgConstructorCall = true,
-          ) {
-            visibility = Visibilities.Private
-            if (creator != null) {
-              log("Generating graph SAM - ${samFunction?.callableId}")
-              samFunction?.valueParameterSymbols?.forEach { valueParameterSymbol ->
-                log("Generating SAM param ${valueParameterSymbol.name}")
-                valueParameter(
-                  name = valueParameterSymbol.name,
-                  key = Keys.RegularParameter,
-                  type = valueParameterSymbol.resolvedReturnType,
-                )
-              }
+          context.owner,
+          Keys.Default,
+          isPrimary = true,
+          generateDelegatedNoArgConstructorCall = true,
+        ) {
+          visibility = Visibilities.Private
+          if (creator != null) {
+            log("Generating graph SAM - ${samFunction?.callableId}")
+            samFunction?.valueParameterSymbols?.forEach { valueParameterSymbol ->
+              log("Generating SAM param ${valueParameterSymbol.name}")
+              valueParameter(
+                name = valueParameterSymbol.name,
+                key = Keys.RegularParameter,
+                type = valueParameterSymbol.resolvedReturnType,
+              )
             }
           }
+        }
           .apply {
             // Copy annotations over. Workaround for https://youtrack.jetbrains.com/issue/KT-74361/
             for ((i, parameter) in samFunction?.valueParameterSymbols.orEmpty().withIndex()) {
@@ -588,84 +362,10 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
         ) {
           visibility = Visibilities.Private
         }
-      } else if (context.owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
-        // SwitchingProvider constructor(graph: GraphImpl, id: Int)
-        val graphClass = context.owner.requireContainingClassSymbol()
-        createConstructor(
-          context.owner,
-          Keys.Default,
-          isPrimary = true,
-          generateDelegatedNoArgConstructorCall = true,
-        ) {
-          visibility = Visibilities.Public
-          // Add graph parameter
-          valueParameter(
-            name = Symbols.Names.graph,
-            type = graphClass.constructType(),
-            key = Keys.RegularParameter
-          )
-          // Add id parameter
-          valueParameter(
-            name = Symbols.Names.id,
-            type = session.builtinTypes.intType.coneType,
-            key = Keys.RegularParameter
-          )
-        }
       } else {
         return emptyList()
       }
     return listOf(constructor.symbol)
-  }
-
-  override fun generateProperties(
-    callableId: CallableId,
-    context: MemberGenerationContext?
-  ): List<FirPropertySymbol> {
-    log("Generating property $callableId")
-    val owner = context?.owner ?: return emptyList()
-
-    val properties = mutableListOf<FirPropertySymbol>()
-
-    if (owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
-      // Generate backing field properties for SwitchingProvider
-      when (callableId.callableName.asString()) {
-        "graph" -> {
-          // Generate private val graph: GraphImpl
-          val graphClass = owner.requireContainingClassSymbol()
-          val property = createMemberProperty(
-            owner,
-            Keys.Default,
-            Symbols.Names.graph,
-            returnType = graphClass.constructType(),
-            isVal = true,
-            hasBackingField = true
-          ) {
-            visibility = Visibilities.Private
-          }
-          properties += property.symbol
-        }
-        "id" -> {
-          // Generate private val id: Int
-          val property = createMemberProperty(
-            owner,
-            Keys.Default,
-            Symbols.Names.id,
-            returnType = session.builtinTypes.intType.coneType,
-            isVal = true,
-            hasBackingField = true
-          ) {
-            visibility = Visibilities.Private
-          }
-          properties += property.symbol
-        }
-      }
-    }
-
-    if (properties.isNotEmpty()) {
-      log("Generated ${properties.size} properties for ${owner.classId}: ${properties.joinToString { it.name.asString() }}")
-    }
-
-    return properties
   }
 
   override fun generateFunctions(
@@ -679,25 +379,25 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
       { target, function ->
         log("Generating creator SAM ${function.callableId} in ${target.classId}")
         createMemberFunction(
-            owner,
-            Keys.MetroGraphCreatorsObjectInvokeDeclaration,
-            function.name,
-            returnType = function.resolvedReturnType,
-          ) {
-            status {
-              isOverride = !owner.isCompanion
-              isOperator = function.isOperator
-            }
-            log("Generating ${function.valueParameterSymbols.size} parameters?")
-            for (parameter in function.valueParameterSymbols) {
-              log("Generating parameter ${parameter.name}")
-              valueParameter(
-                name = parameter.name,
-                key = Keys.RegularParameter,
-                type = parameter.resolvedReturnType,
-              )
-            }
+          owner,
+          Keys.MetroGraphCreatorsObjectInvokeDeclaration,
+          function.name,
+          returnType = function.resolvedReturnType,
+        ) {
+          status {
+            isOverride = !owner.isCompanion
+            isOperator = function.isOperator
           }
+          log("Generating ${function.valueParameterSymbols.size} parameters?")
+          for (parameter in function.valueParameterSymbols) {
+            log("Generating parameter ${parameter.name}")
+            valueParameter(
+              name = parameter.name,
+              key = Keys.RegularParameter,
+              type = parameter.resolvedReturnType,
+            )
+          }
+        }
           .apply {
             // Copy annotations over. Workaround for https://youtrack.jetbrains.com/issue/KT-74361/
             for ((i, parameter) in function.valueParameterSymbols.withIndex()) {
@@ -709,9 +409,9 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
             // Add our marker annotation
             replaceAnnotationsSafe(
               annotations +
-                buildSimpleAnnotation {
-                  session.metroFirBuiltIns.graphFactoryInvokeFunctionMarkerClassSymbol
-                }
+                  buildSimpleAnnotation {
+                    session.metroFirBuiltIns.graphFactoryInvokeFunctionMarkerClassSymbol
+                  }
             )
           }
           .symbol
@@ -731,22 +431,22 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
           log("Creator was null, generating a default invoke. ")
           val generatedFunction =
             createMemberFunction(
-                owner,
-                Keys.MetroGraphCreatorsObjectInvokeDeclaration,
-                Symbols.Names.invoke,
-                returnTypeProvider = {
-                  graphClass.constructType(it.mapToArray(FirTypeParameter::toConeType))
-                },
-              ) {
-                status { isOperator = true }
-              }
+              owner,
+              Keys.MetroGraphCreatorsObjectInvokeDeclaration,
+              Symbols.Names.invoke,
+              returnTypeProvider = {
+                graphClass.constructType(it.mapToArray(FirTypeParameter::toConeType))
+              },
+            ) {
+              status { isOperator = true }
+            }
               .apply {
                 // Add our marker annotation
                 replaceAnnotationsSafe(
                   annotations +
-                    buildSimpleAnnotation {
-                      session.metroFirBuiltIns.graphFactoryInvokeFunctionMarkerClassSymbol
-                    }
+                      buildSimpleAnnotation {
+                        session.metroFirBuiltIns.graphFactoryInvokeFunctionMarkerClassSymbol
+                      }
                 )
               }
           functions += generatedFunction.symbol
@@ -779,31 +479,6 @@ internal class DependencyGraphFirGenerator(session: FirSession) :
         graphObject.findCreator(session, "generateFunctions ${context.owner.classId}", ::log)!!
       val samFunction = creator.classSymbol.findSamFunction(session)
       samFunction?.let { functions += generateSAMFunction(graphObject.classSymbol, it) }
-    } else if (owner.hasOrigin(Keys.SwitchingProviderDeclaration)) {
-      // SwitchingProvider's invoke method - stub for now, will be populated in IR
-      if (callableId.callableName == Symbols.Names.invoke) {
-        // Get the type parameter T to use as return type
-        val typeParam = owner.typeParameterSymbols.firstOrNull()
-        val returnType = if (typeParam != null) {
-          typeParam.toConeType()
-        } else {
-          // Fallback to Any if type parameter not found
-          session.builtinTypes.anyType.coneType
-        }
-
-        val generatedFunction = createMemberFunction(
-          owner,
-          Keys.Default,
-          Symbols.Names.invoke,
-          returnType = returnType
-        ) {
-          status {
-            isOperator = true
-            isOverride = true
-          }
-        }
-        functions += generatedFunction.symbol
-      }
     }
 
     if (functions.isNotEmpty()) {

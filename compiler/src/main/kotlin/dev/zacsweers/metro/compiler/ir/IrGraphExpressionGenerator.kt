@@ -300,11 +300,24 @@ private constructor(
               binding = binding,
               fieldInitKey = fieldInitKey,
             )
-          irInvoke(
+          val factory = irInvoke(
             dispatchReceiver = irGetObject(creatorClass.symbol),
             callee = createFunction,
             args = args,
           )
+
+          // When AccessType.INSTANCE is requested, invoke the factory to get the instance
+          // Otherwise return the factory itself (for AccessType.PROVIDER)
+          when (accessType) {
+            AccessType.INSTANCE -> {
+              // Invoke the factory to get the actual instance
+              irInvoke(factory, callee = symbols.providerInvoke)
+            }
+            AccessType.PROVIDER -> {
+              // Return the factory itself as a provider
+              factory
+            }
+          }
         }
 
         is IrBinding.Assisted -> {
@@ -803,13 +816,24 @@ private constructor(
     field: IrField,
     typeKey: IrTypeKey,
   ): IrExpression = with(scope) {
-    // Check if thisReceiver is a SwitchingProvider
-    // If so, we need to access fields through the graph field
-    val receiverType = thisReceiver.type
-    val receiverClass = receiverType.classOrNull?.owner
-    if (receiverClass != null && receiverClass.name.asString().contains("SwitchingProvider")) {
-      // This is a SwitchingProvider, access fields through the graph
-      val graphField = receiverClass.declarations
+    // Check if thisReceiver is from a SwitchingProvider context
+    // We need to check the parent class, not just the receiver type
+    val parentFunction = thisReceiver.parent as? IrFunction
+    val parentClass = parentFunction?.parent as? IrClass
+
+    if (debug) {
+      log("resolveFieldOwnerForBindingContext: Checking for SwitchingProvider context")
+      log("  parentFunction: ${parentFunction?.name}")
+      log("  parentClass: ${parentClass?.name}")
+      log("  typeKey: ${typeKey.render(short = true)}")
+    }
+
+    if (parentClass != null && parentClass.name.asString().contains("SwitchingProvider")) {
+      // This is a SwitchingProvider context, access fields through the graph field
+      if (debug) {
+        log("resolveFieldOwnerForBindingContext: Detected SwitchingProvider context, routing through graph field")
+      }
+      val graphField = parentClass.declarations
         .filterIsInstance<IrField>()
         .firstOrNull { it.name == Symbols.Names.graph }
 

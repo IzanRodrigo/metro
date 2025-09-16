@@ -21,7 +21,6 @@ import dev.zacsweers.metro.compiler.proto.MetroMetadata
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.MetroConstants.STATEMENTS_PER_METHOD
 import dev.zacsweers.metro.compiler.reports.IrGenerationReport
-import dev.zacsweers.metro.compiler.reports.FirGenerationReport
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.sharding.ShardingPlan
 import dev.zacsweers.metro.compiler.suffixIfNot
@@ -281,11 +280,8 @@ internal class IrGraphGenerator(
         }
       }
 
-      // Resolve caching wrapper symbols once for efficiency
-      val doubleCheckProvider = symbols.doubleCheckProvider // Thread-safe for scoped bindings
-      // SingleCheck is lighter weight than DoubleCheck (no synchronization needed for unscoped)
-      // Use SingleCheck for unscoped bindings when available, fallback to DoubleCheck
-      val singleCheckProvider = symbols.metroProviderSymbols.singleCheckProviderOrNull() ?: doubleCheckProvider
+      // Resolve caching wrapper symbol once for efficiency
+      val doubleCheckProvider = symbols.doubleCheckProvider // Thread-safe caching for all bindings
 
       val constructorStatements =
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
@@ -376,7 +372,7 @@ internal class IrGraphGenerator(
                 args = listOf(spNew)
               )
             } else {
-              // Use DoubleCheck for unscoped bindings (SingleCheck not yet available)
+              // Use DoubleCheck for unscoped bindings
               irInvoke(
                 callee = symbols.doubleCheckProvider,
                 args = listOf(spNew)
@@ -520,7 +516,7 @@ internal class IrGraphGenerator(
                 call.arguments[1] = irInt(id) // id
               }
 
-              // Graph bindings are typically unscoped, use DoubleCheck (SingleCheck not yet available)
+              // Graph bindings are typically unscoped, use DoubleCheck
               irInvoke(
                 callee = symbols.doubleCheckProvider,
                 args = listOf(spNew)
@@ -725,7 +721,7 @@ internal class IrGraphGenerator(
                 call.arguments[1] = irInt(id) // id
               }
 
-              // CRITICAL: Caching wrappers (DoubleCheck/SingleCheck) are applied HERE at field
+              // CRITICAL: The caching wrapper (DoubleCheck) is applied HERE at field
               // initialization, NOT in SwitchingProvider's invoke() method. This ensures proper
               // singleton semantics while keeping the dispatch logic simple and efficient.
               //
@@ -737,7 +733,7 @@ internal class IrGraphGenerator(
                   args = listOf(spNew)
                 )
               } else {
-                // For unscoped bindings, use DoubleCheck (SingleCheck not yet available)
+                // For unscoped bindings, use DoubleCheck
                 irInvoke(
                   callee = symbols.doubleCheckProvider,
                   args = listOf(spNew)
@@ -1331,7 +1327,8 @@ internal class IrGraphGenerator(
         context = this@IrGraphGenerator,
         bindingFieldContext = bindingFieldContext,
         shardFieldRegistry = shardFieldRegistry,
-        expressionGenerator = expressionGenerator
+        expressionGenerator = expressionGenerator,
+        graphTypeKey = node.typeKey
       )
 
       // Populate the body with graph-aware expressions

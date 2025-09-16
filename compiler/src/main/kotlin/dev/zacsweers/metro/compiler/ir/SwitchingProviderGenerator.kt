@@ -34,6 +34,7 @@ internal class SwitchingProviderGenerator(
   private val bindingFieldContext: BindingFieldContext? = null,
   private val shardFieldRegistry: ShardFieldRegistry? = null,
   private val expressionGenerator: IrGraphExpressionGenerator? = null,
+  private val graphTypeKey: IrTypeKey? = null,
 ) : IrMetroContext by context {
 
   // Helper extension functions for type checking
@@ -111,7 +112,7 @@ internal class SwitchingProviderGenerator(
   /**
    * Populates the invoke() body of SwitchingProvider with a when(id) expression.
    *
-   * IMPORTANT: This method MUST NOT add any caching wrappers (DoubleCheck/SingleCheck).
+   * IMPORTANT: This method MUST NOT add any caching wrappers (DoubleCheck).
    * Caching is already applied at the field initialization level when the provider
    * fields are created. The invoke() method should only dispatch to the appropriate
    * binding code without additional wrapping.
@@ -178,6 +179,64 @@ internal class SwitchingProviderGenerator(
 
         // For all binding types, we generate the instance creation code directly.
         // This is what gets called when the provider is invoked.
+        // Debug all bindings to understand what's happening
+        if (debug) {
+          log("SwitchingProvider: Processing binding ${binding.typeKey.render(short = true)}")
+          log("  Binding class: ${binding::class.simpleName}")
+          if (graphTypeKey != null) {
+            log("  Graph type: ${graphTypeKey.render(short = true)}")
+            log("  Match: ${binding.typeKey == graphTypeKey}")
+          }
+        }
+
+        // Special case: If this binding represents the graph itself, return the graph instance
+        // This can happen when GraphExtensionFactory needs the parent graph (AppComponent)
+        if (graphTypeKey != null && binding.typeKey == graphTypeKey) {
+          if (debug) {
+            log("SwitchingProvider: MATCH! Detected graph binding (${binding::class.simpleName}), returning thisGraphInstance")
+          }
+
+          // Access through graph.thisGraphInstance field if it exists
+          val thisGraphInstanceField = graphClass.declarations
+            .filterIsInstance<IrField>()
+            .firstOrNull { field ->
+              field.name.asString().contains("thisGraphInstance")
+            }
+
+          if (thisGraphInstanceField != null) {
+            // Get the graph from SwitchingProvider and access its thisGraphInstance field
+            val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+              .firstOrNull { it.name == Symbols.Names.graph }
+              ?: error("SwitchingProvider must have field: graph")
+
+            val invokeFunction = switchingProviderClass.declarations
+              .filterIsInstance<IrSimpleFunction>()
+              .firstOrNull { it.name.asString() == "invoke" }
+              ?: error("SwitchingProvider must have invoke() function")
+
+            val spThis = invokeFunction.dispatchReceiverParameter
+              ?: error("invoke() must have dispatch receiver")
+
+            val graphAccess = irGetField(irGet(spThis), graphField)
+            return@run irGetField(graphAccess, thisGraphInstanceField)
+          } else {
+            // Fallback: just return the graph itself
+            val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+              .firstOrNull { it.name == Symbols.Names.graph }
+              ?: error("SwitchingProvider must have field: graph")
+
+            val invokeFunction = switchingProviderClass.declarations
+              .filterIsInstance<IrSimpleFunction>()
+              .firstOrNull { it.name.asString() == "invoke" }
+              ?: error("SwitchingProvider must have invoke() function")
+
+            val spThis = invokeFunction.dispatchReceiverParameter
+              ?: error("invoke() must have dispatch receiver")
+
+            return@run irGetField(irGet(spThis), graphField)
+          }
+        }
+
         when (binding) {
             // BoundInstance must always be read from fields, never constructed inline
             is IrBinding.BoundInstance -> {
