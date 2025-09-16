@@ -26,12 +26,20 @@ import dev.zacsweers.metro.compiler.graph.sharding.ShardingPlan
 import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
+import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.DescriptorVisibility
+import org.jetbrains.kotlin.descriptors.Modality
+import org.jetbrains.kotlin.types.Variance
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
+import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.addTypeParameter
+import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
+import org.jetbrains.kotlin.ir.builders.declarations.buildClass
+import org.jetbrains.kotlin.ir.builders.declarations.buildValueParameter
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
@@ -148,6 +156,68 @@ internal class IrGraphGenerator(
   }
 
   /**
+   * Creates the SwitchingProvider nested class in IR.
+   * This is needed when sharding is enabled but FIR generation was skipped.
+   */
+  private fun IrClass.createSwitchingProviderClass(): IrClass {
+    val switchingProviderClass = irFactory.buildClass {
+      name = Name.identifier("SwitchingProvider")
+      kind = ClassKind.CLASS
+      visibility = DescriptorVisibilities.PRIVATE
+      modality = Modality.FINAL
+    }
+
+    // Add it as a nested class of the graph
+    addChild(switchingProviderClass)
+
+    // Add type parameter T
+    val typeParam = switchingProviderClass.addTypeParameter {
+      name = Name.identifier("T")
+      variance = Variance.INVARIANT
+      index = 0
+    }
+
+    // Set supertype to Provider<T>
+    val typeParamType = irBuiltIns.anyType // We'll use Any type for now and let it be resolved
+    val providerType = symbols.metroProvider.typeWith(typeParamType)
+    switchingProviderClass.superTypes = listOf(providerType)
+
+    // Create primary constructor
+    val constructor = switchingProviderClass.addConstructor {
+      isPrimary = true
+      visibility = DescriptorVisibilities.PUBLIC
+    }
+
+    // Add constructor parameters: graph and id
+    constructor.addValueParameter {
+      name = Symbols.Names.graph
+      type = this@createSwitchingProviderClass.defaultType
+    }
+
+    constructor.addValueParameter {
+      name = Symbols.Names.id
+      type = irBuiltIns.intType
+    }
+
+    // Create invoke method (will be implemented later)
+    val invokeMethod = switchingProviderClass.addFunction {
+      name = Name.identifier("invoke")
+      modality = Modality.OPEN
+      visibility = DescriptorVisibilities.PUBLIC
+      returnType = typeParamType // Use the same type as we used for Provider<T>
+    }
+
+    // Set the invoke method as override of Provider.get()
+    invokeMethod.overriddenSymbols = listOf(symbols.providerInvoke)
+
+    if (options.debug) {
+      log("Created SwitchingProvider class for ${this.name}")
+    }
+
+    return switchingProviderClass
+  }
+
+  /**
    * Graph extensions may reserve field names for their linking, so if they've done that we use the
    * precomputed field rather than generate a new one.
    */
@@ -169,9 +239,25 @@ internal class IrGraphGenerator(
       val switchingIds = mutableMapOf<IrTypeKey, Int>()
       var nextSwitchId = 0
 
-      // Robust lookup of the FIR-declared SwitchingProvider class
-      // Only look for it if the option is enabled
-      val switchingProviderClass: IrClass? = if (options.fastInit) {
+      // Create or find SwitchingProvider class
+      // When sharding is enabled and fastInit is on, we need to create SwitchingProvider in IR
+      val switchingProviderClass: IrClass? = if (options.fastInit && shardingPlan?.requiresSharding() == true) {
+        // First try to find existing SwitchingProvider (for backward compatibility)
+        val existing = declarations
+          .filterIsInstance<IrClass>()
+          .firstOrNull { it.name.asString() == "SwitchingProvider" }
+
+        if (existing != null) {
+          existing
+        } else {
+          // Create SwitchingProvider class in IR since FIR generation was removed
+          if (options.debug) {
+            log("Creating SwitchingProvider class in IR for ${graphClass.name}")
+          }
+          createSwitchingProviderClass()
+        }
+      } else if (options.fastInit) {
+        // Try to find existing SwitchingProvider even when sharding is not required
         declarations
           .filterIsInstance<IrClass>()
           .firstOrNull { it.name.asString() == "SwitchingProvider" }
@@ -180,15 +266,6 @@ internal class IrGraphGenerator(
           log("SwitchingProvider disabled via compiler option")
         }
         null
-      }
-
-      // Validate SwitchingProvider presence when sharding is enabled and option is on
-      if (shardingPlan?.requiresSharding() == true &&
-          options.fastInit &&
-          switchingProviderClass == null) {
-        error("SwitchingProvider skeleton not found in ${graphClass.name}; FIR step missing or failed")
-      } else if (switchingProviderClass == null && options.debug) {
-        log("SwitchingProvider not found in ${graphClass.name}; using fallback provider generation")
       }
 
       val spCtor: IrConstructor? = switchingProviderClass?.primaryConstructor
