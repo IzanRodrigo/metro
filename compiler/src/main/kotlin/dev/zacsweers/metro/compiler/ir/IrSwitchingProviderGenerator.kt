@@ -4,33 +4,310 @@
 
 package dev.zacsweers.metro.compiler.ir
 
+import dev.zacsweers.metro.compiler.MetroConstants.STATEMENTS_PER_METHOD
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.graph.sharding.ShardFieldRegistry
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
-import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.IrStatement
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.builders.*
+import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
-import org.jetbrains.kotlin.ir.declarations.*
+import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrStringConcatenationImpl
 import org.jetbrains.kotlin.ir.symbols.IrClassSymbol
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classifierOrNull
+import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
+import org.jetbrains.kotlin.ir.util.nonDispatchParameters
+import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.name.Name
 
-internal class SwitchingProviderGenerator(
+internal class IrSwitchingProviderGenerator(
   private val context: IrMetroContext,
   private val bindingFieldContext: BindingFieldContext? = null,
   private val shardFieldRegistry: ShardFieldRegistry? = null,
   private val expressionGenerator: IrGraphExpressionGenerator? = null,
   private val graphTypeKey: IrTypeKey? = null,
 ) : IrMetroContext by context {
+
+  companion object {
+    /**
+     * Creates the SwitchingProvider nested class within the graph class.
+     * The class is created as a shell with constructor body populated later.
+     *
+     * @param context The IR metro context
+     * @param graphClass The parent graph class to add the SwitchingProvider to
+     * @return The created SwitchingProvider class, or null if fastInit is disabled
+     */
+    fun createSwitchingProviderClass(
+      context: IrMetroContext,
+      graphClass: IrClass
+    ): IrClass? = with(context) {
+      if (!options.fastInit) {
+        if (options.debug) {
+          log("SwitchingProvider disabled via compiler option")
+        }
+        return null
+      }
+
+      // SwitchingProvider has already been created in FIR phase
+      // Find and return the existing class
+      val switchingProviderClass = graphClass.declarations
+        .filterIsInstance<IrClass>()
+        .firstOrNull { it.name == Symbols.Names.SwitchingProvider }
+
+      if (switchingProviderClass == null) {
+        if (options.debug) {
+          log("SwitchingProvider class not found - was FIR generation skipped?")
+        }
+        return null
+      }
+
+      switchingProviderClass
+    }
+
+    /**
+     * Populates the SwitchingProvider constructor body with field assignments.
+     * This must be called after the class is created but before it's used.
+     *
+     * @param context The IR metro context
+     * @param switchingProviderClass The SwitchingProvider class to populate
+     * @param graphClass The parent graph class
+     */
+    fun populateSwitchingProviderConstructor(
+      context: IrMetroContext,
+      switchingProviderClass: IrClass,
+      graphClass: IrClass
+    ) = with(context) {
+      val spCtor = switchingProviderClass.primaryConstructor
+        ?: error("SwitchingProvider must have primary constructor")
+
+      // Add Provider<T> supertype if not already present
+      if (switchingProviderClass.superTypes.isEmpty() ||
+          switchingProviderClass.superTypes.all { !it.isProvider() }) {
+        val typeParam = switchingProviderClass.typeParameters.firstOrNull()
+          ?: error("SwitchingProvider must have type parameter T")
+        // Create the type reference for the type parameter T
+        val typeParamType = irBuiltIns.anyType  // Fallback to Any for now, as the actual type will be resolved at usage
+        val providerType = symbols.metroProvider.typeWith(typeParamType)
+        switchingProviderClass.superTypes = switchingProviderClass.superTypes + providerType
+      }
+
+      // First, create backing fields for graph and id if they don't exist
+      val graphField = switchingProviderClass.declarations
+        .filterIsInstance<IrField>()
+        .firstOrNull { it.name == Symbols.Names.graph }
+        ?: switchingProviderClass.addField {
+          name = Symbols.Names.graph
+          type = graphClass.defaultType
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = true
+        }
+
+      val idField = switchingProviderClass.declarations
+        .filterIsInstance<IrField>()
+        .firstOrNull { it.name == Symbols.Names.id }
+        ?: switchingProviderClass.addField {
+          name = Symbols.Names.id
+          type = irBuiltIns.intType
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = true
+        }
+
+      // Build constructor body: super(), field assignments, instance initializer
+      spCtor.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+        val builder = createIrBuilder(spCtor.symbol)
+        val thisParam = switchingProviderClass.thisReceiver
+          ?: error("SwitchingProvider must have thisReceiver")
+
+        // Find constructor parameters - use nonDispatchParameters to avoid deprecated API
+        val params = spCtor.nonDispatchParameters
+        require(params.size >= 2) {
+          "SwitchingProvider constructor must have at least 2 parameters but found ${params.size}"
+        }
+        val graphParam = params[0]  // First param should be graph
+        val idParam = params[1]     // Second param should be id
+
+        // Validate parameter names
+        require(graphParam.name == Symbols.Names.graph) {
+          "Expected first parameter to be 'graph' but got '${graphParam.name}'"
+        }
+        require(idParam.name == Symbols.Names.id) {
+          "Expected second parameter to be 'id' but got '${idParam.name}'"
+        }
+
+        // Call super constructor (Any)
+        statements += builder.irDelegatingConstructorCall(
+          irBuiltIns.anyClass.owner.primaryConstructor!!
+        )
+
+        // Assign fields
+        statements += builder.irSetField(
+          receiver = builder.irGet(thisParam),
+          field = graphField,
+          value = builder.irGet(graphParam)
+        )
+
+        statements += builder.irSetField(
+          receiver = builder.irGet(thisParam),
+          field = idField,
+          value = builder.irGet(idParam)
+        )
+
+        // Call instance initializer if needed
+        statements += IrInstanceInitializerCallImpl(
+          UNDEFINED_OFFSET,
+          UNDEFINED_OFFSET,
+          switchingProviderClass.symbol,
+          irBuiltIns.unitType
+        )
+      }
+
+      if (options.debug) {
+        log("Populated SwitchingProvider constructor body with field assignments")
+      }
+    }
+
+    // Extension function to check if a type is a Provider type
+    private fun IrType.isProvider(): Boolean {
+      val classifier = (this as? IrSimpleType)?.classifier?.owner as? IrClass
+      return classifier?.name?.asString()?.contains("Provider") == true
+    }
+
+    /**
+     * Populates the SwitchingProvider invoke() method if it exists.
+     * This should be called after all fields are created and initialized.
+     *
+     * @param context The IR metro context
+     * @param graphClass The main graph class containing the SwitchingProvider
+     * @param switchingProviderClass The SwitchingProvider class (may be null)
+     * @param switchingIds Map of type keys to their assigned switch IDs
+     * @param bindingGraph The binding graph containing all bindings
+     * @param bindingFieldContext The field context for looking up fields
+     * @param shardFieldRegistry The shard field registry for cross-shard access
+     * @param expressionGeneratorFactory Factory for creating expression generators
+     * @param node The dependency graph node
+     */
+    fun populateSwitchingProviderIfExists(
+      context: IrMetroContext,
+      graphClass: IrClass,
+      switchingProviderClass: IrClass?,
+      switchingIds: Map<IrTypeKey, Int>,
+      bindingGraph: IrBindingGraph,
+      bindingFieldContext: BindingFieldContext,
+      shardFieldRegistry: ShardFieldRegistry,
+      expressionGeneratorFactory: IrGraphExpressionGenerator.Factory,
+      node: DependencyGraphNode
+    ) = with(context) {
+      if (switchingProviderClass == null) {
+        // If we have bindings to handle but no SwitchingProvider class, that's an error
+        if (switchingIds.isNotEmpty()) {
+          error("Missing SwitchingProvider class in ${graphClass.name} with ${switchingIds.size} bindings to handle – did FIR generation run?")
+        }
+        // No SwitchingProvider and no bindings, nothing to do
+        return
+      }
+
+      // Find the invoke function
+      val invokeFun = switchingProviderClass.declarations
+        .filterIsInstance<IrSimpleFunction>()
+        .firstOrNull { it.name.asString() == "invoke" }
+        ?: error("SwitchingProvider must have invoke() function")
+
+      // If we have SwitchingProvider but no bindings, provide a fake implementation
+      if (switchingIds.isEmpty()) {
+        if (options.debug) {
+          log("IrGraphGenerator: No bindings registered for SwitchingProvider - generating error body")
+        }
+        invokeFun.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+          val builder = createIrBuilder(invokeFun.symbol)
+          statements += builder.irReturn(
+            builder.irInvoke(
+              callee = symbols.stdlibErrorFunction,
+              args = listOf(builder.irString("SwitchingProvider not implemented - no bindings registered"))
+            )
+          )
+        }
+        return
+      }
+
+      if (options.debug) {
+        log("IrGraphGenerator: Populating SwitchingProvider with ${switchingIds.size} bindings")
+      }
+
+      // Build the ordered list of bindings based on their IDs
+      val idToBinding = switchingIds.entries
+        .sortedBy { it.value }
+        .mapNotNull { (typeKey, _) ->
+          bindingGraph.bindingsSnapshot()[typeKey]
+        }
+
+      // Get the dispatch receiver of invoke (the SwitchingProvider instance)
+      val spThis = requireNotNull(invokeFun.dispatchReceiverParameter) {
+        "invoke() must have dispatch receiver"
+      }
+
+      // Find graph and id fields in SwitchingProvider
+      val graphField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+        .firstOrNull { it.name == Symbols.Names.graph }
+        ?: error("SwitchingProvider must have field: graph")
+      val idField = switchingProviderClass.declarations.filterIsInstance<IrField>()
+        .firstOrNull { it.name == Symbols.Names.id }
+        ?: error("SwitchingProvider must have field: id")
+
+      // Build the invoke body
+      invokeFun.body = irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
+        val builder = createIrBuilder(invokeFun.symbol)
+
+        // Get graph from SwitchingProvider field (created once, can be reused)
+        val graphExpr = builder.irGetField(builder.irGet(spThis), graphField)
+
+        // Create a lambda to generate fresh ID field access expressions
+        // This avoids the "duplicate IR node" validation error
+        val idExprFactory: () -> IrExpression = {
+          builder.irGetField(builder.irGet(spThis), idField)
+        }
+
+        // CRITICAL: Build expression generator with the SwitchingProvider's dispatch receiver
+        // The expression generator will use the graph field from SwitchingProvider for field access
+        // This ensures correct receiver context when generating binding code inside invoke()
+        val expressionGenerator = expressionGeneratorFactory.create(spThis)
+
+        // Create the SwitchingProviderGenerator instance
+        val switchingGenerator = IrSwitchingProviderGenerator(
+          context = context,
+          bindingFieldContext = bindingFieldContext,
+          shardFieldRegistry = shardFieldRegistry,
+          expressionGenerator = expressionGenerator,
+          graphTypeKey = node.typeKey
+        )
+
+        // Populate the body with graph-aware expressions
+        // Note: We pass idExprFactory() to create a fresh expression for the method
+        val invokeStatements = switchingGenerator.populateInvokeBody(
+          builder = builder,
+          graphClass = graphClass,
+          switchingProviderClass = switchingProviderClass,
+          idToBinding = idToBinding,
+          graphExpr = graphExpr,
+          idExpr = idExprFactory(),  // Create one fresh expression for this call
+          returnType = invokeFun.returnType
+        )
+        statements.addAll(invokeStatements)
+      }
+    }
+  }
 
   // Helper extension functions for type checking
   private fun IrType.isProvider(): Boolean {
@@ -99,11 +376,6 @@ internal class SwitchingProviderGenerator(
     }
   }
 
-  companion object {
-    // Maximum number of cases per method to avoid hitting JVM method size limits
-    private const val MAX_CASES_PER_METHOD = 100
-  }
-
   /**
    * Populates the invoke() body of SwitchingProvider with a when(id) expression.
    *
@@ -152,7 +424,7 @@ internal class SwitchingProviderGenerator(
     }
 
     // Check if we need to split into helper methods
-    if (idToBinding.size > MAX_CASES_PER_METHOD) {
+    if (idToBinding.size > STATEMENTS_PER_METHOD) {
       if (debug) {
         log("SwitchingProviderGenerator: Splitting ${idToBinding.size} bindings into helper methods")
       }
@@ -467,7 +739,7 @@ internal class SwitchingProviderGenerator(
 
   /**
    * Generates a split invoke body that delegates to helper methods for large switch statements.
-   * Each helper method handles up to MAX_CASES_PER_METHOD cases.
+   * Each helper method handles up to STATEMENTS_PER_METHOD cases.
    */
   private fun generateSplitInvokeBody(
     builder: IrBuilderWithScope,
@@ -479,12 +751,12 @@ internal class SwitchingProviderGenerator(
     returnType: IrType
   ): List<IrStatement> {
     // Calculate how many helper methods we need
-    val numChunks = (idToBinding.size + MAX_CASES_PER_METHOD - 1) / MAX_CASES_PER_METHOD
+    val numChunks = (idToBinding.size + STATEMENTS_PER_METHOD - 1) / STATEMENTS_PER_METHOD
 
     // Generate helper methods
     for (chunkIndex in 0 until numChunks) {
-      val startId = chunkIndex * MAX_CASES_PER_METHOD
-      val endId = minOf(startId + MAX_CASES_PER_METHOD - 1, idToBinding.size - 1)
+      val startId = chunkIndex * STATEMENTS_PER_METHOD
+      val endId = minOf(startId + STATEMENTS_PER_METHOD - 1, idToBinding.size - 1)
       val chunkBindings = idToBinding.subList(startId, endId + 1)
 
       generateHelperMethod(
@@ -504,8 +776,8 @@ internal class SwitchingProviderGenerator(
 
       // Add a branch for each chunk
       for (chunkIndex in 0 until numChunks) {
-        val startId = chunkIndex * MAX_CASES_PER_METHOD
-        val endId = minOf(startId + MAX_CASES_PER_METHOD - 1, idToBinding.size - 1)
+        val startId = chunkIndex * STATEMENTS_PER_METHOD
+        val endId = minOf(startId + STATEMENTS_PER_METHOD - 1, idToBinding.size - 1)
 
         // Find the helper method
         val helperMethod = switchingProviderClass.declarations

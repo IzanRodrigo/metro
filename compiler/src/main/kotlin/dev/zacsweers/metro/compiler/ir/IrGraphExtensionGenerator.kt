@@ -2,13 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
 
-import dev.zacsweers.metro.compiler.NameAllocator
-import dev.zacsweers.metro.compiler.Origins
-import dev.zacsweers.metro.compiler.Symbols
-import dev.zacsweers.metro.compiler.asName
-import dev.zacsweers.metro.compiler.capitalizeUS
+import dev.zacsweers.metro.compiler.*
 import dev.zacsweers.metro.compiler.ir.transformers.BindingContainer
-import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
 import org.jetbrains.kotlin.descriptors.ClassKind
@@ -24,20 +19,7 @@ import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.irAttribute
 import org.jetbrains.kotlin.ir.types.IrType
-import org.jetbrains.kotlin.ir.util.addChild
-import org.jetbrains.kotlin.ir.util.addFakeOverrides
-import org.jetbrains.kotlin.ir.util.classId
-import org.jetbrains.kotlin.ir.util.classIdOrFail
-import org.jetbrains.kotlin.ir.util.copyAnnotationsFrom
-import org.jetbrains.kotlin.ir.util.copyTo
-import org.jetbrains.kotlin.ir.util.copyTypeParametersFrom
-import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
-import org.jetbrains.kotlin.ir.util.defaultType
-import org.jetbrains.kotlin.ir.util.getValueArgument
-import org.jetbrains.kotlin.ir.util.kotlinFqName
-import org.jetbrains.kotlin.ir.util.parentAsClass
-import org.jetbrains.kotlin.ir.util.parentClassOrNull
-import org.jetbrains.kotlin.ir.util.remapTypes
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.name.ClassId
 
 internal class IrGraphExtensionGenerator(
@@ -332,11 +314,11 @@ internal class IrGraphExtensionGenerator(
 
           val ctor =
             addConstructor {
-                isPrimary = true
-                origin = Origins.Default
-                // This will be finalized in IrGraphGenerator
-                isFakeOverride = true
-              }
+              isPrimary = true
+              origin = Origins.Default
+              // This will be finalized in IrGraphGenerator
+              isFakeOverride = true
+            }
               .apply {
                 // TODO generics?
                 setDispatchReceiver(
@@ -513,7 +495,7 @@ internal class IrGraphExtensionGenerator(
 
       // Add included binding containers to the queue
       for (includedClass in
-        bindingContainerAnno.includedClasses().map { it.classType.rawTypeOrNull() }) {
+      bindingContainerAnno.includedClasses().map { it.classType.rawTypeOrNull() }) {
         if (includedClass != null && includedClass.classIdOrFail !in localVisited) {
           queue += includedClass
         }
@@ -535,5 +517,4 @@ internal class GeneratedGraphExtensionData(
   val factoryImpl: IrClass? = null,
 )
 
-internal var IrClass.generatedGraphExtensionData: GeneratedGraphExtensionData? by
-  irAttribute(copyByDefault = false)
+internal var IrClass.generatedGraphExtensionData: GeneratedGraphExtensionData? by irAttribute(copyByDefault = false)

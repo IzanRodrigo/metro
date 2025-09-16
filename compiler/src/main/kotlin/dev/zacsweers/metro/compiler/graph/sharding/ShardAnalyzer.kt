@@ -18,7 +18,7 @@ import dev.zacsweers.metro.compiler.ir.IrTypeKey
  * 4. Ensures Shard{i} doesn't depend on Shard{i+j}
  */
 internal class ShardAnalyzer(
-  private val keysPerShard: Int = MetroConstants.DEFAULT_KEYS_PER_SHARD
+  private val keysPerShard: Int = MetroConstants.DEFAULT_KEYS_PER_SHARD,
 ) {
 
   /**
@@ -30,7 +30,7 @@ internal class ShardAnalyzer(
    */
   internal fun analyze(
     bindingGraph: IrBindingGraph,
-    sccs: TarjanResult<IrTypeKey>
+    sccs: TarjanResult<IrTypeKey>,
   ): ShardingPlan? {
     val localBindings = bindingGraph.bindingsSnapshot().filterValues { binding ->
       // Only shard local bindings (not inherited from parent graphs)
@@ -39,10 +39,7 @@ internal class ShardAnalyzer(
 
     // Check if sharding is needed
     val maxPartitions = (localBindings.size / keysPerShard) + 1
-    if (maxPartitions <= 1) {
-      // No sharding needed - everything fits in component shard
-      return null
-    }
+    if (maxPartitions <= 1) return null
 
     // Partition bindings following Dagger's algorithm
     val partitions = partitionBindings(localBindings, sccs)
@@ -59,7 +56,7 @@ internal class ShardAnalyzer(
    */
   private fun partitionBindings(
     localBindings: Map<IrTypeKey, IrBinding>,
-    sccs: TarjanResult<IrTypeKey>
+    sccs: TarjanResult<IrTypeKey>,
   ): List<List<IrTypeKey>> {
     val partitions = mutableListOf<List<IrTypeKey>>()
     var currentPartition = mutableListOf<IrTypeKey>()
@@ -93,9 +90,9 @@ internal class ShardAnalyzer(
    */
   private fun buildShardingPlan(
     partitions: List<List<IrTypeKey>>,
-    bindingGraph: IrBindingGraph
+    bindingGraph: IrBindingGraph,
   ): ShardingPlan {
-    val shards = mutableListOf<ShardingPlan.Shard>()
+    val shards = mutableListOf<Shard>()
     val bindingToShard = mutableMapOf<IrTypeKey, Int>()
 
     partitions.forEachIndexed { index, partition ->
@@ -103,11 +100,10 @@ internal class ShardAnalyzer(
       val dependencies = calculateShardDependencies(partition, bindingGraph, bindingToShard)
 
       // Create the shard
-      val shard = ShardingPlan.Shard(
+      val shard = Shard(
         index = index,
         bindings = partition.toSet(),
         dependencies = dependencies,
-        isComponentShard = index == 0
       )
       shards.add(shard)
 
@@ -130,7 +126,7 @@ internal class ShardAnalyzer(
   private fun calculateShardDependencies(
     shardBindings: List<IrTypeKey>,
     bindingGraph: IrBindingGraph,
-    bindingToShard: Map<IrTypeKey, Int>
+    bindingToShard: Map<IrTypeKey, Int>,
   ): Set<IrTypeKey> {
     val dependencies = mutableSetOf<IrTypeKey>()
 

@@ -2,25 +2,15 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
 
-import dev.zacsweers.metro.compiler.MetroAnnotations
-import dev.zacsweers.metro.compiler.Origins
-import dev.zacsweers.metro.compiler.exitProcessing
-import dev.zacsweers.metro.compiler.expectAs
+import dev.zacsweers.metro.compiler.*
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
 import dev.zacsweers.metro.compiler.graph.MutableBindingGraph
 import dev.zacsweers.metro.compiler.graph.sharding.ShardAnalyzer
 import dev.zacsweers.metro.compiler.graph.sharding.ShardingPlan
-import dev.zacsweers.metro.compiler.graph.sharding.ShardingReport
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
-import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
-import org.jetbrains.kotlin.ir.declarations.IrDeclaration
-import org.jetbrains.kotlin.ir.declarations.IrDeclarationWithName
-import org.jetbrains.kotlin.ir.declarations.IrFunction
-import org.jetbrains.kotlin.ir.declarations.IrProperty
-import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
-import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.declarations.*
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.isMarkedNullable
 import org.jetbrains.kotlin.ir.types.makeNotNull
@@ -29,14 +19,8 @@ import org.jetbrains.kotlin.ir.types.removeAnnotations
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
-import org.jetbrains.kotlin.ir.util.classId
-import org.jetbrains.kotlin.ir.util.defaultType
-import org.jetbrains.kotlin.ir.util.dumpKotlinLike
-import org.jetbrains.kotlin.ir.util.fqNameWhenAvailable
+import org.jetbrains.kotlin.ir.util.*
 import org.jetbrains.kotlin.ir.util.isSubtypeOf
-import org.jetbrains.kotlin.ir.util.kotlinFqName
-import org.jetbrains.kotlin.ir.util.nestedClasses
-import org.jetbrains.kotlin.ir.util.parentAsClass
 
 internal class IrBindingGraph(
   private val metroContext: IrMetroContext,
@@ -283,31 +267,6 @@ internal class IrBindingGraph(
                 metroContext.log("[MetroSharding] Total bindings to shard: ${plan.bindingToShard.size}")
                 metroContext.log("[MetroSharding] Analysis completed in ${analysisTime}ms")
               }
-
-              // Generate sharding report using the same pattern as other diagnostics
-              tracer.traceNested("generate sharding report") {
-                val graphName = node.sourceGraph.kotlinFqName.asString().replace(".", "-")
-                val report = ShardingReport.generate(
-                  graphName = node.sourceGraph.kotlinFqName.asString(),
-                  shardingPlan = plan,
-                  bindingGraph = this,
-                  analysisTimeMs = analysisTime,
-                )
-
-                // Write Markdown report
-                writeDiagnostic("sharding-report-${graphName}.md") {
-                  report.toMarkdown()
-                }
-
-                // Write JSON report
-                writeDiagnostic("sharding-report-${graphName}.json") {
-                  report.toJson()
-                }
-
-                if (metroContext.options.debug) {
-                  metroContext.log("[MetroSharding] Sharding report written to reports directory")
-                }
-              }
             }
 
             plan
@@ -323,31 +282,6 @@ internal class IrBindingGraph(
           metroContext.log("[MetroSharding] Sharding disabled (keysPerShard=0)")
         }
         null
-      }
-
-      if (shardingPlan != null) {
-        writeDiagnostic("sharding-plan-${parentTracer.tag}.txt") {
-          buildString {
-            appendLine("Sharding Plan:")
-            appendLine("Total shards: ${shardingPlan.shards.size}")
-            appendLine("Keys per shard threshold: ${shardingPlan.keysPerShard}")
-            appendLine()
-            shardingPlan.shards.forEach { shard ->
-              appendLine("Shard ${shard.index} (${if (shard.isComponentShard) "Component" else shard.shardClassName()}):")
-              appendLine("  Bindings: ${shard.bindings.size}")
-              appendLine("  Dependencies from other shards: ${shard.dependencies.size}")
-
-              // Log sample bindings when debug is enabled
-              if (metroContext.options.debug && shard.bindings.isNotEmpty()) {
-                val sampleBindings = shard.bindings.take(5).joinToString { it.render(short = true) }
-                appendLine("  Sample bindings: $sampleBindings")
-                if (shard.bindings.size > 5) {
-                  appendLine("  ... and ${shard.bindings.size - 5} more")
-                }
-              }
-            }
-          }
-        }
       }
 
       return BindingGraphResult(sortedKeys, deferredTypes, reachableKeys, shardingPlan)
