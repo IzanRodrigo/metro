@@ -196,19 +196,6 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
-  SHARDING_BREAK_CYCLES(
-    RawMetroOption.boolean(
-      name = "sharding.breakCycles",
-      defaultValue = true,
-      valueDescription = "<true | false>",
-      description = "Enable automatic cycle breaking for cross-shard back-edges. " +
-        "When enabled, dependencies from higher-numbered shards to lower-numbered shards " +
-        "are accessed through Provider indirection to prevent eager initialization cycles. " +
-        "Default is true. Disabling may cause StackOverflowError in graphs with cross-shard cycles.",
-      required = false,
-      allowMultipleOccurrences = false,
-    )
-  ),
   PUBLIC_PROVIDER_SEVERITY(
     RawMetroOption(
       name = "public-provider-severity",
@@ -558,7 +545,6 @@ public data class MetroOptions(
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
   val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
   val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
-  val shardingBreakCycles: Boolean = MetroOption.SHARDING_BREAK_CYCLES.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE
@@ -701,9 +687,6 @@ public data class MetroOptions(
 
           MetroOption.FAST_INIT ->
             options = options.copy(fastInit = configuration.getAsBoolean(entry))
-
-          MetroOption.SHARDING_BREAK_CYCLES ->
-            options = options.copy(shardingBreakCycles = configuration.getAsBoolean(entry))
 
           MetroOption.PUBLIC_PROVIDER_SEVERITY ->
             options =

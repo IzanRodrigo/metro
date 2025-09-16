@@ -172,7 +172,6 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
         // Sharding options with platform-aware defaults
         val defaultKeysPerShard = if (isJvmTarget) 150 else 0
         add(lazyOption("sharding.keysPerShard", extension.keysPerShard.orElse(defaultKeysPerShard)))
-        add(lazyOption("sharding.breakCycles", extension.shardingBreakCycles))
 
         with(extension.interop) {
           provider

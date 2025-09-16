@@ -167,13 +167,6 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val keysPerShard: Property<Int> =
     objects.property(Int::class.javaObjectType)
 
-  /**
-   * Enable/disable cycle breaking in sharding.
-   * When enabled (default), the sharding algorithm will attempt to break cycles
-   * by distributing strongly connected components across shards.
-   */
-  public val shardingBreakCycles: Property<Boolean> =
-    objects.property(Boolean::class.javaObjectType).convention(true)
 
   /**
    * Configures interop to support in generated code, usually from another DI framework.

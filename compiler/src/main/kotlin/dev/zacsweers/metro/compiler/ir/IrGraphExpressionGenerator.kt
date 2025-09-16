@@ -16,7 +16,6 @@ import dev.zacsweers.metro.compiler.ir.transformers.AssistedFactoryTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.BindingContainerTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.MembersInjectorTransformer
 import dev.zacsweers.metro.compiler.reportCompilerBug
-// import dev.zacsweers.metro.compiler.sharding.CycleBreaker // Removed - not implemented yet
 import dev.zacsweers.metro.compiler.sharding.ShardFieldRegistry
 import dev.zacsweers.metro.compiler.sharding.ShardingPlan
 import dev.zacsweers.metro.compiler.tracing.Tracer
@@ -72,7 +71,6 @@ private constructor(
   private val shardingPlan: ShardingPlan? = null,
   private val currentShardIndex: Int? = null,
   private val shardFieldRegistry: ShardFieldRegistry? = null,
-  // private val cycleBreaker: CycleBreaker? = null, // TODO: Implement cycle breaking
 ) : IrMetroContext by context {
 
   class Factory(
@@ -90,11 +88,6 @@ private constructor(
     private val currentShardIndex: Int? = null,
   ) {
     fun create(thisReceiver: IrValueParameter): IrGraphExpressionGenerator {
-      val cycleBreaker = if (shardingPlan != null) {
-        null // CycleBreaker(bindingGraph, shardingPlan) // TODO: Implement
-      } else {
-        null
-      }
 
       // Determine the shard context from the thisReceiver
       // If the parent class is a shard class, extract its index
@@ -134,7 +127,6 @@ private constructor(
         shardingPlan = shardingPlan,
         currentShardIndex = actualShardIndex,
         shardFieldRegistry = shardFieldRegistry,
-        // cycleBreaker = cycleBreaker, // TODO: Implement cycle breaking
       )
     }
   }

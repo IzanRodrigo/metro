@@ -22,12 +22,6 @@ public class BoxTestGenerated extends AbstractBoxTest {
     KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/box"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
   }
 
-  @Test
-  @TestMetadata("binds_instance_inline.kt")
-  public void testBinds_instance_inline() {
-    runTest("compiler-tests/src/test/data/box/binds_instance_inline.kt");
-  }
-
   @Nested
   @TestMetadata("compiler-tests/src/test/data/box/aggregation")
   @TestDataPath("$PROJECT_ROOT")

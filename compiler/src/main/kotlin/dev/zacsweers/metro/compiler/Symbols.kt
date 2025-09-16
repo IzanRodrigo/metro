@@ -176,7 +176,6 @@ internal class Symbols(
     val MetroMembersInjector = $$$"$$MetroMembersInjector".asName()
     val ProviderClass = "Provider".asName()
     val Provides = StringNames.PROVIDES.asName()
-    val SwitchingProvider = "SwitchingProvider".asName()
     val additionalScopes = StringNames.ADDITIONAL_SCOPES.asName()
     val asContribution = "asContribution".asName()
     val binding = StringNames.BINDING.asName()
@@ -192,8 +191,6 @@ internal class Symbols(
     val error = StringNames.ERROR.asName()
     val excludes = StringNames.EXCLUDES.asName()
     val factory = StringNames.FACTORY.asName()
-    val graph = "graph".asName()
-    val id = "id".asName()
     val ignoreQualifier = StringNames.IGNORE_QUALIFIER.asName()
     val includes = "includes".asName()
     val injectMembers = StringNames.INJECT_MEMBERS.asName()
@@ -725,7 +722,6 @@ internal class Symbols(
         ClassId(daggerInteropRuntimeInternal.packageFqName, "DaggerInteropDoubleCheck".asName())
       )!!
     }
-
 
     private val lazyFromDaggerProvider by lazy {
       doubleCheckCompanionObject.requireSimpleFunction("lazyFromDaggerProvider")

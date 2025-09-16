@@ -567,7 +567,7 @@ internal class IrGraphGenerator(
         }
 
       // For all deferred types, assign them first as factories
-      // Deferred types need special handling to break cycles - they use DelegateFactory
+      // Deferred types need special handling - they use DelegateFactory
       // which allows setting the actual provider later, after all dependencies are initialized.
       // If a type depends on a deferred type, it will also need to be provided via a provider
       // to ensure proper initialization order.
@@ -583,9 +583,9 @@ internal class IrGraphGenerator(
                 { deferredTypeKey.type.wrapInProvider(symbols.metroProvider) },
               )
               .withInit(binding.typeKey) { thisReceiver, _ ->
-                // Deferred types use DelegateFactory for cycle breaking
+                // Deferred types use DelegateFactory for handling circular dependencies
                 // Note: We cannot use SwitchingProvider here because we need the ability
-                // to set the delegate after construction to break cycles
+                // to set the delegate after construction
                 irInvoke(
                   callee = symbols.metroDelegateFactoryConstructor,
                   typeArgs = listOf(deferredTypeKey.type),
@@ -1654,228 +1654,6 @@ internal class IrGraphGenerator(
     // Return both the infos and their initializations
     return infos to shardInitializers
   }
-
-  // TODO: Add SwitchingProvider implementation in a follow-up PR
-  // The SwitchingProvider pattern requires more careful integration with the
-  // existing provider field generation logic
-  /*
-  private fun IrClass.generateSwitchingProvider(
-    providerCases: Map<Int, IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrExpression>,
-    typeParameter: IrType = context.irBuiltIns.anyNType
-  ): IrClass {
-    val switchingProviderClass = context.pluginContext.irFactory.buildClass {
-      name = "SwitchingProvider".asName()
-      kind = ClassKind.CLASS
-      visibility = DescriptorVisibilities.PRIVATE
-      modality = Modality.FINAL
-      origin = Origins.Default
-    }
-
-    // Make it a nested class of the component
-    addChild(switchingProviderClass)
-    switchingProviderClass.createThisReceiverParameter()
-
-    // Add type parameter <T>
-    val typeParam = switchingProviderClass.addTypeParameter {
-      name = "T".asName()
-      variance = Variance.OUT_VARIANCE
-    }
-
-    // Add parent and id fields
-    val parentField = switchingProviderClass.addField {
-      name = "parent".asName()
-      type = this@generateSwitchingProvider.defaultType
-      visibility = DescriptorVisibilities.PRIVATE
-      isFinal = true
-    }
-
-    val idField = switchingProviderClass.addField {
-      name = "id".asName()
-      type = irBuiltIns.intType
-      visibility = DescriptorVisibilities.PRIVATE
-      isFinal = true
-    }
-
-    // Add constructor
-    val constructor = switchingProviderClass.addConstructor {
-      visibility = DescriptorVisibilities.PUBLIC
-      isPrimary = true
-    }
-
-    val parentParam = constructor.addValueParameter("parent", this@generateSwitchingProvider.defaultType)
-    val idParam = constructor.addValueParameter("id", irBuiltIns.intType)
-
-    constructor.body = context.irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
-      val builder = context.createIrBuilder(constructor.symbol)
-      val thisRef = requireNotNull(switchingProviderClass.thisReceiver)
-
-      // Call super constructor
-      statements += builder.irDelegatingConstructorCall(context.irBuiltIns.anyClass.owner.constructors.single())
-
-      // Set fields
-      statements += builder.irSetField(
-        receiver = builder.irGet(thisRef),
-        field = parentField,
-        value = builder.irGet(parentParam)
-      )
-
-      statements += builder.irSetField(
-        receiver = builder.irGet(thisRef),
-        field = idField,
-        value = builder.irGet(idParam)
-      )
-    }
-
-    // Add Provider<T> supertype
-    val providerType = symbols.metroProvider.typeWith(typeParam.defaultType)
-    switchingProviderClass.superTypes = listOf(providerType)
-
-    // Generate invoke() method with when expression
-    val invokeMethod = switchingProviderClass.addFunction {
-      name = "invoke".asName()
-      visibility = DescriptorVisibilities.PUBLIC
-      returnType = typeParam.defaultType
-      modality = Modality.OPEN
-    }
-
-    invokeMethod.overriddenSymbols = listOf(
-      symbols.metroProvider.owner.declarations
-        .filterIsInstance<IrSimpleFunction>()
-        .first { it.name.asString() == "invoke" }
-        .symbol
-    )
-
-    invokeMethod.dispatchReceiverParameter = invokeMethod.addValueParameter(
-      "<this>",
-      switchingProviderClass.defaultType,
-      IrDeclarationOrigin.INSTANCE_RECEIVER
-    ).apply {
-      index = -1
-    }
-
-    // Split cases into chunks if needed (max 100 per method)
-    val CASES_PER_METHOD = 100
-    if (providerCases.size <= CASES_PER_METHOD) {
-      // Single method with all cases
-      invokeMethod.body = generateSwitchingProviderBody(
-        switchingProviderClass,
-        parentField,
-        idField,
-        providerCases,
-        typeParam.defaultType
-      )
-    } else {
-      // Split into multiple methods
-      val chunks = providerCases.entries.chunked(CASES_PER_METHOD)
-      val helperMethods = chunks.mapIndexed { index, chunk ->
-        val helperMethod = switchingProviderClass.addFunction {
-          name = "invoke${index + 1}".asName()
-          visibility = DescriptorVisibilities.PRIVATE
-          returnType = typeParam.defaultType
-        }
-
-        helperMethod.buildReceiverParameter { type = switchingProviderClass.defaultType }
-
-        helperMethod.body = generateSwitchingProviderBody(
-          switchingProviderClass,
-          parentField,
-          idField,
-          chunk.associate { it.key to it.value },
-          typeParam.defaultType
-        )
-
-        helperMethod to chunk.first().key..chunk.last().key
-      }
-
-      // Main invoke method delegates to helpers based on ID range
-      invokeMethod.body = context.irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
-        val builder = context.createIrBuilder(invokeMethod.symbol)
-        val thisReceiver = requireNotNull(invokeMethod.dispatchReceiverParameter)
-        val idValue = builder.irGetField(builder.irGet(thisReceiver), idField)
-
-        statements += builder.irReturn(
-          builder.irWhen(
-            typeParam.defaultType,
-            helperMethods.map { (method, range) ->
-              val condition = if (range.first == range.last) {
-                builder.irEquals(idValue, builder.irInt(range.first))
-              } else {
-                builder.irCall(context.irBuiltIns.intClass.owner.declarations
-                  .filterIsInstance<IrSimpleFunction>()
-                  .first { it.name.asString() == "rangeTo" }
-                  .symbol
-                ).apply {
-                  dispatchReceiver = builder.irInt(range.first)
-                  arguments[0] = builder.irInt(range.last)
-                }.let { rangeExpr ->
-                  // Call IntRange.contains(value)
-                  builder.irCall(
-                    rangeExpr.type.getClass()!!.declarations
-                      .filterIsInstance<IrSimpleFunction>()
-                      .first { it.name.asString() == "contains" }
-                      .symbol
-                  ).apply {
-                    dispatchReceiver = rangeExpr
-                    arguments[0] = idValue
-                  }
-                }
-              }
-
-              builder.irBranch(
-                condition,
-                builder.irCall(method.symbol).apply {
-                  dispatchReceiver = builder.irGet(thisReceiver)
-                }
-              )
-            } + builder.irElseBranch(
-              builder.irCall(context.irBuiltIns.errorFunction).apply {
-                arguments[0] = builder.irString("Unknown provider id")
-              }
-            )
-          )
-        )
-      }
-    }
-
-    return switchingProviderClass
-  }
-
-  /**
-   * Generates the body of a SwitchingProvider method with when expression.
-   */
-  private fun generateSwitchingProviderBody(
-    switchingProviderClass: IrClass,
-    parentField: IrField,
-    idField: IrField,
-    cases: Map<Int, IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrExpression>,
-    returnType: IrType
-  ): IrBlockBody {
-    return context.irFactory.createBlockBody(UNDEFINED_OFFSET, UNDEFINED_OFFSET).apply {
-      val builder = context.createIrBuilder(switchingProviderClass.symbol)
-      val thisReceiver = requireNotNull(switchingProviderClass.thisReceiver)
-
-      val parentAccess = builder.irGetField(builder.irGet(thisReceiver), parentField)
-      val idValue = builder.irGetField(builder.irGet(thisReceiver), idField)
-
-      // Generate when expression
-      val whenExpr = builder.irWhen(
-        returnType,
-        cases.map { (id, expression) ->
-          builder.irBranch(
-            builder.irEquals(idValue, builder.irInt(id)),
-            expression(builder, parentAccess as IrValueParameter)
-          )
-        } + builder.irElseBranch(
-          builder.irCall(context.irBuiltIns.errorFunction).apply {
-            arguments[0] = builder.irString("Unknown provider id")
-          }
-        )
-      )
-
-      statements += builder.irReturn(whenExpr)
-    }
-  }
-  */
 }
 
 // Extension function to check if a type is a Provider type
