@@ -429,10 +429,12 @@ internal class ShardGenerator(
    * ensuring the constructor properly calls initializeFields().
    *
    * @param initializers List of (field, typeKey, initializerFunction) triples for this shard
+   * @param moduleParameters List of module parameters that this shard requires (optional for backward compatibility)
    * @return The generated shard class with initialization
    */
   fun generateShardClassWithInitialization(
     initializers: List<Triple<IrField, IrTypeKey, FieldInitializer>>,
+    moduleParameters: List<IrValueParameter> = emptyList()
   ): IrClass {
     // First, create a basic shard class structure
     val shardClassName = shard.shardClassName()
