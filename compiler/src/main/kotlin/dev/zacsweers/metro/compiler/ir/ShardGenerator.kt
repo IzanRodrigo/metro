@@ -58,8 +58,12 @@ internal class ShardGenerator(
    * - receives main graph instance and necessary modules in constructor
    *
    * @param initializeFieldsFunction Optional initialization function to call in constructor
+   * @param moduleParameters List of module parameters that this shard requires
    */
-  fun generateShardClass(initializeFieldsFunction: IrFunction? = null): IrClass {
+  fun generateShardClass(
+    initializeFieldsFunction: IrFunction? = null,
+    moduleParameters: List<IrValueParameter> = emptyList()
+  ): IrClass {
     val shardClassName = shard.shardClassName()
 
     // Create the shard class using the IR factory
@@ -104,7 +108,29 @@ internal class ShardGenerator(
 
     // Add parameters for main graph and modules
     val graphParameter = constructor.addValueParameter("graph", parentClass.defaultType)
-    // Module parameters will be added based on shard requirements
+
+    // Add module parameters to constructor and create backing fields
+    val moduleFields = mutableListOf<IrField>()
+    val moduleCtorParams = mutableListOf<IrValueParameter>()
+    for (moduleParam in moduleParameters) {
+      // Add parameter to constructor
+      val ctorParam = constructor.addValueParameter {
+        name = moduleParam.name
+        type = moduleParam.type
+        origin = Origins.Default
+      }
+      moduleCtorParams.add(ctorParam)
+
+      // Add backing field for the module
+      val moduleField = shardClass.addField {
+        name = moduleParam.name
+        type = moduleParam.type
+        visibility = DescriptorVisibilities.PRIVATE
+        isFinal = true
+        origin = Origins.Default
+      }
+      moduleFields.add(moduleField)
+    }
 
     // Store the graph parameter symbol in metadata for robust access
     setShardMetadata(shardClass, ShardMetadata(graphParameterSymbol = graphParameter.symbol))
@@ -128,7 +154,16 @@ internal class ShardGenerator(
         value = builder.irGet(graphParameter)
       )
 
-      // 3. Call instance initializer
+      // 3. Set module fields
+      moduleFields.zip(moduleCtorParams).forEach { (field, param) ->
+        statements += builder.irSetField(
+          receiver = builder.irGet(thisRef),
+          field = field,
+          value = builder.irGet(param)
+        )
+      }
+
+      // 4. Call instance initializer
       statements += IrInstanceInitializerCallImpl(
         UNDEFINED_OFFSET,
         UNDEFINED_OFFSET,
@@ -136,7 +171,7 @@ internal class ShardGenerator(
         shardClass.defaultType
       )
 
-      // 4. Call this.initializeFields() if provided
+      // 5. Call this.initializeFields() if provided
       if (initializeFieldsFunction != null) {
         statements += builder.irCall(initializeFieldsFunction.symbol).also { call ->
           call.dispatchReceiver = builder.irGet(thisRef)
@@ -448,7 +483,29 @@ internal class ShardGenerator(
 
     // Add parameters for main graph and modules
     val graphParameter = constructor.addValueParameter("graph", parentClass.defaultType)
-    // Module parameters will be added based on shard requirements
+
+    // Add module parameters to constructor and create backing fields
+    val moduleFields = mutableListOf<IrField>()
+    val moduleCtorParams = mutableListOf<IrValueParameter>()
+    for (moduleParam in moduleParameters) {
+      // Add parameter to constructor
+      val ctorParam = constructor.addValueParameter {
+        name = moduleParam.name
+        type = moduleParam.type
+        origin = Origins.Default
+      }
+      moduleCtorParams.add(ctorParam)
+
+      // Add backing field for the module
+      val moduleField = shardClass.addField {
+        name = moduleParam.name
+        type = moduleParam.type
+        visibility = DescriptorVisibilities.PRIVATE
+        isFinal = true
+        origin = Origins.Default
+      }
+      moduleFields.add(moduleField)
+    }
 
     // Store the graph parameter symbol in metadata for robust access
     setShardMetadata(shardClass, ShardMetadata(graphParameterSymbol = graphParameter.symbol))
@@ -472,7 +529,16 @@ internal class ShardGenerator(
         value = builder.irGet(graphParameter)
       )
 
-      // 3. Call instance initializer
+      // 3. Set module fields
+      moduleFields.zip(moduleCtorParams).forEach { (field, param) ->
+        statements += builder.irSetField(
+          receiver = builder.irGet(thisRef),
+          field = field,
+          value = builder.irGet(param)
+        )
+      }
+
+      // 4. Call instance initializer
       statements += IrInstanceInitializerCallImpl(
         UNDEFINED_OFFSET,
         UNDEFINED_OFFSET,

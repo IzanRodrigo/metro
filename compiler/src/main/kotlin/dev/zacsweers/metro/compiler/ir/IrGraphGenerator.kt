@@ -58,6 +58,7 @@ import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
 import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.types.IrSimpleType
+import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.copyTo
@@ -1375,8 +1376,11 @@ internal class IrGraphGenerator(
         fieldRegistry = shardFieldRegistry
       )
 
-      // Generate the shard class shell (without field initialization)
-      val shardClass = generator.generateShardClass(null)
+      // Detect module parameters required by this shard
+      val moduleParams = detectRequiredModulesForShard(shard, bindingGraph)
+
+      // Generate the shard class shell (without field initialization but with module parameters)
+      val shardClass = generator.generateShardClass(null, moduleParams)
 
       // Generate the field in the parent class to hold this shard instance
       val shardField = generator.generateShardField(shardClass)
@@ -1408,7 +1412,7 @@ internal class IrGraphGenerator(
     shard: ShardingPlan.Shard,
     bindingGraph: IrBindingGraph
   ): List<IrValueParameter> {
-    val requiredModules = mutableSetOf<IrClass>()
+    val requiredModuleClasses = mutableSetOf<IrClass>()
 
     // Analyze each binding in the shard to find module dependencies
     for (typeKey in shard.bindings) {
@@ -1418,17 +1422,53 @@ internal class IrGraphGenerator(
         val providerFactory = binding.providerFactory
         val moduleClass = providerFactory.clazz.parentAsClass
 
-        // Check if this is actually a binding container class (has @BindingContainer annotation)
-        // For now, we'll assume all provider factories come from binding containers
-        // TODO: Add proper annotation checking when class metadata is accessible
-        requiredModules.add(moduleClass)
+        // Only track binding container classes (modules)
+        if (node.bindingContainers.contains(moduleClass)) {
+          requiredModuleClasses.add(moduleClass)
+        }
       }
     }
 
-    // Convert module classes to constructor parameters
-    // For now, return empty list as we need the actual parameter references from the constructor
-    // This will be properly implemented when we have access to the constructor parameters
-    return emptyList()
+    // Map module classes to actual constructor parameters
+    val constructor = graphClass.primaryConstructor ?: return emptyList()
+    val moduleParameters = mutableListOf<IrValueParameter>()
+
+    // Check which constructor parameters correspond to the required modules
+    node.creator?.let { creator ->
+      for ((index, param) in creator.parameters.regularParameters.withIndex()) {
+        // Check if this parameter index is marked as a binding container
+        if (creator.bindingContainersParameterIndices.isSet(index)) {
+          val irParam = constructor.regularParameters[index]
+
+          // Check if this parameter's type matches any of our required module classes
+          val paramType = irParam.type
+          val paramClass = paramType.classOrNull?.owner
+
+          if (paramClass != null && requiredModuleClasses.contains(paramClass)) {
+            moduleParameters.add(irParam)
+          }
+        }
+      }
+    }
+
+    // Also check for binding containers passed as part of graph initialization
+    // These are the managed binding containers created in the graph itself
+    for (bindingContainer in node.bindingContainers) {
+      if (requiredModuleClasses.contains(bindingContainer)) {
+        // This module is required but created internally, not passed as parameter
+        // We don't need to add it to the shard constructor as it will be accessed via graph.moduleInstance
+        if (options.debug) {
+          log("[MetroSharding] Shard${shard.index} uses internal module ${bindingContainer.name}")
+        }
+      }
+    }
+
+    if (options.debug && moduleParameters.isNotEmpty()) {
+      val moduleNames = moduleParameters.joinToString { it.name.asString() }
+      log("[MetroSharding] Shard${shard.index} requires modules: $moduleNames")
+    }
+
+    return moduleParameters
   }
 
   /**
