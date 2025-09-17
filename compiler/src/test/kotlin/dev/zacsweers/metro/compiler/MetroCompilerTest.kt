@@ -254,6 +254,8 @@ abstract class MetroCompilerTest {
               MetroOption.ENABLE_FULL_BINDING_GRAPH_VALIDATION -> {
                 processor.option(entry.raw.cliOption, enableFullBindingGraphValidation)
               }
+              MetroOption.KEYS_PER_SHARD -> processor.option(entry.raw.cliOption, "0")
+              MetroOption.FAST_INIT -> processor.option(entry.raw.cliOption, "false")
             }
           yield(option)
         }
