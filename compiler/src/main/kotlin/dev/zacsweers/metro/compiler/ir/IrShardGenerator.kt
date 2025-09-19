@@ -5,7 +5,7 @@ package dev.zacsweers.metro.compiler.ir
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.asName
-import dev.zacsweers.metro.compiler.graph.Shard
+import dev.zacsweers.metro.compiler.graph.sharding.Shard
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
@@ -168,21 +168,4 @@ internal class IrShardGenerator(
       }
     }
   }
-
-  /**
-   * Determines if a binding should go into this shard.
-   */
-  private fun containsBinding(typeKey: IrTypeKey): Boolean {
-    return shard.bindings.contains(typeKey)
-  }
-
-  /**
-   * Information about a generated shard.
-   */
-  private data class ShardInfo(
-    val shard: Shard,
-    val shardClass: IrClass,
-    val shardField: IrField?,
-    val generator: IrShardGenerator,
-  )
 }

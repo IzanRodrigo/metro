@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
 
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingContext
 import org.jetbrains.kotlin.ir.declarations.IrField
 
 internal class BindingFieldContext {
@@ -12,9 +13,13 @@ internal class BindingFieldContext {
   //  clean this up?
   // Fields for this graph and other instance params
   private val instanceFields = mutableMapOf<IrTypeKey, IrField>()
+
   // Fields for providers. May include both scoped and unscoped providers as well as bound
   // instances
   private val providerFields = mutableMapOf<IrTypeKey, IrField>()
+
+  // TODO: Is this the best place to put it?
+  var shardingContext: ShardingContext? = null
 
   val availableInstanceKeys: Set<IrTypeKey>
     get() = instanceFields.keys
@@ -32,6 +37,12 @@ internal class BindingFieldContext {
   }
 
   fun providerField(key: IrTypeKey): IrField? {
+    // First check sharding context
+    shardingContext?.fieldRegistry?.findField(key)?.let {
+      return it.field
+    }
+
+    // Fall back to regular lookup
     return providerFields[key]
   }
 

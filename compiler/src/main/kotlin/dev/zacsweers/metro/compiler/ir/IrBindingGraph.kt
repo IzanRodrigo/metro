@@ -5,8 +5,8 @@ package dev.zacsweers.metro.compiler.ir
 import dev.zacsweers.metro.compiler.*
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
 import dev.zacsweers.metro.compiler.graph.MutableBindingGraph
-import dev.zacsweers.metro.compiler.graph.ShardingPlan
-import dev.zacsweers.metro.compiler.graph.buildShardingPlan
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingPlan
+import dev.zacsweers.metro.compiler.graph.sharding.buildShardingPlan
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
@@ -52,6 +52,7 @@ internal class IrBindingGraph(
   private val injectors = mutableMapOf<IrContextualTypeKey, IrBindingStack.Entry>()
   private val extraKeeps = mutableMapOf<IrContextualTypeKey, IrBindingStack.Entry>()
   private val reservedFields = mutableMapOf<IrTypeKey, ParentContext.FieldAccess>()
+  private var shardingPlan: ShardingPlan? = null
 
   // Thin immutable view over the internal bindings
   fun bindingsSnapshot(): Map<IrTypeKey, IrBinding> = realGraph.bindings
@@ -240,9 +241,14 @@ internal class IrBindingGraph(
         }
       }
 
-      val shardingPlan = if (metroContext.options.keysPerShard <= 0) null else {
-        parentTracer.traceNested("analyze sharding") {
-          buildShardingPlan(topoSortResult, metroContext.options.keysPerShard)
+      // Build sharding plan after topological sort
+      shardingPlan = if (metroContext.options.keysPerShard <= 0) null else {
+        parentTracer.traceNested("build sharding plan") {
+          buildShardingPlan(
+            topo = topoSortResult,
+            keysPerShard = metroContext.options.keysPerShard,
+            bindingGraph = this,
+          )
         }
       }
 

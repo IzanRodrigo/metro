@@ -22,10 +22,4 @@ internal object MetroConstants {
    * @see MetroOption.KEYS_PER_SHARD
    */
   const val DEFAULT_KEYS_PER_SHARD = 1000
-
-  /**
-   * Minimum number of bindings before sharding is considered.
-   * Graphs smaller than this will not be sharded for efficiency.
-   */
-  const val MIN_BINDINGS_FOR_SHARDING = 100
 }

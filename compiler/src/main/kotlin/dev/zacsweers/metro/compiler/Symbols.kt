@@ -192,6 +192,7 @@ internal class Symbols(
     val error = StringNames.ERROR.asName()
     val excludes = StringNames.EXCLUDES.asName()
     val factory = StringNames.FACTORY.asName()
+    val get = "get".asName()
     val graph = "graph".asName()
     val id = "id".asName()
     val ignoreQualifier = StringNames.IGNORE_QUALIFIER.asName()

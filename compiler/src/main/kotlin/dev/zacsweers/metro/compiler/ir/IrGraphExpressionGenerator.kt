@@ -18,6 +18,9 @@ import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationParent
+import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
@@ -116,15 +119,40 @@ private constructor(
       // provider for it.
       // This is important for cases like DelegateFactory and breaking cycles.
       if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-        bindingFieldContext.providerField(binding.typeKey)?.let {
-          val providerInstance =
-            irGetField(irGet(thisReceiver), it).let {
-              with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+        bindingFieldContext.providerField(binding.typeKey)?.let { field ->
+          // Check if this field is in a shard
+          val shardingContext = bindingFieldContext.shardingContext
+          val providerInstance = if (shardingContext != null) {
+            // We're in a sharded graph - need to check where the field is
+            val fieldInfo = shardingContext.fieldRegistry.findFieldByIrField(field)
+            if (fieldInfo != null) {
+              // Field is in a shard - access it through the shard instance
+              val shardField = shardingContext.getShardField(fieldInfo.shardIndex)
+              if (shardField != null) {
+                // Access the field through the shard: mainGraph.shard0.fieldName
+                val shardInstance = irGetField(irGet(thisReceiver), shardField)
+                irGetField(shardInstance, field)
+              } else {
+                // We're in the shard itself - access directly
+                irGetField(irGet(thisReceiver), field)
+              }
+            } else {
+              // Field is in the main graph
+              irGetField(irGet(thisReceiver), field)
             }
-          return if (accessType == AccessType.INSTANCE) {
-            irInvoke(providerInstance, callee = symbols.providerInvoke)
           } else {
-            providerInstance
+            // Non-sharded graph - access directly
+            irGetField(irGet(thisReceiver), field)
+          }
+
+          val transformedProvider = providerInstance.let {
+            with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+          }
+
+          return if (accessType == AccessType.INSTANCE) {
+            irInvoke(transformedProvider, callee = symbols.providerInvoke)
+          } else {
+            transformedProvider
           }
         }
       }
@@ -282,11 +310,42 @@ private constructor(
               }
             }
           } else {
-            // Should never happen, this should get handled in the provider/instance fields logic
-            // above.
-            reportCompilerBug(
-              "Unable to generate code for unexpected BoundInstance binding: $binding"
-            )
+            // Check if we're in a shard (inner class) and need to access the outer class field
+            val shardingContext = bindingFieldContext.shardingContext
+            // Check if we have sharding enabled and the binding is a BoundInstance
+            if (shardingContext != null) {
+              // We're in a sharded context - BoundInstance fields are in the main graph (outer class)
+              // Try to find the field in the main graph context
+              val mainGraphFields = shardingContext.mainGraphFields
+              val field = mainGraphFields[binding.typeKey]
+
+              if (field != null) {
+                // For inner classes, fields from the outer class can be accessed directly
+                // The Kotlin compiler handles the implicit outer reference
+                val fieldAccess = irGetField(irGet(thisReceiver), field)
+
+                when (accessType) {
+                  AccessType.INSTANCE -> {
+                    // Invoke the provider to get the instance
+                    irInvoke(fieldAccess, callee = symbols.providerInvoke)
+                  }
+                  AccessType.PROVIDER -> {
+                    // Return the provider itself
+                    fieldAccess
+                  }
+                }
+              } else {
+                reportCompilerBug(
+                  "Unable to find BoundInstance field in main graph for binding in shard: $binding. Main graph fields: ${mainGraphFields.keys}"
+                )
+              }
+            } else {
+              // Should never happen, this should get handled in the provider/instance fields logic
+              // above.
+              reportCompilerBug(
+                "Unable to generate code for unexpected BoundInstance binding: $binding. Available instance fields: ${bindingFieldContext.availableInstanceKeys}. This is a bug in the Metro compiler, please report it to https://github.com/zacsweers/metro. "
+              )
+            }
           }
         }
 
