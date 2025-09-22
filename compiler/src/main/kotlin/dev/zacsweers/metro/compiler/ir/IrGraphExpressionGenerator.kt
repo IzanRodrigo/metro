@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
 
+import dev.zacsweers.metro.compiler.MetroLogger
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.exitProcessing
 import dev.zacsweers.metro.compiler.expectAs
@@ -18,8 +19,10 @@ import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.IrElement
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrDeclarationParent
+import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irGet
@@ -47,6 +50,9 @@ import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.ir.util.remapTypes
 import org.jetbrains.kotlin.name.Name
+import kotlin.io.path.appendText
+import kotlin.io.path.createFile
+import kotlin.io.path.exists
 
 internal class IrGraphExpressionGenerator
 private constructor(
@@ -61,6 +67,7 @@ private constructor(
   private val graphExtensionGenerator: IrGraphExtensionGenerator,
   private val parentTracer: Tracer,
 ) : IrMetroContext by context {
+
 
   class Factory(
     private val context: IrMetroContext,
@@ -124,6 +131,16 @@ private constructor(
           val shardingContext = bindingFieldContext.shardingContext
           val providerInstance = if (shardingContext != null) {
             // We're in a sharded graph - need to check where the field is
+            // Traverse up the parent hierarchy to find the containing class
+            var currentClass: IrClass? = null
+            var parent: IrElement? = thisReceiver.parent
+            while (parent != null && currentClass == null) {
+              when (parent) {
+                is IrClass -> currentClass = parent
+                is IrFunction -> parent = parent.parent
+                else -> parent = null
+              }
+            }
             val fieldInfo = shardingContext.fieldRegistry.findFieldByIrField(field)
             if (fieldInfo != null) {
               // Field is in a shard - access it through the shard instance
@@ -137,8 +154,58 @@ private constructor(
                 irGetField(irGet(thisReceiver), field)
               }
             } else {
-              // Field is in the main graph
-              irGetField(irGet(thisReceiver), field)
+              // Field is in the main graph - check if we're accessing from a shard
+              // The thisReceiver.parent might be a function, so we need to look at the parent hierarchy
+              // Traverse up the parent hierarchy to find the containing class
+              var currentClass: IrClass? = null
+              var parent: IrElement? = thisReceiver.parent
+              while (parent != null && currentClass == null) {
+                when (parent) {
+                  is IrClass -> currentClass = parent
+                  is IrFunction -> parent = parent.parent
+                  else -> parent = null
+                }
+              }
+
+              // Check if we're in a shard by comparing to main graph and checking shard list
+              val isInShard = if (currentClass != null) {
+                currentClass != shardingContext.mainGraphClass &&
+                (shardingContext.shardClasses.contains(currentClass) ||
+                 currentClass.name.asString().startsWith("Shard"))
+              } else {
+                false
+              }
+
+              if (isInShard && currentClass != null) {
+                // We're in a shard, need to access through outer field
+                val outerField = currentClass.declarations
+                  .filterIsInstance<IrField>()
+                  .find { it.name.asString() == "outer" }
+
+                if (outerField != null) {
+                  val outerRef = irGetField(irGet(thisReceiver), outerField)
+                  irGetField(outerRef, field)
+                } else {
+                  // Try fallback from context
+                  val shardIndex = shardingContext.shardClasses.indexOf(currentClass)
+                  if (shardIndex >= 0) {
+                    val contextOuterField = shardingContext.outerFields[shardIndex]
+                    if (contextOuterField != null) {
+                      val outerRef = irGetField(irGet(thisReceiver), contextOuterField)
+                      irGetField(outerRef, field)
+                    } else {
+                      // Fallback to direct access with a warning
+                      irGetField(irGet(thisReceiver), field)
+                    }
+                  } else {
+                    // Fallback to direct access
+                    irGetField(irGet(thisReceiver), field)
+                  }
+                }
+              } else {
+                // We're in the main graph, access directly
+                irGetField(irGet(thisReceiver), field)
+              }
             }
           } else {
             // Non-sharded graph - access directly
@@ -295,24 +362,77 @@ private constructor(
         }
 
         is IrBinding.BoundInstance -> {
-          if (binding.classReceiverParameter != null) {
-            when (accessType) {
-              AccessType.INSTANCE -> {
-                // Get it directly
-                irGet(binding.classReceiverParameter)
-              }
-              AccessType.PROVIDER -> {
-                // We need the provider
-                irGetField(
-                  irGet(binding.classReceiverParameter),
-                  binding.providerFieldAccess!!.field,
-                )
+          // Check if we're in a shard context and need to use outer reference
+          val shardingContext = bindingFieldContext.shardingContext
+          var handledInShard = false
+
+          if (shardingContext != null) {
+            // Find the containing class of the current code
+            var currentClass: IrClass? = null
+            var parent: IrElement? = thisReceiver.parent
+            while (parent != null && currentClass == null) {
+              when (parent) {
+                is IrClass -> currentClass = parent
+                is IrFunction -> parent = parent.parent
+                else -> parent = null
               }
             }
-          } else {
-            // Check if we're in a shard (inner class) and need to access the outer class field
+
+            // Check if we're in a shard (not the main graph)
+            val isInShard = currentClass != null &&
+                           currentClass != shardingContext.mainGraphClass &&
+                           (shardingContext.shardClasses.contains(currentClass) ||
+                            currentClass.name.asString().startsWith("Shard"))
+
+            if (isInShard) {
+              // We're in a shard - BoundInstance fields must be accessed through outer
+              val field = shardingContext.mainGraphFields[binding.typeKey]
+                         ?: bindingFieldContext.providerField(binding.typeKey)
+
+              if (field != null) {
+                // Find the outer field in the shard class
+                val outerField = currentClass.declarations
+                  .filterIsInstance<IrField>()
+                  .find { it.name.asString() == "outer" }
+                  ?: shardingContext.outerFields[shardingContext.shardClasses.indexOf(currentClass)]
+
+                if (outerField != null) {
+                  // Access through outer reference: this.outer.applicationInstanceProvider
+                  val outerRef = irGetField(irGet(thisReceiver), outerField)
+                  val fieldAccess = irGetField(outerRef, field)
+
+                  handledInShard = true
+                  return when (accessType) {
+                    AccessType.INSTANCE -> irInvoke(fieldAccess, callee = symbols.providerInvoke)
+                    AccessType.PROVIDER -> fieldAccess
+                  }
+                } else {
+                  reportCompilerBug("Shard class ${currentClass.name} is missing outer field for accessing BoundInstance: ${binding.typeKey}")
+                }
+              }
+            }
+          }
+
+          // If not handled in shard, use original logic
+          if (!handledInShard) {
+            if (binding.classReceiverParameter != null) {
+              return when (accessType) {
+                AccessType.INSTANCE -> {
+                  // Get it directly
+                  irGet(binding.classReceiverParameter)
+                }
+                AccessType.PROVIDER -> {
+                  // We need the provider
+                  irGetField(
+                    irGet(binding.classReceiverParameter),
+                    binding.providerFieldAccess!!.field,
+                  )
+                }
+              }
+            } else {
+            // Original fallback logic for when classReceiverParameter is null
+            // and we're not in a shard (or shard handling failed above)
             val shardingContext = bindingFieldContext.shardingContext
-            // Check if we have sharding enabled and the binding is a BoundInstance
             if (shardingContext != null) {
               // We're in a sharded context - BoundInstance fields are in the main graph (outer class)
               // Try to find the field in the main graph context
@@ -320,11 +440,65 @@ private constructor(
               val field = mainGraphFields[binding.typeKey]
 
               if (field != null) {
-                // For inner classes, fields from the outer class can be accessed directly
-                // The Kotlin compiler handles the implicit outer reference
-                val fieldAccess = irGetField(irGet(thisReceiver), field)
+                // We need to access the field through the outer class reference
+                // Check if we're in a shard by checking if thisReceiver's parent is not the main graph
+                // Traverse up the parent hierarchy to find the containing class
+                var currentClass: IrClass? = null
+                var parent: IrElement? = thisReceiver.parent
+                while (parent != null && currentClass == null) {
+                  when (parent) {
+                    is IrClass -> currentClass = parent
+                    is IrFunction -> parent = parent.parent
+                    else -> parent = null
+                  }
+                }
 
-                when (accessType) {
+                // Additional check: see if currentClass is in the shard classes list
+                val isInShard = if (currentClass != null) {
+                  currentClass != shardingContext.mainGraphClass &&
+                  (shardingContext.shardClasses.contains(currentClass) ||
+                   currentClass.name.asString().startsWith("Shard"))
+                } else {
+                  false
+                }
+
+
+                val fieldAccess = if (isInShard && currentClass != null) {
+                  // We're in a shard class, find its outer field
+                  val outerField = currentClass.declarations
+                    .filterIsInstance<IrField>()
+                    .find { it.name.asString() == "outer" }
+
+                  if (outerField != null) {
+                    // Access through outer reference: this.outer.applicationInstanceProvider
+                    val outerRef = irGetField(irGet(thisReceiver), outerField)
+                    irGetField(outerRef, field)
+                  } else {
+                    // This can happen during field initialization in shards
+                    // Try to get the outer field from shardingContext
+                    val shardIndex = shardingContext.shardClasses.indexOf(currentClass)
+                    if (shardIndex >= 0) {
+                      val contextOuterField = shardingContext.outerFields[shardIndex]
+                      if (contextOuterField != null) {
+                        val outerRef = irGetField(irGet(thisReceiver), contextOuterField)
+                        irGetField(outerRef, field)
+                      } else {
+                        reportCompilerBug(
+                          "Shard class ${currentClass?.name} at index $shardIndex is missing outer field in context for accessing BoundInstance: $binding"
+                        )
+                      }
+                    } else {
+                      reportCompilerBug(
+                        "Unable to find shard index for class ${currentClass?.name} when accessing BoundInstance: $binding"
+                      )
+                    }
+                  }
+                } else {
+                  // We're in the main graph class, access directly
+                  irGetField(irGet(thisReceiver), field)
+                }
+
+                return when (accessType) {
                   AccessType.INSTANCE -> {
                     // Invoke the provider to get the instance
                     irInvoke(fieldAccess, callee = symbols.providerInvoke)
@@ -346,7 +520,9 @@ private constructor(
                 "Unable to generate code for unexpected BoundInstance binding: $binding. Available instance fields: ${bindingFieldContext.availableInstanceKeys}. This is a bug in the Metro compiler, please report it to https://github.com/zacsweers/metro. "
               )
             }
+            }
           }
+          error("Unreachable") // Should never reach here
         }
 
         is IrBinding.GraphExtension -> {

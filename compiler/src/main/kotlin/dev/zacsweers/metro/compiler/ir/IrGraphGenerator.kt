@@ -157,6 +157,8 @@ internal class IrGraphGenerator(
           )
         },
         { symbols.metroProvider.typeWith(typeKey.type) },
+        // Use INTERNAL visibility for BoundInstance fields to avoid synthetic accessors from shards
+        DescriptorVisibilities.INTERNAL
       )
         .initFinal {
           instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
@@ -235,6 +237,8 @@ internal class IrGraphGenerator(
           node.typeKey,
           { fieldNameAllocator.newName("thisGraphInstanceProvider") },
           { symbols.metroProvider.typeWith(node.typeKey.type) },
+          // Use INTERNAL visibility to avoid synthetic accessors from shards
+          DescriptorVisibilities.INTERNAL
         )
 
       bindingFieldContext.putProviderField(
@@ -295,10 +299,8 @@ internal class IrGraphGenerator(
       constructorStatements.add { thisReceiver ->
         // Pass the outer instance as a constructor parameter
         val constructor = shardClass.primaryConstructor!!
-        val constructorCall = irCallConstructor(
-          constructor.symbol,
-          emptyList() // No type arguments
-        ).apply {
+        // Use irCall instead of irCallConstructor for K2 IR compatibility
+        val constructorCall = irCall(constructor.symbol).apply {
           // Pass the outer instance as the first argument
           arguments[0] = irGet(thisReceiver)
         }
@@ -432,6 +434,8 @@ internal class IrGraphGenerator(
                 )
               },
               { symbols.metroProvider.typeWith(typeKey.type) },
+              // Use INTERNAL visibility for BoundInstance fields to avoid synthetic accessors
+              DescriptorVisibilities.INTERNAL
             )
             .initFinal {
               instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
@@ -510,6 +514,8 @@ internal class IrGraphGenerator(
             node.typeKey,
             { fieldNameAllocator.newName("thisGraphInstanceProvider") },
             { symbols.metroProvider.typeWith(node.typeKey.type) },
+            // Use INTERNAL visibility to avoid synthetic accessors
+            DescriptorVisibilities.INTERNAL
           )
 
         bindingFieldContext.putProviderField(
@@ -920,6 +926,10 @@ internal class IrGraphGenerator(
         isFinal = true
       }
 
+      // IMPORTANT: Store the outer field reference IMMEDIATELY after creation
+      // This ensures it's available during provider field generation
+      shardingContext.outerFields[shard.index] = outerField
+
       // Add primary constructor with outer parameter
       val ctor = addConstructor {
         visibility = DescriptorVisibilities.PUBLIC
@@ -935,9 +945,6 @@ internal class IrGraphGenerator(
       }
 
       val thisReceiverParameter = thisReceiverOrFail
-
-      // Store the outer field reference for use in expression generation
-      shardingContext.outerFields[shard.index] = outerField
 
       // Create a separate name allocator for this shard
       val shardFieldNameAllocator = NameAllocator()
