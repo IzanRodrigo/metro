@@ -3,6 +3,7 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.graph.sharding.ShardingContext
+import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
 
 internal class BindingFieldContext {
@@ -21,6 +22,11 @@ internal class BindingFieldContext {
   // TODO: Is this the best place to put it?
   var shardingContext: ShardingContext? = null
 
+  // Track which shard class we're currently generating fields for.
+  // This is set temporarily during shard field generation to help the expression generator
+  // correctly identify when it needs to use outer references for BoundInstance fields.
+  var currentShardClass: IrClass? = null
+
   val availableInstanceKeys: Set<IrTypeKey>
     get() = instanceFields.keys
 
@@ -32,18 +38,31 @@ internal class BindingFieldContext {
     providerFields[key] = field
   }
 
+  fun removeInstanceField(key: IrTypeKey) {
+    instanceFields.remove(key)
+  }
+
+  fun removeProviderField(key: IrTypeKey) {
+    providerFields.remove(key)
+  }
+
   fun instanceField(key: IrTypeKey): IrField? {
-    return instanceFields[key]
+    instanceFields[key]?.let { return it }
+
+    shardingContext?.fieldRegistry?.findField(key)?.field?.let { return it }
+
+    return null
   }
 
   fun providerField(key: IrTypeKey): IrField? {
+    providerFields[key]?.let { return it }
+
     // First check sharding context
     shardingContext?.fieldRegistry?.findField(key)?.let {
       return it.field
     }
 
-    // Fall back to regular lookup
-    return providerFields[key]
+    return null
   }
 
   operator fun contains(key: IrTypeKey): Boolean = instanceFields.containsKey(key) || providerFields.containsKey(key)

@@ -1,3 +1,5 @@
+// Copyright (C) 2025 Zac Sweers
+// SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.graph.sharding
 
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
@@ -10,11 +12,13 @@ internal class ShardingContext(
   val plan: ShardingPlan,
   val fieldRegistry: ShardFieldRegistry,
   val mainGraphClass: IrClass,
+  val shardedTypeKeys: Set<IrTypeKey>,
   val shardClasses: MutableList<IrClass> = mutableListOf(),
   val switchingProviders: MutableMap<Int, IrClass> = mutableMapOf(),
   val shardFields: MutableMap<Int, IrField> = mutableMapOf(),
   val mainGraphFields: MutableMap<IrTypeKey, IrField> = mutableMapOf(),
   val outerFields: MutableMap<Int, IrField> = mutableMapOf(), // Track outer reference fields for static nested shards
+  val shardIndexMapping: MutableMap<Int, Int> = mutableMapOf(), // Maps original shard index to actual array index
 ) {
   // Helper to get shard class by index
   fun getShardClass(index: Int): IrClass = shardClasses[index]
