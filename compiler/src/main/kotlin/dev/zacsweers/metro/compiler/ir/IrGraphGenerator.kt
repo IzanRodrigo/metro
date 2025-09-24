@@ -43,10 +43,22 @@ private enum class RequirementAccess {
   PROVIDER,
 }
 
+/**
+ * Represents where a requirement comes from.
+ */
+private enum class RequirementSource {
+  /** Field exists in main graph and needs to be passed to shard */
+  MAIN_GRAPH,
+  /** Field exists in another shard */
+  CROSS_SHARD,
+}
+
 private data class ShardRequirement(
   val key: IrTypeKey,
   val access: RequirementAccess,
-  val componentField: IrField,
+  val source: RequirementSource,
+  val componentField: IrField? = null, // May be null for SHARD_LOCAL initially
+  val shardIndex: Int? = null, // For CROSS_SHARD requirements
 )
 
 private data class RequirementFieldInfo(
@@ -76,6 +88,7 @@ internal class IrGraphGenerator(
 ) : IrMetroContext by metroContext {
 
   private val bindingFieldContext = BindingFieldContext()
+  private val fieldOwnershipRegistry = FieldOwnershipRegistry()
 
   /**
    * To avoid `MethodTooLargeException`, we split field initializations up over multiple constructor
@@ -85,6 +98,10 @@ internal class IrGraphGenerator(
    */
   private val fieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
+  init {
+    bindingFieldContext.fieldOwnershipRegistry = fieldOwnershipRegistry
+  }
+
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
       context = this,
@@ -95,6 +112,7 @@ internal class IrGraphGenerator(
       membersInjectorTransformer = membersInjectorTransformer,
       assistedFactoryTransformer = assistedFactoryTransformer,
       graphExtensionGenerator = graphExtensionGenerator,
+      fieldOwnershipRegistry = fieldOwnershipRegistry,
       parentTracer = parentTracer,
     )
 
@@ -149,20 +167,18 @@ internal class IrGraphGenerator(
       val bindingKey = ordinalToKey[ordinal] ?: continue
       val binding = bindingGraph.requireBinding(bindingKey, IrBindingStack.empty())
 
-      fun addRequirementForKey(key: IrTypeKey, access: RequirementAccess) {
-        val componentField =
-          when (access) {
-            RequirementAccess.PROVIDER -> bindingFieldContext.providerField(key)
-            RequirementAccess.INSTANCE -> bindingFieldContext.instanceField(key)
-          }
-
-        if (componentField != null && componentField.parent == graphClass && key !in requirements) {
-          requirements[key] = ShardRequirement(key, access, componentField)
-        }
-      }
-
+      // Check if this is a graph dependency that needs main graph access
       if (binding is IrBinding.GraphDependency) {
-        addRequirementForKey(bindingKey, RequirementAccess.PROVIDER)
+        val componentField = bindingFieldContext.providerField(bindingKey)
+        if (componentField != null && componentField.parent == graphClass) {
+          requirements[bindingKey] = ShardRequirement(
+            key = bindingKey,
+            access = RequirementAccess.PROVIDER,
+            source = RequirementSource.MAIN_GRAPH,
+            componentField = componentField,
+            shardIndex = null
+          )
+        }
       }
 
       for (dependency in binding.dependencies) {
@@ -184,7 +200,21 @@ internal class IrGraphGenerator(
           if (dependency.requiresProviderInstance) RequirementAccess.PROVIDER
           else RequirementAccess.INSTANCE
 
-        addRequirementForKey(dependencyKey, access)
+        val componentField =
+          when (access) {
+            RequirementAccess.PROVIDER -> bindingFieldContext.providerField(dependencyKey)
+            RequirementAccess.INSTANCE -> bindingFieldContext.instanceField(dependencyKey)
+          }
+
+        if (componentField != null && componentField.parent == graphClass && dependencyKey !in requirements) {
+          requirements[dependencyKey] = ShardRequirement(
+            key = dependencyKey,
+            access = access,
+            source = RequirementSource.MAIN_GRAPH,
+            componentField = componentField,
+            shardIndex = null
+          )
+        }
       }
     }
 
@@ -209,6 +239,7 @@ internal class IrGraphGenerator(
 
     // Set sharding context in the binding field context
     bindingFieldContext.shardingContext = shardingContext
+    bindingFieldContext.refreshOwnership()
 
     writeDiagnostic("sharded-type-keys-${node.sourceGraph.name.asString()}.txt") {
       buildString {
@@ -255,7 +286,7 @@ internal class IrGraphGenerator(
           instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
         }
 
-      bindingFieldContext.putProviderField(typeKey, field)
+      bindingFieldContext.putProviderField(typeKey, field, BindingFieldContext.FieldOwner.MainGraph)
 
       // Also register in sharding context for inner class access
       shardingContext.mainGraphFields[typeKey] = field
@@ -299,8 +330,8 @@ internal class IrGraphGenerator(
             ) {
               irGet(irParam)
             }
-          bindingFieldContext.putInstanceField(param.typeKey, graphDepField)
-          bindingFieldContext.putInstanceField(graphDep.typeKey, graphDepField)
+          bindingFieldContext.putInstanceField(param.typeKey, graphDepField, BindingFieldContext.FieldOwner.MainGraph)
+          bindingFieldContext.putInstanceField(graphDep.typeKey, graphDepField, BindingFieldContext.FieldOwner.MainGraph)
 
           if (graphDep.hasExtensions) {
             val depMetroGraph = graphDep.sourceGraph.metroGraphOrFail
@@ -320,7 +351,7 @@ internal class IrGraphGenerator(
           irGet(thisReceiverParameter)
         }
 
-      bindingFieldContext.putInstanceField(node.typeKey, thisGraphField)
+      bindingFieldContext.putInstanceField(node.typeKey, thisGraphField, BindingFieldContext.FieldOwner.MainGraph)
 
       // Expose the graph as a provider field
       val field =
@@ -340,6 +371,7 @@ internal class IrGraphGenerator(
             irGetField(irGet(thisReceiverParameter), thisGraphField),
           )
         },
+        BindingFieldContext.FieldOwner.MainGraph
       )
 
       // Register in mainGraphFields with both implementation and interface types
@@ -418,7 +450,7 @@ internal class IrGraphGenerator(
     // Generate shard classes
     for (shard in nonEmptyShards) {
       val requirements = shardRequirementsByIndex[shard.index].orEmpty()
-      generateShardClass(shard, shardingContext, initOrder, requirements)
+      generateShardClass(shard, shardingContext, initOrder, requirements, expressionGeneratorFactory)
     }
 
     // Update shard field types now that shard classes exist
@@ -451,9 +483,33 @@ internal class IrGraphGenerator(
           // Pass the outer instance as the first argument
           arguments[0] = irGet(thisReceiver)
 
+          // Pass external requirements (MAIN_GRAPH and CROSS_SHARD)
           val requirementsForShard = shardRequirementsByIndex[originalIndex].orEmpty()
+
           requirementsForShard.forEachIndexed { paramIndex, requirement ->
-            val valueExpression = irGetField(irGet(thisReceiver), requirement.componentField)
+            val valueExpression = when (requirement.source) {
+              RequirementSource.MAIN_GRAPH -> {
+                // Access field from main graph
+                requirement.componentField?.let { field ->
+                  irGetField(irGet(thisReceiver), field)
+                } ?: error("Missing component field for main graph requirement: ${requirement.key}")
+              }
+              RequirementSource.CROSS_SHARD -> {
+                // Access field from another shard
+                val shardIndex = requirement.shardIndex
+                  ?: error("Missing shard index for cross-shard requirement: ${requirement.key}")
+                val actualShardIndex = shardingContext.shardIndexMapping[shardIndex]
+                  ?: error("No mapping for shard index $shardIndex")
+                val shardField = shardingContext.shardFields[actualShardIndex]
+                  ?: error("No shard field for index $actualShardIndex")
+
+                // Access the field from the other shard: this.shardN.fieldName
+                val otherShardAccess = irGetField(irGet(thisReceiver), shardField)
+                val fieldInOtherShard = shardingContext.fieldRegistry.findField(requirement.key)?.field
+                  ?: error("Field not found in registry for ${requirement.key}")
+                irGetField(otherShardAccess, fieldInOtherShard)
+              }
+            }
             arguments[paramIndex + 1] = valueExpression
           }
         }
@@ -506,7 +562,7 @@ internal class IrGraphGenerator(
               )
             }
 
-        bindingFieldContext.putProviderField(deferredTypeKey, field)
+        bindingFieldContext.putProviderField(deferredTypeKey, field, BindingFieldContext.FieldOwner.MainGraph)
         field
       }
 
@@ -647,8 +703,8 @@ internal class IrGraphGenerator(
                 irGet(irParam)
               }
             // Link both the graph typekey and the (possibly-impl type)
-            bindingFieldContext.putInstanceField(param.typeKey, graphDepField)
-            bindingFieldContext.putInstanceField(graphDep.typeKey, graphDepField)
+            bindingFieldContext.putInstanceField(param.typeKey, graphDepField, BindingFieldContext.FieldOwner.MainGraph)
+            bindingFieldContext.putInstanceField(graphDep.typeKey, graphDepField, BindingFieldContext.FieldOwner.MainGraph)
 
             if (graphDep.hasExtensions) {
               val depMetroGraph = graphDep.sourceGraph.metroGraphOrFail
@@ -680,7 +736,7 @@ internal class IrGraphGenerator(
             irGet(thisReceiverParameter)
           }
 
-        bindingFieldContext.putInstanceField(node.typeKey, thisGraphField)
+        bindingFieldContext.putInstanceField(node.typeKey, thisGraphField, BindingFieldContext.FieldOwner.MainGraph)
 
         // Expose the graph as a provider field
         // TODO this isn't always actually needed but different than the instance field above
@@ -754,7 +810,7 @@ internal class IrGraphGenerator(
                 )
               }
 
-          bindingFieldContext.putProviderField(deferredTypeKey, field)
+          bindingFieldContext.putProviderField(deferredTypeKey, field, BindingFieldContext.FieldOwner.MainGraph)
           field
         }
 
@@ -942,13 +998,24 @@ internal class IrGraphGenerator(
           }
 
         // If we've reserved a field for this key here, pull it out and use that
+        val fieldName = fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
+        val isShardContext = bindingFieldContext.currentShardClass == this
         val field =
-          getOrCreateBindingField(
-            binding.typeKey,
-            { fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix)) },
-            { fieldType },
-            DescriptorVisibilities.INTERNAL,
-          )
+          if (isShardContext) {
+            // Shards need their own provider fields; do not reuse the main graph's reserved fields
+            addField {
+              name = fieldName.asName()
+              type = fieldType
+              visibility = DescriptorVisibilities.INTERNAL
+            }
+          } else {
+            getOrCreateBindingField(
+              binding.typeKey,
+              { fieldName },
+              { fieldType },
+              DescriptorVisibilities.INTERNAL,
+            )
+          }
         field.visibility = DescriptorVisibilities.INTERNAL
 
         val accessType =
@@ -971,7 +1038,7 @@ internal class IrGraphGenerator(
           }
         }
         fieldsToTypeKeys[field] = key
-        bindingFieldContext.putProviderField(key, field)
+        bindingFieldContext.putProviderField(key, field, BindingFieldContext.FieldOwner.MainGraph)
       }
     }
 
@@ -1115,6 +1182,7 @@ internal class IrGraphGenerator(
     shardingContext: ShardingContext,
     allBindings: List<IrBinding>,
     requirements: List<ShardRequirement>,
+    expressionGeneratorFactory: IrGraphExpressionGenerator.Factory,
   ) {
     val shardClass = pluginContext.irFactory.buildClass {
       name = shard.name.asName()
@@ -1163,9 +1231,10 @@ internal class IrGraphGenerator(
 
       val requirementNameAllocator = NameAllocator()
       val requirementFieldInfos = mutableListOf<RequirementFieldInfo>()
-      val previousProviderFields = mutableMapOf<IrTypeKey, IrField?>()
-      val previousInstanceFields = mutableMapOf<IrTypeKey, IrField?>()
+      val previousProviderFields = mutableMapOf<IrTypeKey, BindingFieldContext.FieldDescriptor?>()
+      val previousInstanceFields = mutableMapOf<IrTypeKey, BindingFieldContext.FieldDescriptor?>()
 
+      // Handle external requirements (MAIN_GRAPH and CROSS_SHARD) - these need constructor parameters
       for (requirement in requirements) {
         val baseName = requirementNameAllocator.newName(requirement.key.toVariableName())
         val sanitizedBase = baseName.removePrefix("$$").decapitalizeUS()
@@ -1196,15 +1265,16 @@ internal class IrGraphGenerator(
 
         when (requirement.access) {
           RequirementAccess.PROVIDER -> {
-            previousProviderFields[requirement.key] = bindingFieldContext.providerField(requirement.key)
-            bindingFieldContext.putProviderField(requirement.key, field)
+            previousProviderFields[requirement.key] = bindingFieldContext.providerFieldDescriptor(requirement.key)
+            bindingFieldContext.putProviderField(requirement.key, field, BindingFieldContext.FieldOwner.Shard(shard.index))
           }
           RequirementAccess.INSTANCE -> {
-            previousInstanceFields[requirement.key] = bindingFieldContext.instanceField(requirement.key)
-            bindingFieldContext.putInstanceField(requirement.key, field)
+            previousInstanceFields[requirement.key] = bindingFieldContext.instanceFieldDescriptor(requirement.key)
+            bindingFieldContext.putInstanceField(requirement.key, field, BindingFieldContext.FieldOwner.Shard(shard.index))
           }
         }
       }
+
 
       writeDiagnostic("shard-requirements-${node.sourceGraph.name.asString()}-${shard.name}.txt") {
         buildString {
@@ -1236,6 +1306,18 @@ internal class IrGraphGenerator(
 
       // Filter out BoundInstance bindings - these are handled by the main graph
       val shardProviderBindings = shardBindings.filter { it !is IrBinding.BoundInstance }
+
+      // Write diagnostic about what bindings are in this shard
+      writeDiagnostic("shard-bindings-${shard.name}.txt") {
+        buildString {
+          appendLine("=== Bindings for ${shard.name} ===")
+          appendLine("Total bindings: ${shardBindings.size}")
+          appendLine("Provider bindings (after filtering BoundInstance): ${shardProviderBindings.size}")
+          shardProviderBindings.forEach { binding ->
+            appendLine("  ${binding.typeKey}: ${binding.javaClass.simpleName}")
+          }
+        }
+      }
 
       // Skip generation for empty shards but still register a placeholder
       if (shardProviderBindings.isEmpty()) {
@@ -1275,6 +1357,18 @@ internal class IrGraphGenerator(
         }
       }
 
+      // Write diagnostic about what fields were created
+      writeDiagnostic("shard-fields-created-${shard.name}.txt") {
+        buildString {
+          appendLine("=== Fields Created in ${shard.name} ===")
+          appendLine("Total fields: ${providerFieldResult.fieldInitializers.size}")
+          providerFieldResult.fieldInitializers.forEach { (field, _) ->
+            val typeKey = providerFieldResult.fieldsToTypeKeys[field]
+            appendLine("  ${field.name}: $typeKey")
+          }
+        }
+      }
+
       // Initialize fields in the constructor if needed
       // IMPORTANT: Keep currentShardClass set during field initialization
       // so that BoundInstance references can be correctly resolved through outer
@@ -1292,14 +1386,14 @@ internal class IrGraphGenerator(
         bindingFieldContext.currentShardClass = null
         for ((key, previousField) in previousProviderFields) {
           if (previousField != null) {
-            bindingFieldContext.putProviderField(key, previousField)
+            bindingFieldContext.putProviderField(key, previousField.field, previousField.owner)
           } else {
             bindingFieldContext.removeProviderField(key)
           }
         }
         for ((key, previousField) in previousInstanceFields) {
           if (previousField != null) {
-            bindingFieldContext.putInstanceField(key, previousField)
+            bindingFieldContext.putInstanceField(key, previousField.field, previousField.owner)
           } else {
             bindingFieldContext.removeInstanceField(key)
           }

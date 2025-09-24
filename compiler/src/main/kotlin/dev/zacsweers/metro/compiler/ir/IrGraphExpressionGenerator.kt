@@ -77,6 +77,7 @@ private constructor(
   private val membersInjectorTransformer: MembersInjectorTransformer,
   private val assistedFactoryTransformer: AssistedFactoryTransformer,
   private val graphExtensionGenerator: IrGraphExtensionGenerator,
+  private val fieldOwnershipRegistry: FieldOwnershipRegistry,
   private val parentTracer: Tracer,
 ) : IrMetroContext by context {
 
@@ -94,6 +95,7 @@ private constructor(
     private val membersInjectorTransformer: MembersInjectorTransformer,
     private val assistedFactoryTransformer: AssistedFactoryTransformer,
     private val graphExtensionGenerator: IrGraphExtensionGenerator,
+    private val fieldOwnershipRegistry: FieldOwnershipRegistry,
     private val parentTracer: Tracer,
   ) {
     fun create(thisReceiver: IrValueParameter): IrGraphExpressionGenerator {
@@ -107,6 +109,7 @@ private constructor(
         membersInjectorTransformer = membersInjectorTransformer,
         assistedFactoryTransformer = assistedFactoryTransformer,
         graphExtensionGenerator = graphExtensionGenerator,
+        fieldOwnershipRegistry = fieldOwnershipRegistry,
         parentTracer = parentTracer,
       )
     }
@@ -137,6 +140,19 @@ private constructor(
       }
 
       val metroProviderSymbols = symbols.providerSymbolsFor(contextualTypeKey)
+
+        val shardingContext = bindingFieldContext.shardingContext
+        val currentShardClass = bindingFieldContext.currentShardClass
+        val currentShardIndex = if (shardingContext != null && currentShardClass != null) {
+          val index = shardingContext.shardClasses.indexOf(currentShardClass)
+          if (index >= 0) index else null
+        } else {
+          null
+        }
+        val shardLocalField = currentShardIndex?.let { index ->
+          fieldOwnershipRegistry.getShardLocalFields(index)[binding.typeKey]
+        }
+        val ownership = fieldOwnershipRegistry.getOwnership(binding.typeKey)
 
       // If we're initializing the field for this key, don't ever try to reach for an existing
       // provider for it.
@@ -900,6 +916,19 @@ private constructor(
 
         val metroProviderSymbols = symbols.providerSymbolsFor(contextualTypeKey)
 
+      val shardingContext = bindingFieldContext.shardingContext
+      val currentShardClass = bindingFieldContext.currentShardClass
+      val currentShardIndex = if (shardingContext != null && currentShardClass != null) {
+        val index = shardingContext.shardClasses.indexOf(currentShardClass)
+        if (index >= 0) index else null
+      } else {
+        null
+      }
+      val shardLocalField = currentShardIndex?.let { index ->
+        fieldOwnershipRegistry.getShardLocalFields(index)[binding.typeKey]
+      }
+      val ownership = fieldOwnershipRegistry.getOwnership(binding.typeKey)
+
         val accessType =
           if (param.contextualTypeKey.requiresProviderInstance) {
             AccessType.PROVIDER
@@ -919,6 +948,16 @@ private constructor(
 
         val providerInstance =
           bindingFieldContext.providerField(typeKey)?.let { field ->
+            if (currentShardIndex != null && currentShardClass != null) {
+              val candidateLocalField = when {
+                shardLocalField != null && shardLocalField.parent == currentShardClass -> shardLocalField
+                ownership is FieldOwnershipRegistry.FieldOwnership.Shard && ownership.shardIndex == currentShardIndex -> ownership.field
+                else -> null
+              }
+              if (candidateLocalField != null) {
+                return@let irGetField(irGet(thisReceiver), candidateLocalField)
+              }
+            }
             // Check if we're in a shard and this is a main graph field
             val shardingContext = bindingFieldContext.shardingContext
             val currentShardClass = bindingFieldContext.currentShardClass ?: run {
@@ -946,106 +985,321 @@ private constructor(
               val currentShardOriginalIndex =
                 currentShardClass.name.asString().removePrefix("Shard").toIntOrNull()
 
-              if (fieldInfo != null && currentShardOriginalIndex != null &&
-                  fieldInfo.shardIndex == currentShardOriginalIndex
-              ) {
-                // Prefer the shard-local field registered in the registry. This guards cases
-                // where the binding context still points at the main-graph copy of the field.
-                return@let irGetField(irGet(thisReceiver), fieldInfo.field)
-              }
+              // Try to find the field in ALL class members, not just declarations
+              val allFields = currentShardClass.declarations.filterIsInstance<IrField>()
+              val localField = allFields.firstOrNull { it.name == field.name }
 
-              // If the field lives on the current shard we can just read it directly
-              if (field.parent == currentShardClass) {
-                return@let irGetField(irGet(thisReceiver), field)
-              }
-
-              // We're in a shard - check if this field is in the main graph
-              val isMainGraphField = shardingContext.mainGraphFields.containsKey(typeKey)
-              if (isMainGraphField) {
-                // This is a BoundInstance field in the main graph - access through outer
-                val outerField = currentShardClass.declarations
-                  .filterIsInstance<IrField>()
-                  .find { it.name.asString() == "outer" }
-                  ?: shardingContext.shardClasses.indexOf(currentShardClass).let { index ->
-                    if (index >= 0) shardingContext.outerFields[index] else null
-                  }
-
-                if (outerField != null) {
-                  // Access through outer reference: this.outer.applicationInstanceProvider
-                  val outerRef = irGetField(irGet(thisReceiver), outerField)
-                  irGetField(outerRef, field)
-                } else {
-                  // Fallback to direct access if we can't find outer field
-                  reportCompilerBug("Shard class ${currentShardClass.name} is missing outer field for accessing field: ${field.name}")
-                }
-              } else {
-                // Check if this field is in a different shard (cross-shard dependency)
-                if (fieldInfo != null) {
-                  // Check if sharding was actually performed
-                  if (shardingContext.shardClasses.isEmpty()) {
-                    // No shards were created - this shouldn't happen if fieldInfo exists
-                    // But handle gracefully - access field directly
-                    irGetField(irGet(thisReceiver), field)
-                  } else if (currentShardOriginalIndex != null && fieldInfo.shardIndex != currentShardOriginalIndex) {
-                    // Cross-shard access needed - diagnostic removed
-
-                    // Get the outer field reference
-                    val outerField = currentShardClass.declarations
-                      .filterIsInstance<IrField>()
-                      .find { it.name.asString() == "outer" }
-                      ?: shardingContext.outerFields[currentShardOriginalIndex]
-
-                    if (outerField != null) {
-                      // Access through outer then to the other shard: this.outer.shardN.field
-                      val outerRef = irGetField(irGet(thisReceiver), outerField)
-                      // Get the shard field from the main graph
-                      // Map the original shard index to the actual array index
-                      val actualShardIndex = shardingContext.shardIndexMapping[fieldInfo.shardIndex]
-                      val shardField = if (actualShardIndex != null) {
-                        shardingContext.shardFields[actualShardIndex]
-                      } else {
-                        // Check if no shards were created at all
-                        if (shardingContext.shardIndexMapping.isEmpty() && shardingContext.shardFields.isEmpty()) {
-                          // No shards were actually generated (all were empty)
-                          // The field should be in the main graph instead
-                          null // This will trigger fallback to direct access
-                        } else {
-                          null
-                        }
-                      }
-
-                      if (shardField != null) {
-                        val shardRef = irGetField(outerRef, shardField)
-                        irGetField(shardRef, field)
-                      } else {
-                        // Better error message with more context
-                        val errorMsg = buildString {
-                          appendLine("Cannot find shard field for shard ${fieldInfo.shardIndex}")
-                          appendLine("  Field: ${field.name}")
-                          appendLine("  Type key: $typeKey")
-                          appendLine("  Current shard: ${currentShardClass.name}")
-                          appendLine("  ShardIndexMapping: ${shardingContext.shardIndexMapping}")
-                          appendLine("  ShardFields keys: ${shardingContext.shardFields.keys}")
-                          appendLine("  Total shard classes: ${shardingContext.shardClasses.size}")
-                          if (shardingContext.shardClasses.isEmpty()) {
-                            appendLine("  WARNING: No shard classes were generated - all shards may have been filtered as empty")
-                          }
-                        }
-                        reportCompilerBug(errorMsg)
-                      }
-                    } else {
-                      reportCompilerBug("Shard class ${currentShardClass.name} is missing outer field for cross-shard access")
+              // Enhanced diagnostic logging
+              if (localField == null && fieldInfo != null && currentShardOriginalIndex != null &&
+                  fieldInfo.shardIndex == currentShardOriginalIndex) {
+                writeDiagnostic(
+                  "shard-field-missing-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                ) {
+                  buildString {
+                    appendLine("Field belongs to current shard but not found in declarations")
+                    appendLine("  Looking for field: ${field.name}")
+                    appendLine("  Field parent: ${(field.parent as? IrClass)?.name ?: "unknown"}")
+                    appendLine("  Current shard: ${currentShardClass.name}")
+                    appendLine("  Available fields in shard:")
+                    allFields.forEach {
+                      appendLine("    - ${it.name} (parent: ${(it.parent as? IrClass)?.name ?: "unknown"})")
                     }
-                  } else {
-                    // Same shard - direct access
-                    irGetField(irGet(thisReceiver), field)
                   }
-                } else {
-                  // Field not in registry - regular field in the current shard - direct access
-                  irGetField(irGet(thisReceiver), field)
                 }
               }
+
+              if (localField != null) {
+                writeDiagnostic(
+                  "shard-field-resolution-local-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                ) {
+                  buildString {
+                    appendLine("Using declared shard field")
+                    appendLine("  Binding key: $typeKey")
+                    appendLine("  Binding name hint: ${binding.nameHint}")
+                    appendLine("  Local field: ${localField.name}")
+                    appendLine("  Registry shard index: ${fieldInfo?.shardIndex}")
+                  }
+                }
+
+                return@let irGetField(irGet(thisReceiver), localField)
+              }
+
+              val shardIndexForField = fieldInfo?.shardIndex
+
+              if (fieldInfo != null && currentShardOriginalIndex != null &&
+                  shardIndexForField == currentShardOriginalIndex
+              ) {
+                // This field belongs to the current shard
+                // First check if the field itself has the correct parent (shard as parent)
+                if (field.parent == currentShardClass) {
+                  // Perfect! Field already has correct parent, use it directly
+                  writeDiagnostic(
+                    "shard-field-resolution-direct-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                  ) {
+                    buildString {
+                      appendLine("Using field with correct parent directly")
+                      appendLine("  Binding key: $typeKey")
+                      appendLine("  Field: ${field.name}")
+                      appendLine("  Field parent: ${(field.parent as? IrClass)?.name}")
+                      appendLine("  Current shard: ${currentShardClass.name}")
+                    }
+                  }
+                  return@let irGetField(irGet(thisReceiver), field)
+                }
+
+                // Field has wrong parent, try to find the correct one in shard declarations
+                val actualLocalField = currentShardClass.declarations
+                  .filterIsInstance<IrField>()
+                  .firstOrNull { it.name == fieldInfo.field.name || it.name == field.name }
+
+                if (actualLocalField != null) {
+                  writeDiagnostic(
+                    "shard-field-resolution-shard-local-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                  ) {
+                    buildString {
+                      appendLine("Found shard-local field in declarations")
+                      appendLine("  Binding key: $typeKey")
+                      appendLine("  Binding name hint: ${binding.nameHint}")
+                      appendLine("  Shard-local field: ${actualLocalField.name}")
+                      appendLine("  Current shard: ${currentShardClass.name}")
+                      appendLine("  Registry shard index: $shardIndexForField")
+                    }
+                  }
+                  return@let irGetField(irGet(thisReceiver), actualLocalField)
+                } else {
+                  // Registry says field is in current shard but we can't find it in declarations
+                  // Try to find it by searching all fields in the shard by name
+                  val fieldByName = currentShardClass.declarations
+                    .filterIsInstance<IrField>()
+                    .firstOrNull { it.name.asString() == field.name.asString() }
+
+                  if (fieldByName != null) {
+                    writeDiagnostic(
+                      "shard-field-resolution-found-by-name-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                    ) {
+                      buildString {
+                        appendLine("Found shard-local field by name matching")
+                        appendLine("  Binding key: $typeKey")
+                        appendLine("  Binding name hint: ${binding.nameHint}")
+                        appendLine("  Field name: ${fieldByName.name}")
+                        appendLine("  Current shard: ${currentShardClass.name}")
+                        appendLine("  Registry shard index: $shardIndexForField")
+                      }
+                    }
+                    return@let irGetField(irGet(thisReceiver), fieldByName)
+                  } else {
+                    // Try to find the field in shard declarations with safer matching
+                    val shardField = try {
+                      currentShardClass.declarations
+                        .filterIsInstance<IrField>()
+                        .firstOrNull { it.name == field.name }
+                    } catch (e: Exception) {
+                      null
+                    }
+
+                    if (shardField != null) {
+                      writeDiagnostic(
+                        "shard-field-resolution-flexible-match-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                      ) {
+                        buildString {
+                          appendLine("Found field with flexible name matching")
+                          appendLine("  Binding key: $typeKey")
+                          appendLine("  Binding name hint: ${binding.nameHint}")
+                          appendLine("  Looking for: ${field.name}")
+                          appendLine("  Found field: ${shardField.name}")
+                          appendLine("  Current shard: ${currentShardClass.name}")
+                          appendLine("  Registry shard index: $shardIndexForField")
+                        }
+                      }
+                      return@let irGetField(irGet(thisReceiver), shardField)
+                    } else {
+                      writeDiagnostic(
+                        "shard-field-resolution-fallback-warning-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                      ) {
+                        buildString {
+                          appendLine("WARNING: Field not found in shard, using field with wrong parent")
+                          appendLine("  Binding key: $typeKey")
+                          appendLine("  Binding name hint: ${binding.nameHint}")
+                          appendLine("  Field name: ${field.name}")
+                          appendLine("  Field parent: ${(field.parent as? IrClass)?.name ?: "unknown"}")
+                          appendLine("  Current shard: ${currentShardClass.name}")
+                          appendLine("  Registry shard index: $shardIndexForField")
+                          appendLine("  This will generate: <this>.#shard$currentShardOriginalIndex.#${field.name}")
+                        }
+                      }
+                      // As last resort, use the field directly (will generate wrong access)
+                      return@let irGetField(irGet(thisReceiver), field)
+                    }
+                  }
+                }
+              }
+
+              val outerField = currentShardClass.declarations
+                .filterIsInstance<IrField>()
+                .find { it.name.asString() == "outer" }
+                ?: shardingContext.shardClasses.indexOf(currentShardClass).let { index ->
+                  if (index >= 0) shardingContext.outerFields[index] else null
+                }
+                ?: reportCompilerBug(
+                  "Shard class ${currentShardClass.name} is missing outer field for accessing field: ${field.name}"
+                )
+
+              val outerRef = irGetField(irGet(thisReceiver), outerField)
+
+              if (fieldInfo != null && currentShardOriginalIndex != null &&
+                  shardIndexForField != currentShardOriginalIndex
+              ) {
+                // Cross-shard dependency: this.outer.shardN.field
+                writeDiagnostic(
+                  "shard-field-resolution-cross-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                ) {
+                  buildString {
+                    appendLine("Cross-shard access")
+                    appendLine("  Binding key: $typeKey")
+                    appendLine("  Binding name hint: ${binding.nameHint}")
+                    appendLine("  Requested field: ${field.name} (parent=${field.parent?.let { (it as? IrClass)?.name }})")
+                    appendLine("  Current shard: ${currentShardClass.name}")
+                    appendLine("  Target shard index: ${fieldInfo.shardIndex}")
+                  }
+                }
+
+                val actualShardIndex = shardingContext.shardIndexMapping[fieldInfo.shardIndex]
+                val shardField = actualShardIndex?.let { shardingContext.shardFields[it] }
+                  ?: reportCompilerBug(
+                    "Cannot find shard field for shard ${fieldInfo.shardIndex}. " +
+                      "Mapping=${shardingContext.shardIndexMapping}, fields=${shardingContext.shardFields.keys}"
+                  )
+
+                val shardRef = irGetField(outerRef, shardField)
+
+                // Find the actual field in the target shard class
+                val targetShardClass = actualShardIndex?.let { shardingContext.shardClasses.getOrNull(it) }
+                val targetField = targetShardClass?.declarations
+                  ?.filterIsInstance<IrField>()
+                  ?.firstOrNull { it.name == fieldInfo.field.name }
+                  ?: fieldInfo.field // Fallback to registry field if not found
+
+                return@let irGetField(shardRef, targetField)
+              }
+
+              if (fieldInfo == null) {
+                writeDiagnostic(
+                  "shard-field-resolution-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                ) {
+                  buildString {
+                    appendLine("Resolved via main-graph field")
+                    appendLine("  Binding key: $typeKey")
+                    appendLine("  Binding name hint: ${binding.nameHint}")
+                    appendLine("  Requested field: ${field.name} (parent=${field.parent?.let { (it as? IrClass)?.name }})")
+                    appendLine("  Current shard: ${currentShardClass.name}")
+                  }
+                }
+
+                // No field info - access through outer
+                val targetField = localField ?: field
+                return@let irGetField(outerRef, targetField)
+              }
+
+              // If we reach here, fieldInfo exists but doesn't match previous conditions
+              // This means the field is in the registry but we couldn't handle it above
+              // Check if it belongs to the current shard
+              val fallbackShardIndex = fieldInfo.shardIndex
+              if (currentShardOriginalIndex != null && fallbackShardIndex == currentShardOriginalIndex) {
+                // Field belongs to current shard - find it in declarations to get correct parent
+                val shardLocalField = currentShardClass.declarations
+                  .filterIsInstance<IrField>()
+                  .firstOrNull { it.name.asString() == field.name.asString() }
+
+                if (shardLocalField != null) {
+                  writeDiagnostic(
+                    "shard-field-resolution-fallback-local-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                  ) {
+                    buildString {
+                      appendLine("Fallback: Using direct access for shard-local field (found in declarations)")
+                      appendLine("  Binding key: $typeKey")
+                      appendLine("  Binding name hint: ${binding.nameHint}")
+                      appendLine("  Field: ${shardLocalField.name}")
+                      appendLine("  Field parent: ${(shardLocalField.parent as? IrClass)?.name ?: "unknown"}")
+                      appendLine("  Current shard: ${currentShardClass.name}")
+                      appendLine("  Registry shard index: $fallbackShardIndex")
+                    }
+                  }
+                  return@let irGetField(irGet(thisReceiver), shardLocalField)
+                } else {
+                  // Try one more search for the field with safer approach
+                  val flexibleMatch = try {
+                    currentShardClass.declarations
+                      .filterIsInstance<IrField>()
+                      .firstOrNull { it.name == field.name }
+                  } catch (e: Exception) {
+                    null
+                  }
+
+                  if (flexibleMatch != null) {
+                    writeDiagnostic(
+                      "shard-field-resolution-fallback-flexible-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                    ) {
+                      buildString {
+                        appendLine("Fallback: Found field with flexible matching")
+                        appendLine("  Binding key: $typeKey")
+                        appendLine("  Binding name hint: ${binding.nameHint}")
+                        appendLine("  Looking for: ${field.name}")
+                        appendLine("  Found: ${flexibleMatch.name}")
+                        appendLine("  Current shard: ${currentShardClass.name}")
+                        appendLine("  Registry shard index: $fallbackShardIndex")
+                      }
+                    }
+                    return@let irGetField(irGet(thisReceiver), flexibleMatch)
+                  } else {
+                    writeDiagnostic(
+                      "shard-field-resolution-fallback-failed-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                    ) {
+                      buildString {
+                        appendLine("Fallback: FAILED - using field with wrong parent")
+                        appendLine("  Binding key: $typeKey")
+                        appendLine("  Binding name hint: ${binding.nameHint}")
+                        appendLine("  Field: ${field.name}")
+                        appendLine("  Field parent: ${(field.parent as? IrClass)?.name ?: "unknown"}")
+                        appendLine("  Current shard: ${currentShardClass.name}")
+                        appendLine("  Registry shard index: $fallbackShardIndex")
+                        appendLine("  This will generate incorrect access!")
+                      }
+                    }
+                    // Use the field directly as last resort
+                    return@let irGetField(irGet(thisReceiver), field)
+                  }
+                }
+              }
+
+              // Field is in a different shard or main graph - access through outer
+              writeDiagnostic(
+                "shard-field-resolution-fallback-outer-${currentShardClass.name.asString()}-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+              ) {
+                buildString {
+                  appendLine("Fallback: Using outer access")
+                  appendLine("  Binding key: $typeKey")
+                  appendLine("  Binding name hint: ${binding.nameHint}")
+                  appendLine("  Field: ${field.name}")
+                  appendLine("  Current shard: ${currentShardClass.name}")
+                  appendLine("  Field shard index: ${fieldInfo.shardIndex}")
+                }
+              }
+
+              val targetField = localField ?: field
+              return@let irGetField(outerRef, targetField)
             } else {
+              if (shardingContext != null) {
+                writeDiagnostic(
+                  "shard-field-resolution-missing-context-${binding.nameHint}-${System.currentTimeMillis()}.txt"
+                ) {
+                  buildString {
+                    appendLine("Missing shard context while resolving field")
+                    appendLine("  Binding key: $typeKey")
+                    appendLine("  Binding name hint: ${binding.nameHint}")
+                    appendLine("  Requested field: ${field.name} (parent=${field.parent?.let { (it as? IrClass)?.name }})")
+                  }
+                }
+              }
               // Not in a shard - direct access
               irGetField(irGet(thisReceiver), field)
             }
@@ -1648,6 +1902,7 @@ private constructor(
         membersInjectorTransformer = membersInjectorTransformer,
         assistedFactoryTransformer = assistedFactoryTransformer,
         graphExtensionGenerator = graphExtensionGenerator,
+        fieldOwnershipRegistry = fieldOwnershipRegistry,
         parentTracer = parentTracer,
       )
 
