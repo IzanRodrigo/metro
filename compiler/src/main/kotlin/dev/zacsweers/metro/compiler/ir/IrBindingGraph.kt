@@ -242,7 +242,23 @@ internal class IrBindingGraph(
       }
 
       // Build sharding plan after topological sort
-      shardingPlan = if (metroContext.options.keysPerShard <= 0) null else {
+      // Only shard if:
+      // 1. Sharding is enabled (keysPerShard > 0)
+      // 2. This is either a main graph OR shardGraphExtensions is enabled
+      // Note: Graph extensions are inner classes (subcomponents), not just any graph with scopes
+      val isGraphExtension = node.sourceGraph.isInner // Graph extensions are inner classes
+      val shouldApplySharding = metroContext.options.keysPerShard > 0 &&
+        (!isGraphExtension || metroContext.options.shardGraphExtensions)
+
+      if (metroContext.options.debug) {
+        val graphType = if (isGraphExtension) "graph extension" else "main graph"
+        println("Sharding decision for ${node.sourceGraph.name} ($graphType): " +
+          "keysPerShard=${metroContext.options.keysPerShard}, " +
+          "shardGraphExtensions=${metroContext.options.shardGraphExtensions}, " +
+          "shouldApply=$shouldApplySharding")
+      }
+
+      shardingPlan = if (!shouldApplySharding) null else {
         parentTracer.traceNested("build sharding plan") {
           buildShardingPlan(
             topo = topoSortResult,

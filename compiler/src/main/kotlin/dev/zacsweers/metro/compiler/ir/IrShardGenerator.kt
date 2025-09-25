@@ -6,6 +6,7 @@ import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.graph.sharding.Shard
+import dev.zacsweers.metro.compiler.graph.sharding.ShardingContext
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
@@ -14,14 +15,21 @@ import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.UNDEFINED_OFFSET
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
+import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 
@@ -35,7 +43,15 @@ internal class IrShardGenerator(
   private val context: IrMetroContext,
   private val parentClass: IrClass,
   private val shard: Shard,
+  private val shardingContext: ShardingContext,
 ) : IrMetroContext by context {
+  data class ShardClassResult(
+    val shardClass: IrClass,
+    val constructor: IrConstructor,
+    val outerField: IrField,
+    val outerParameter: IrValueParameter,
+  )
+
 
   /**
    * Generates the nested shard class.
@@ -45,12 +61,10 @@ internal class IrShardGenerator(
    * - receives main graph instance and necessary modules in constructor
    *
    * @param initializeFieldsFunction Optional initialization function to call in constructor
-   * @param moduleParameters List of module parameters that this shard requires
    */
   fun generateShardClass(
     initializeFieldsFunction: IrFunction? = null,
-    moduleParameters: List<IrValueParameter> = emptyList()
-  ): IrClass {
+  ): ShardClassResult {
 
     // Create the shard class using the IR factory
     val shardClass = pluginContext.irFactory.buildClass {
@@ -70,10 +84,10 @@ internal class IrShardGenerator(
     }
 
     // Add backing field for graph parameter
-    val graphField = shardClass.addField {
+    val outerField = shardClass.addField {
       name = Symbols.Names.graph
       type = parentClass.defaultType
-      visibility = DescriptorVisibilities.PRIVATE
+      visibility = DescriptorVisibilities.INTERNAL
       isFinal = true
       origin = Origins.Default
     }
@@ -92,80 +106,43 @@ internal class IrShardGenerator(
       returnType = shardClass.defaultType
     }
 
-    // Add parameters for main graph and modules
+    // Add parameter for main graph
     val graphParameter = constructor.addValueParameter(Symbols.Names.graph, parentClass.defaultType)
 
-    // Add module parameters to constructor and create backing fields
-    val moduleFields = mutableListOf<IrField>()
-    val moduleCtorParams = mutableListOf<IrValueParameter>()
-    for (moduleParam in moduleParameters) {
-      // Add parameter to constructor
-      val ctorParam = constructor.addValueParameter {
-        name = moduleParam.name
-        type = moduleParam.type
-        origin = Origins.Default
-      }
-      moduleCtorParams.add(ctorParam)
+    constructor.body = context.createIrBuilder(constructor.symbol).irBlockBody {
+      // Call super constructor
+      +irDelegatingConstructorCall(irBuiltIns.anyClass.owner.constructors.single())
 
-      // Add backing field for the module
-      val moduleField = shardClass.addField {
-        name = moduleParam.name
-        type = moduleParam.type
-        visibility = DescriptorVisibilities.PRIVATE
-        isFinal = true
-        origin = Origins.Default
-      }
-      moduleFields.add(moduleField)
-    }
+      // Run instance initializer
+      +IrInstanceInitializerCallImpl(
+        startOffset = UNDEFINED_OFFSET,
+        endOffset = UNDEFINED_OFFSET,
+        classSymbol = shardClass.symbol,
+        type = shardClass.defaultType
+      )
 
-    // TODO: Generate the rest of the code.
+      val thisReceiver = shardClass.thisReceiver!!
 
-    return shardClass
-  }
+      // Store outer graph reference
+      +irSetField(
+        irGet(thisReceiver),
+        outerField,
+        irGet(graphParameter)
+      )
 
-  /**
-   * Generates a field in the parent class to hold this shard instance.
-   * The field has internal visibility to allow cross-shard access.
-   */
-  private fun generateShardField(shardClass: IrClass): IrField {
-    val fieldName = "shard${shard.index}"
-
-    return parentClass.addField {
-      name = fieldName.asName()
-      type = shardClass.defaultType
-      visibility = DescriptorVisibilities.INTERNAL
-      isFinal = true
-      origin = Origins.Default
-    }
-  }
-
-  /**
-   * Generates the initialization expression for this shard.
-   * Creates a call to the shard constructor: ShardN(this, module1, module2, ...)
-   */
-  private fun generateShardInitialization(
-    shardClass: IrClass,
-    thisReceiver: IrValueParameter,
-    moduleParameters: List<IrValueParameter>,
-  ): IrExpression {
-    return with(context.createIrBuilder(parentClass.symbol)) {
-      val constructor = shardClass.primaryConstructor
-        ?: error("Shard class missing primary constructor")
-
-      // Build arguments list: main graph + module parameters
-      val args = buildList {
-        add(irGet(thisReceiver)) // Pass 'this' (the main graph) as first parameter
-        moduleParameters.forEach { param ->
-          add(irGet(param)) // Pass module parameters
-        }
-      }
-
-      // Use irCall with arguments array instead of deprecated putValueArgument
-      irCall(constructor.symbol).apply {
-        args.forEachIndexed { index, arg ->
-          arguments[index] = arg
+      // Invoke the initializeFields helper if provided
+      if (initializeFieldsFunction != null) {
+        +irCall(initializeFieldsFunction.symbol).apply {
+          dispatchReceiver = irGet(thisReceiver)
         }
       }
     }
+
+    return ShardClassResult(
+      shardClass = shardClass,
+      constructor = constructor,
+      outerField = outerField,
+      outerParameter = graphParameter,
+    )
   }
 }

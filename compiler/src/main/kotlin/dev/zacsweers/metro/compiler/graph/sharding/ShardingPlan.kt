@@ -3,11 +3,14 @@
 package dev.zacsweers.metro.compiler.graph.sharding
 
 import dev.zacsweers.metro.compiler.MetroConstants
+import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.graph.Component
 import dev.zacsweers.metro.compiler.graph.TopoSortResult
 import dev.zacsweers.metro.compiler.ir.IrBinding
 import dev.zacsweers.metro.compiler.ir.IrBindingGraph
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
+import org.jetbrains.kotlin.backend.jvm.codegen.AnnotationCodegen.Companion.annotationClass
+import org.jetbrains.kotlin.ir.util.classId
 import java.util.*
 
 /**
@@ -100,7 +103,11 @@ internal fun buildShardingPlan(
   val totalBindings = allBindings.size
 
   // Early exit for small graphs
-  if (totalBindings < keysPerShard) return null
+  if (totalBindings < keysPerShard) {
+    // Debug logging
+    println("Sharding: Not triggered - totalBindings ($totalBindings) < keysPerShard ($keysPerShard)")
+    return null
+  }
 
   // Pre-allocate all data structures with exact sizes
   val bindingOrdinals = HashMap<IrTypeKey, Int>(totalBindings)
@@ -118,7 +125,7 @@ internal fun buildShardingPlan(
 
     when {
       binding is IrBinding.Absent -> {} // Skip
-      shouldStayInMainGraph(binding) -> mainGraphBindings.set(ordinal)
+      shouldStayInMainGraph(binding, bindingGraph) -> mainGraphBindings.set(ordinal)
       else -> {
         shardableBindings.set(ordinal)
         shardableCount++
@@ -135,7 +142,17 @@ internal fun buildShardingPlan(
 
   // Check if sharding is needed
   val estimatedShards = (shardableCount + keysPerShard - 1) / keysPerShard
-  if (estimatedShards <= 1) return null
+  if (estimatedShards <= 1) {
+    // Debug logging
+    val mainGraphCount = mainGraphBindings.cardinality()
+    println("Sharding: Not triggered - insufficient shardable bindings")
+    println("  Total bindings: $totalBindings")
+    println("  Main graph bindings: $mainGraphCount")
+    println("  Shardable bindings: $shardableCount")
+    println("  Keys per shard: $keysPerShard")
+    println("  Estimated shards: $estimatedShards (needs > 1)")
+    return null
+  }
 
   // Pre-compute dependency adjacency using arrays for speed
   val dependencyLists = buildDependencyLists(ordinalToBinding, bindingOrdinals, totalBindings)
@@ -155,6 +172,17 @@ internal fun buildShardingPlan(
 
   // Build final shards
   val shards = shardBuilder.buildShards()
+
+  if (shards.isNotEmpty()) {
+    // Debug logging
+    println("Sharding: TRIGGERED - creating ${shards.size} shards")
+    println("  Total bindings: $totalBindings")
+    println("  Shardable bindings: $shardableCount")
+    println("  Keys per shard: $keysPerShard")
+    shards.forEachIndexed { index, shard ->
+      println("  Shard $index: ${shard.bindingOrdinals.size} bindings")
+    }
+  }
 
   return ShardingPlan(
     shards = shards,
@@ -448,13 +476,34 @@ private fun buildDependencyLists(
 
 /**
  * Determines if a binding should stay in the main graph.
+ * Only bindings that must be in the main graph for structural reasons should return true.
  */
-private fun shouldStayInMainGraph(binding: IrBinding): Boolean {
+private fun shouldStayInMainGraph(binding: IrBinding, bindingGraph: IrBindingGraph): Boolean {
   return when (binding) {
-    is IrBinding.BoundInstance -> true
-    is IrBinding.Alias -> true
-    is IrBinding.Provided -> true // Module provisions
-    is IrBinding.GraphDependency -> binding.fieldAccess != null
-    else -> false
+    is IrBinding.BoundInstance -> true // Constructor parameters need main graph access
+    is IrBinding.ObjectClass -> true // Module containers (singletons) stay in main graph
+    is IrBinding.Alias -> true // Simple type aliases stay in main
+    is IrBinding.GraphDependency -> binding.fieldAccess != null // External graph references
+    is IrBinding.GraphExtensionFactory -> true // Extension factories are handled specially
+    is IrBinding.Multibinding -> true // Multibinding containers need aggregation logic in main graph
+    else -> {
+      // Check if this is a MultibindingElement contribution
+      if (binding.typeKey.qualifier?.ir?.annotationClass?.classId == Symbols.ClassIds.MultibindingElement) {
+        return true // MultibindingElement contributions must co-locate with their containers in main graph
+      }
+
+      // Check if this binding is aliased by any MultibindingElement-qualified alias
+      // This handles cases like NavigationFinder.Stub which is aliased by @ContributesIntoSet
+      val allBindings = bindingGraph.bindingsSnapshot()
+      for ((aliasTypeKey, aliasBinding) in allBindings) {
+        if (aliasBinding is IrBinding.Alias &&
+            aliasBinding.aliasedType == binding.typeKey &&
+            aliasBinding.typeKey.qualifier?.ir?.annotationClass?.classId == Symbols.ClassIds.MultibindingElement) {
+          return true // This binding is aliased by a MultibindingElement, so it should stay in main graph
+        }
+      }
+
+      false // All other bindings including Provided can be sharded
+    }
   }
 }

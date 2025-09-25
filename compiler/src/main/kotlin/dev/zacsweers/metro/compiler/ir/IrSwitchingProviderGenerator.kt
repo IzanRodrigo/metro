@@ -16,14 +16,17 @@ import org.jetbrains.kotlin.ir.builders.declarations.*
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrBranch
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrInstanceInitializerCallImpl
+import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.constructors
+import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
 
@@ -48,7 +51,7 @@ internal class IrSwitchingProviderGenerator(
   fun generate(): IrClass {
     switchingProviderClass = createSwitchingProviderClass()
 
-    // Add outer class reference field (this is created automatically for inner classes)
+    // For inner classes, we still need a field to hold the outer reference
     outerThisField = switchingProviderClass.addField {
       name = "this\$0".asName()
       type = shardClass.defaultType
@@ -80,7 +83,7 @@ internal class IrSwitchingProviderGenerator(
       kind = ClassKind.CLASS
       visibility = DescriptorVisibilities.PRIVATE
       modality = Modality.FINAL
-      isInner = true // Inner class to access shard fields
+      isInner = false // Changed to static nested class to avoid K2 dispatch receiver issues
       origin = Origins.Default
     }
 
@@ -115,20 +118,14 @@ internal class IrSwitchingProviderGenerator(
   }
 
   private fun generateConstructorBody(constructor: IrConstructor, idField: IrField) {
-    // For inner class constructors, we need to handle the dispatch receiver properly
-    // The dispatch receiver represents the outer class instance
+    // For static nested class, we need explicit parameters for outer reference and id
 
-    // Add parameters to the constructor
-    // Note: For inner classes, the dispatch receiver is handled differently in K2
-    val parameters = mutableListOf<IrValueParameter>()
-
-    // Add outer class parameter for inner class constructor
+    // Add outer reference parameter (replaces implicit dispatch receiver of inner class)
     val outerParam = constructor.addValueParameter {
-      name = "\$outer".asName()
+      name = "outer".asName()
       type = shardClass.defaultType
       origin = Origins.Default
     }
-    parameters.add(outerParam)
 
     // Add id parameter
     val idParam = constructor.addValueParameter {
@@ -136,7 +133,6 @@ internal class IrSwitchingProviderGenerator(
       type = irBuiltIns.intType
       origin = Origins.Default
     }
-    parameters.add(idParam)
 
     constructor.body = createIrBuilder(constructor.symbol).irBlockBody {
       // Call super constructor
@@ -155,7 +151,7 @@ internal class IrSwitchingProviderGenerator(
       // Get the this receiver for the constructor
       val thisReceiver = switchingProviderClass.thisReceiver!!
 
-      // Set outer class field using the class's this receiver
+      // Set the outer class field - now explicitly passed as parameter
       +irSetField(
         irGet(thisReceiver),
         outerThisField,
@@ -173,35 +169,61 @@ internal class IrSwitchingProviderGenerator(
 
   private fun generateGetMethod(providerClass: IrClass, idField: IrField) {
     val getMethod = providerClass.addFunction {
-      name = "get".asName()
+      name = "invoke".asName()
       returnType = irBuiltIns.anyNType
       modality = Modality.OPEN
       visibility = DescriptorVisibilities.PUBLIC
+      isOperator = true
     }
 
-    // Override the Provider.get() method
+    // Override the Provider.invoke() method
     getMethod.overriddenSymbols = listOf(symbols.providerInvoke)
+
+    // For member functions, we need to explicitly add the dispatch receiver parameter
+    // This is required by the new IR parameter API in K2
+    val thisReceiver = getMethod.addValueParameter {
+      name = "<this>".asName()
+      type = providerClass.defaultType
+      origin = Origins.Default
+      kind = IrParameterKind.DispatchReceiver
+    }
 
     getMethod.body = createIrBuilder(getMethod.symbol).irBlockBody {
       // Generate switch on id
       val branches = mutableListOf<IrBranch>()
 
-      // Use the class's thisReceiver instead of the method's dispatchReceiverParameter
-      // since we're in an inner class context
-      val thisReceiver = switchingProviderClass.thisReceiver!!
+      // For accessing 'this' in a static nested class method
 
-      // Filter to only process shardable bindings
+      // Filter to only process shardable bindings that also have provider fields
       val validOrdinals = shard.bindingOrdinals.filter { ordinal ->
-        shardingContext.plan.shardableBindings[ordinal]
+        shardingContext.plan.shardableBindings[ordinal] && ordinal in shardingContext.ordinalsWithProviderFields
+      }
+
+      // If there are no shardable bindings, return error immediately
+      if (validOrdinals.isEmpty()) {
+        +irReturn(
+          irInvoke(
+            callee = symbols.stdlibErrorFunction,
+            args = listOf(irString("SwitchingProvider for shard ${shard.index} has no shardable bindings"))
+          )
+        )
+        return@irBlockBody
       }
 
       validOrdinals.forEachIndexed { index, ordinal ->
+        // Access id field using thisReceiver for static nested class
         val condition = irEquals(
           irGetField(irGet(thisReceiver), idField),
           irInt(index)
         )
 
-        val result = generateProviderCall(ordinal, thisReceiver)
+        val result = try {
+          generateProviderCall(ordinal, thisReceiver)
+        } catch (e: Exception) {
+          // Log the error for debugging
+          println("ERROR: Failed to generate provider call for ordinal $ordinal in shard ${shard.index}: ${e.message}")
+          throw e
+        }
         branches.add(
           IrBranchImpl(
             UNDEFINED_OFFSET,
@@ -218,9 +240,12 @@ internal class IrSwitchingProviderGenerator(
           UNDEFINED_OFFSET,
           UNDEFINED_OFFSET,
           irTrue(),
-          irCall(symbols.stdlibErrorFunction).apply {
-            arguments[0] = irString("Invalid SwitchingProvider id")
-          },
+          irInvoke(
+            callee = symbols.stdlibErrorFunction,
+            // Note: We show the shard index in the error message since we can't easily convert
+            // the runtime id to a string at compile time. The id will be visible in the stack trace.
+            args = listOf(irString("Invalid SwitchingProvider id for shard ${shard.index}"))
+          )
         )
       )
 
@@ -230,22 +255,67 @@ internal class IrSwitchingProviderGenerator(
 
   private fun IrBuilderWithScope.generateProviderCall(
     ordinal: Int,
-    thisReceiver: IrValueParameter  // Change this parameter type
+    thisReceiver: IrValueParameter
   ): IrExpression {
     val typeKey = getTypeKeyForOrdinal(ordinal)
 
-    val field = bindingFieldContext.providerField(typeKey)
-      ?: error("No provider field found for $typeKey in shard ${shard.index}")
+    // Check if this ordinal actually belongs to this shard
+    val expectedShardIndex = shardingContext.plan.bindingToShard.getOrElse(ordinal) { -1 }
+    if (expectedShardIndex != shard.index) {
+      error("Shard ${shard.index} SwitchingProvider asked to provide ordinal $ordinal (${typeKey}) " +
+            "which belongs to shard $expectedShardIndex. This suggests a cross-shard dependency " +
+            "that wasn't properly handled through requirements collection.")
+    }
 
-    // Get the outer shard instance through the outerThisField
-    val shardInstance = irGetField(irGet(thisReceiver), outerThisField)
+    val descriptor = bindingFieldContext.providerFieldDescriptor(typeKey)
+      ?: error("No provider field descriptor found for $typeKey in shard ${shard.index}")
 
-    // Get the provider field from the shard
-    val providerFieldAccess = irGetField(shardInstance, field)
+    val providerFieldAccess = resolveProviderField(typeKey, descriptor, thisReceiver)
 
-    // Call get() on the provider
     return irCall(symbols.providerInvoke).apply {
       dispatchReceiver = providerFieldAccess
+    }
+  }
+
+
+  private fun IrBuilderWithScope.resolveProviderField(
+    typeKey: IrTypeKey,
+    descriptor: BindingFieldContext.FieldDescriptor,
+    thisReceiver: IrValueParameter
+  ): IrExpression {
+    // For static nested class, access the outer shard instance through the explicit this$0 field
+    val currentThis = irGet(thisReceiver)
+    val shardInstance = irGetField(currentThis, outerThisField)
+
+    shardingContext.requirementFields[shard.index]?.get(typeKey)?.let { requirementField ->
+      val requirementValue = irGetField(shardInstance, requirementField)
+      if (requirementField.type.classOrNull != symbols.metroProvider.owner) {
+        error("Requirement field ${requirementField.name} for $typeKey is not a Provider")
+      }
+      return requirementValue
+    }
+    return when (val owner = descriptor.owner) {
+      BindingFieldContext.FieldOwner.MainGraph -> {
+        val outerField = shardingContext.outerFields[shard.index]
+          ?: error("Missing outer field for shard ${shard.index}")
+        val graphInstance = irGetField(shardInstance, outerField)
+        irGetField(graphInstance, descriptor.field)
+      }
+      is BindingFieldContext.FieldOwner.Shard -> {
+        if (owner.index == shard.index) {
+          irGetField(shardInstance, descriptor.field)
+        } else {
+          val outerField = shardingContext.outerFields[shard.index]
+            ?: error("Missing outer field for shard ${shard.index}")
+          val graphInstance = irGetField(shardInstance, outerField)
+          val actualIndex = shardingContext.shardIndexMapping[owner.index] ?: owner.index
+          val otherShardField = shardingContext.shardFields[actualIndex]
+            ?: error("Shard field not found for shard index $actualIndex")
+          val otherShardInstance = irGetField(graphInstance, otherShardField)
+          irGetField(otherShardInstance, descriptor.field)
+        }
+      }
+      is BindingFieldContext.FieldOwner.Unknown -> irGetField(shardInstance, descriptor.field)
     }
   }
 

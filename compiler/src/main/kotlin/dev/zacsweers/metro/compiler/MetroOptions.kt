@@ -183,6 +183,18 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       valueMapper = String::toInt,
     )
   ),
+  SHARD_GRAPH_EXTENSIONS(
+    RawMetroOption.boolean(
+      name = "sharding.shardGraphExtensions",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Controls whether sharding should be applied to graph extensions (subcomponents). " +
+        "When false (default), sharding is only applied to main components. Graph extensions " +
+        "are typically small and focused, so sharding them adds unnecessary overhead.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   FAST_INIT(
     RawMetroOption.boolean(
       name = "fastInit",
@@ -544,6 +556,7 @@ public data class MetroOptions(
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
   val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
+  val shardGraphExtensions: Boolean = MetroOption.SHARD_GRAPH_EXTENSIONS.raw.defaultValue.expectAs(),
   val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
@@ -684,6 +697,9 @@ public data class MetroOptions(
 
           MetroOption.KEYS_PER_SHARD ->
             options = options.copy(keysPerShard = configuration.getAsInt(entry))
+
+          MetroOption.SHARD_GRAPH_EXTENSIONS ->
+            options = options.copy(shardGraphExtensions = configuration.getAsBoolean(entry))
 
           MetroOption.FAST_INIT ->
             options = options.copy(fastInit = configuration.getAsBoolean(entry))

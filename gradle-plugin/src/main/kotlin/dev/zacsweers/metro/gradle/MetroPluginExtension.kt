@@ -167,6 +167,21 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val keysPerShard: Property<Int> =
     objects.property(Int::class.javaObjectType)
 
+  /**
+   * Controls whether sharding should be applied to graph extensions (subcomponents).
+   *
+   * When false (default), sharding is only applied to main components. Graph extensions
+   * are typically small and focused, so sharding them adds unnecessary overhead.
+   *
+   * When true, graph extensions will also be sharded if they exceed the keysPerShard threshold.
+   *
+   * Default value: false
+   *
+   * @see fastInit
+   * @see keysPerShard
+   */
+  public val shardGraphExtensions: Property<Boolean> =
+    objects.property(Boolean::class.javaObjectType).convention(false)
 
   /**
    * Configures interop to support in generated code, usually from another DI framework.
