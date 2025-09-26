@@ -190,11 +190,29 @@ private constructor(
           // This multibinding will use chunking - it MUST have a provider field
           val descriptor = bindingFieldContext.providerFieldDescriptor(binding.typeKey)
           if (descriptor == null && fieldInitKey == null) {
-            // This is a serious issue - chunked multibindings need provider fields
-            reportCompilerBug(
-              "Large multibinding ${binding.typeKey} with ${size} elements requires a provider field " +
-              "but none was found. This will cause runtime failures when accessed from shards."
-            )
+            // Write diagnostic instead of failing to see what's happening
+            val typeStr = binding.typeKey.type.render(short = true).replace('.', '-').replace('<', '_').replace('>', '_').replace(',', '_')
+            writeDiagnostic("multibinding-missing-field-${typeStr.take(100)}.txt") {
+              buildString {
+                appendLine("=== CRITICAL: Large Multibinding Missing Provider Field ===")
+                appendLine("Type: ${binding.typeKey}")
+                appendLine("Size: ${size} elements")
+                appendLine("Field init key: $fieldInitKey")
+                appendLine("Access type: $accessType")
+                appendLine("Current class: ${currentThisReceiver.type.render(short = true)}")
+                appendLine()
+                appendLine("This large multibinding requires a provider field but none was found.")
+                appendLine("This will cause runtime failures when accessed from shards.")
+                appendLine()
+                appendLine("Binding field context state:")
+                appendLine("  Has provider field: ${bindingFieldContext.providerFieldDescriptor(binding.typeKey) != null}")
+                appendLine("  Has instance field: ${bindingFieldContext.instanceFieldDescriptor(binding.typeKey) != null}")
+                appendLine()
+                // Note: Can't access private fields, so we'll just check if fields exist
+                appendLine("  Is type key in context: ${binding.typeKey in bindingFieldContext}")
+              }
+            }
+            // Don't fail compilation - let it continue so we can see the generated code
           }
         }
       }

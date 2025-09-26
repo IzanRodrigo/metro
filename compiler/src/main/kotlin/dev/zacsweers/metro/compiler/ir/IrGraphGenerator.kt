@@ -1094,6 +1094,28 @@ internal class IrGraphGenerator(
           }
         }
 
+      // Debug multibinding filtering
+      val multibindingsInInitOrder = mainGraphInitBindings
+        .filterIsInstance<IrBinding.Multibinding>()
+        .filter { !it.isSet && it.sourceBindings.size >= 50 }
+
+      writeDiagnostic("multibinding-filtering-debug.txt") {
+        buildString {
+          appendLine("=== Multibinding Filtering Debug ===")
+          appendLine("Total bindings in initOrder: ${mainGraphInitBindings.size}")
+          appendLine("Large map multibindings: ${multibindingsInInitOrder.size}")
+          multibindingsInInitOrder.forEach { mb ->
+            appendLine()
+            appendLine("Multibinding: ${mb.typeKey}")
+            appendLine("  Size: ${mb.sourceBindings.size}")
+            appendLine("  In deferredFields: ${mb.typeKey in deferredFields}")
+            appendLine("  In bindingFieldContext: ${mb.typeKey in bindingFieldContext}")
+            appendLine("  Has provider field: ${bindingFieldContext.providerFieldDescriptor(mb.typeKey) != null}")
+            appendLine("  Has instance field: ${bindingFieldContext.instanceFieldDescriptor(mb.typeKey) != null}")
+          }
+        }
+      }
+
       // Use the extracted method to generate provider fields
       val providerFieldResult = generateProviderFields(
         targetClass = this,
@@ -1106,10 +1128,16 @@ internal class IrGraphGenerator(
               // Check if we already have a field for this multibinding
               val existingField = bindingFieldContext.providerFieldDescriptor(it.typeKey)
               if (existingField != null) {
+                writeDiagnostic("multibinding-already-has-field.txt") {
+                  "Multibinding ${it.typeKey} already has field: ${existingField.field.name}"
+                }
                 // Skip if we already created it (e.g., in early initialization)
                 return@filterNot true
               }
               // Otherwise, let it through to get a provider field
+              writeDiagnostic("multibinding-needs-field.txt") {
+                "Multibinding ${it.typeKey} needs a provider field (size=${(it as? IrBinding.Multibinding)?.sourceBindings?.size})"
+              }
               return@filterNot false
             }
 
