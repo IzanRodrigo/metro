@@ -177,6 +177,7 @@ internal class IrGraphGenerator(
         is IrBinding.GraphDependency -> binding.fieldAccess != null // External graph references
         is IrBinding.GraphExtensionFactory -> true // Extension factories are handled specially
         is IrBinding.Multibinding -> true // Multibinding containers need aggregation logic in main graph
+        is IrBinding.Provided -> true // @Provides methods stay in main graph to avoid cross-shard dependency issues
         else -> {
           // Check if this is a MultibindingElement contribution
           if (binding.typeKey.qualifier?.ir?.annotationClass?.classId == Symbols.ClassIds.MultibindingElement) {
@@ -194,7 +195,7 @@ internal class IrGraphGenerator(
             }
           }
 
-          false // All other bindings including Provided can be sharded
+          false // Other bindings can be sharded (ConstructorInjected, etc.)
         }
       }
     }
@@ -319,10 +320,62 @@ internal class IrGraphGenerator(
     }
 
     // Add diagnostic logging
-    if (requirements.isNotEmpty() && options.debug) {
-      println("Shard ${shard.index} external requirements:")
-      requirements.values.forEach { req ->
-        println("  - ${req.key}: ${req.source} (${req.access})")
+    if (options.debug) {
+      writeDiagnostic("shard-${shard.index}-dependency-analysis.txt") {
+        buildString {
+          appendLine("=== Shard ${shard.index} Dependency Analysis ===")
+          appendLine("Bindings in this shard: ${shard.bindingOrdinals.size}")
+          appendLine()
+
+          // Show which bindings are in this shard
+          appendLine("Bindings assigned to this shard:")
+          shard.bindingOrdinals.take(20).forEach { ordinal ->
+            val key = ordinalToKey[ordinal]
+            if (key != null) {
+              val binding = try {
+                bindingGraph.requireBinding(key, IrBindingStack.empty())
+              } catch (e: Exception) {
+                null
+              }
+              appendLine("  [$ordinal] $key - ${binding?.javaClass?.simpleName ?: "Unknown"}")
+            }
+          }
+          if (shard.bindingOrdinals.size > 20) {
+            appendLine("  ... and ${shard.bindingOrdinals.size - 20} more")
+          }
+          appendLine()
+
+          // Show external requirements
+          appendLine("External requirements (${requirements.size} total):")
+          requirements.values.forEach { req ->
+            appendLine("  ${req.key}:")
+            appendLine("    - Source: ${req.source}")
+            appendLine("    - Access: ${req.access}")
+            if (req.shardIndex != null) {
+              appendLine("    - From shard: ${req.shardIndex}")
+            }
+          }
+
+          // Show any bindings that should have stayed in main graph
+          appendLine()
+          appendLine("Bindings that should stay in main graph (sanity check):")
+          var foundMainGraphBindings = 0
+          for (ordinal in shard.bindingOrdinals) {
+            val key = ordinalToKey[ordinal] ?: continue
+            val binding = try {
+              bindingGraph.requireBinding(key, IrBindingStack.empty())
+            } catch (e: Exception) {
+              continue
+            }
+            if (isMainGraphBinding(binding)) {
+              appendLine("  WARNING: $key (${binding.javaClass.simpleName}) should be in main graph!")
+              foundMainGraphBindings++
+            }
+          }
+          if (foundMainGraphBindings == 0) {
+            appendLine("  None found (good!)")
+          }
+        }
       }
     }
 

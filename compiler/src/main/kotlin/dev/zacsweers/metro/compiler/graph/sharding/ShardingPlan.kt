@@ -486,6 +486,7 @@ private fun shouldStayInMainGraph(binding: IrBinding, bindingGraph: IrBindingGra
     is IrBinding.GraphDependency -> binding.fieldAccess != null // External graph references
     is IrBinding.GraphExtensionFactory -> true // Extension factories are handled specially
     is IrBinding.Multibinding -> true // Multibinding containers need aggregation logic in main graph
+    is IrBinding.Provided -> true // @Provides methods stay in main graph to avoid cross-shard dependency issues
     else -> {
       // Check if this is a MultibindingElement contribution
       if (binding.typeKey.qualifier?.ir?.annotationClass?.classId == Symbols.ClassIds.MultibindingElement) {
@@ -503,7 +504,7 @@ private fun shouldStayInMainGraph(binding: IrBinding, bindingGraph: IrBindingGra
         }
       }
 
-      false // All other bindings including Provided can be sharded
+      false // Other bindings can be sharded (ConstructorInjected, etc.)
     }
   }
 }
