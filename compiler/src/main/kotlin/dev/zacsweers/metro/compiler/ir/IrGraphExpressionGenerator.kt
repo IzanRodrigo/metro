@@ -181,6 +181,24 @@ private constructor(
         }
       }
 
+      // CRITICAL: For large multibindings that use chunking, we MUST use a provider field
+      // The chunked irBlock expression cannot be executed from a different context (e.g., shards)
+      // Check if this is a multibinding that would use chunking
+      if (binding is IrBinding.Multibinding && !binding.isSet) {
+        val size = binding.sourceBindings.size
+        if (size >= MULTIBINDING_CHUNK_SIZE) {
+          // This multibinding will use chunking - it MUST have a provider field
+          val descriptor = bindingFieldContext.providerFieldDescriptor(binding.typeKey)
+          if (descriptor == null && fieldInitKey == null) {
+            // This is a serious issue - chunked multibindings need provider fields
+            reportCompilerBug(
+              "Large multibinding ${binding.typeKey} with ${size} elements requires a provider field " +
+              "but none was found. This will cause runtime failures when accessed from shards."
+            )
+          }
+        }
+      }
+
       return when (binding) {
         is IrBinding.ConstructorInjected -> {
           // Example_Factory.create(...)
@@ -622,17 +640,22 @@ private constructor(
         val providerExpression: IrExpression = when {
           instanceField != null -> irGetField(irGet(currentThisReceiver), instanceField)
           else -> {
+            val paramBinding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+
+            if (paramBinding is IrBinding.Absent) {
+              return@mapIndexed null
+            }
+
+            // For multibindings, always try to use the field if it exists
+            // This ensures proper initialization and avoids null values
             val descriptor = bindingFieldContext.providerFieldDescriptor(typeKey)
             val viaDescriptor = descriptor?.let {
-              accessProviderField(it, binding, currentShardIndex, shardingContext)
+              accessProviderField(it, paramBinding, currentShardIndex, shardingContext)
             }
+
             viaDescriptor ?: run {
-              val paramBinding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
-
-              if (paramBinding is IrBinding.Absent) {
-                return@mapIndexed null
-              }
-
+              // Only fall back to inline generation if there's truly no field
+              // This should be rare for multibindings after our ProviderFieldCollector fix
               generateBindingCode(
                 paramBinding,
                 fieldInitKey = fieldInitKey,
@@ -1039,6 +1062,42 @@ private constructor(
       val targetClass =
         currentThisReceiver.enclosingClassOrNull()
           ?: error("Expected this receiver to belong to a class context for ${binding.nameHint}")
+
+      // CRITICAL FIX: For chunked multibindings accessed from shards, we need to ensure
+      // the field is properly initialized rather than returning an inline block
+      // Check if we're in a context where this might be accessed from a shard
+      val shardingContext = bindingFieldContext.shardingContext
+      val currentShardClass = bindingFieldContext.currentShardClass
+      val currentShardIndex = when {
+        // First check for explicit shard index
+        explicitShardIndex != null -> explicitShardIndex
+        // Otherwise try to derive from current shard class
+        shardingContext != null && currentShardClass != null -> {
+          val index = shardingContext.shardClasses.indexOf(currentShardClass)
+          if (index >= 0) index else null
+        }
+        else -> null
+      }
+
+      val isAccessibleFromShard = shardingContext != null &&
+                                   fieldInitKey == null // Not initializing the field itself
+
+      if (isAccessibleFromShard) {
+        // If this chunked multibinding might be accessed from a shard,
+        // we should use the provider field instead of generating inline
+        val descriptor = bindingFieldContext.providerFieldDescriptor(binding.typeKey)
+        if (descriptor != null) {
+          // Access the field instead of generating inline
+          val fieldAccess = accessProviderField(descriptor, binding,
+            currentShardIndex, shardingContext)
+          if (fieldAccess != null) {
+            return with(valueProviderSymbols) {
+              transformToMetroProvider(fieldAccess, originalType)
+            }
+          }
+        }
+      }
+
       val builderTypeWithArgs = builderType.typeWith(keyType, valueType)
       val chunkFunctions = sourceBindings
         .chunked(MULTIBINDING_CHUNK_SIZE)

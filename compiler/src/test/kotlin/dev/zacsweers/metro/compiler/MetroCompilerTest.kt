@@ -159,6 +159,10 @@ abstract class MetroCompilerTest {
                   customContributesToAnnotations.joinToString(":"),
                 )
               }
+              MetroOption.SHARD_GRAPH_EXTENSIONS -> {
+                // Handle SHARD_GRAPH_EXTENSIONS option if needed
+                continue
+              }
               MetroOption.CUSTOM_CONTRIBUTES_BINDING -> {
                 if (customContributesBindingAnnotations.isEmpty()) continue
                 processor.option(

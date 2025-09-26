@@ -594,6 +594,18 @@ internal class IrGraphGenerator(
       shard.index to collectShardRequirements(shard, shardingContext.plan, ordinalToKey, this)
     }
 
+    // Collect all required type keys from shard requirements that need early initialization
+    val requiredMultibindingKeys = shardRequirementsByIndex.values.flatten()
+      .filter { requirement -> requirement.source == RequirementSource.MAIN_GRAPH }
+      .map { it.key }
+      .distinct()
+      .filter { key ->
+        // Check if this is a multibinding that needs early initialization
+        val binding = bindingGraph.requireBinding(key, IrBindingStack.empty())
+        binding is IrBinding.Multibinding
+      }
+      .toSet()
+
     // Write diagnostic report about shard generation
     if (options.debug) {
       writeDiagnostic("shard-generation-${node.sourceGraph.name.asString()}.txt") {
@@ -720,6 +732,37 @@ internal class IrGraphGenerator(
 
       // Add to constructor statements - these will be executed in order
       constructorStatements.add(shardInitStatement)
+    }
+
+    // CRITICAL: Add early initialization for multibinding fields required by shards
+    // These must be initialized BEFORE the shard instantiation statements
+    if (requiredMultibindingKeys.isNotEmpty()) {
+      val earlyInitStatements = mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
+
+      for (typeKey in requiredMultibindingKeys) {
+        val binding = bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
+        if (binding is IrBinding.Multibinding) {
+          val field = bindingFieldContext.providerFieldDescriptor(typeKey)?.field
+          if (field != null) {
+            // Add an early initialization statement for this multibinding field
+            earlyInitStatements.add { thisReceiver ->
+              val initExpression = createIrBuilder(symbol).run {
+                expressionGeneratorFactory
+                  .create(thisReceiver)
+                  .generateBindingCode(
+                    binding,
+                    accessType = IrGraphExpressionGenerator.AccessType.PROVIDER,
+                    fieldInitKey = null // Don't skip field access
+                  )
+              }
+              irSetField(irGet(thisReceiver), field, initExpression)
+            }
+          }
+        }
+      }
+
+      // Insert early init statements at the beginning of constructor statements
+      constructorStatements.addAll(0, earlyInitStatements)
     }
 
     // Write final diagnostic report about shard field mapping
@@ -1057,6 +1100,20 @@ internal class IrGraphGenerator(
         bindings = mainGraphInitBindings
           .asSequence()
           .filterNot {
+            // Special handling for Multibindings - they should NOT be filtered out
+            // even if they're already in bindingFieldContext
+            if (it is IrBinding.Multibinding) {
+              // Check if we already have a field for this multibinding
+              val existingField = bindingFieldContext.providerFieldDescriptor(it.typeKey)
+              if (existingField != null) {
+                // Skip if we already created it (e.g., in early initialization)
+                return@filterNot true
+              }
+              // Otherwise, let it through to get a provider field
+              return@filterNot false
+            }
+
+            // Original filtering logic for non-multibindings
             // Don't generate deferred types here, we'll generate them last
             it.typeKey in deferredFields ||
               // Don't generate fields for anything already provided in provider/instance fields (i.e.
