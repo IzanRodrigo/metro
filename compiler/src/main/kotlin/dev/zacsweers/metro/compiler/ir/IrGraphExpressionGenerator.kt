@@ -1081,42 +1081,11 @@ private constructor(
         currentThisReceiver.enclosingClassOrNull()
           ?: error("Expected this receiver to belong to a class context for ${binding.nameHint}")
 
-      // CRITICAL FIX: For chunked multibindings accessed from shards, we need to ensure
-      // the field is properly initialized rather than returning an inline block
-      // Check if we're in a context where this might be accessed from a shard
-      val shardingContext = bindingFieldContext.shardingContext
-      val currentShardClass = bindingFieldContext.currentShardClass
-      val currentShardIndex = when {
-        // First check for explicit shard index
-        explicitShardIndex != null -> explicitShardIndex
-        // Otherwise try to derive from current shard class
-        shardingContext != null && currentShardClass != null -> {
-          val index = shardingContext.shardClasses.indexOf(currentShardClass)
-          if (index >= 0) index else null
-        }
-        else -> null
-      }
-
-      val isAccessibleFromShard = shardingContext != null &&
-                                   fieldInitKey == null // Not initializing the field itself
-
-      if (isAccessibleFromShard) {
-        // If this chunked multibinding might be accessed from a shard,
-        // we should use the provider field instead of generating inline
-        val descriptor = bindingFieldContext.providerFieldDescriptor(binding.typeKey)
-        if (descriptor != null) {
-          // Access the field instead of generating inline
-          val fieldAccess = accessProviderField(descriptor, binding,
-            currentShardIndex, shardingContext)
-          if (fieldAccess != null) {
-            return with(valueProviderSymbols) {
-              transformToMetroProvider(fieldAccess, originalType)
-            }
-          }
-        }
-      }
-
+      // CRITICAL FIX: For chunked multibindings, generate a separate builder method
+      // instead of an inline block. This makes the multibinding accessible from shards.
       val builderTypeWithArgs = builderType.typeWith(keyType, valueType)
+
+      // First, create the chunk functions
       val chunkFunctions = sourceBindings
         .chunked(MULTIBINDING_CHUNK_SIZE)
         .mapIndexed { chunkIndex, chunkBindings ->
@@ -1144,42 +1113,61 @@ private constructor(
           valueProviderSymbols.mapFactoryBuilderBuildFunction
         }
 
-      return irBlock(resultType = mapProviderType) {
-        val initialBuilder =
-          irTemporary(
-            irInvoke(
-              callee = builderFunction,
-              typeArgs = listOf(keyType, valueType),
-              typeHint = builderTypeWithArgs,
-              args = listOf(irInt(size)),
-            ),
-            nameHint = "${binding.nameHint.decapitalizeUS()}Builder",
-          )
-
-        var currentBuilder: IrExpression = irGet(initialBuilder)
-        chunkFunctions.forEachIndexed { chunkIndex, chunkFunction ->
-          val chunkResult =
+      // Create a builder method that returns the built Map
+      val builderMethodName = "${binding.nameHint.decapitalizeUS()}MultibindingBuilder"
+      val builderMethod = targetClass.addFunction(
+        builderMethodName,
+        mapProviderType,
+        visibility = DescriptorVisibilities.PRIVATE,
+      ).apply {
+        // Get the function's own dispatch receiver
+        val methodReceiver = dispatchReceiverParameter!!
+        buildBlockBody {
+          val initialBuilder =
             irTemporary(
               irInvoke(
-                dispatchReceiver = irGet(currentThisReceiver),
-                callee = chunkFunction.symbol,
+                callee = builderFunction,
+                typeArgs = listOf(keyType, valueType),
                 typeHint = builderTypeWithArgs,
-                args = listOf(currentBuilder),
+                args = listOf(irInt(size)),
               ),
-              nameHint = "${binding.nameHint.decapitalizeUS()}Chunk${chunkIndex}Builder",
+              nameHint = "builder",
             )
-          currentBuilder = irGet(chunkResult)
-        }
 
-        val built =
-          irInvoke(
-            dispatchReceiver = currentBuilder,
-            callee = buildFunction,
-            typeHint = mapProviderType,
+          var currentBuilder: IrExpression = irGet(initialBuilder)
+          chunkFunctions.forEachIndexed { chunkIndex, chunkFunction ->
+            val chunkResult =
+              irTemporary(
+                irInvoke(
+                  dispatchReceiver = irGet(methodReceiver),
+                  callee = chunkFunction.symbol,
+                  typeHint = builderTypeWithArgs,
+                  args = listOf(currentBuilder),
+                ),
+                nameHint = "chunk${chunkIndex}Builder",
+              )
+            currentBuilder = irGet(chunkResult)
+          }
+
+          val built =
+            irInvoke(
+              dispatchReceiver = currentBuilder,
+              callee = buildFunction,
+              typeHint = mapProviderType,
+            )
+
+          +irReturn(
+            with(valueProviderSymbols) { transformToMetroProvider(built, originalType) }
           )
-
-        with(valueProviderSymbols) { transformToMetroProvider(built, originalType) }
+        }
       }
+
+      // Now just call the builder method
+      return irInvoke(
+        dispatchReceiver = irGet(currentThisReceiver),
+        callee = builderMethod.symbol,
+        typeHint = mapProviderType,
+      )
     }
 
   context(scope: IrBuilderWithScope)
