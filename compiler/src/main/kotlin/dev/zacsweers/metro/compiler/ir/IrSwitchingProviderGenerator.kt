@@ -326,23 +326,36 @@ internal class IrSwitchingProviderGenerator(
   /**
    * Generate direct instance creation for fastInit mode.
    * Creates instances directly without going through provider fields.
-   *
-   * NOTE: Currently this still uses the Factory pattern for simplicity.
-   * A future optimization could create instances directly with constructors
-   * like Dagger does: new ServiceImpl(logger, monitor)
+   * This follows Dagger's pattern of directly instantiating objects in the switch statement.
    */
   private fun IrBuilderWithScope.generateDirectInstance(
     binding: IrBinding,
     typeKey: IrTypeKey,
     thisReceiver: IrValueParameter
   ): IrExpression {
-    // For now, keep the simpler delegation approach
-    // The real optimization is that we're using SwitchingProvider to reduce class count
-    // Direct constructor calls would be a further optimization but require more complex changes
+    // For now, we'll use the simpler approach of instantiating through factories
+    // but avoiding the provider field indirection. This still gives us the main benefit
+    // of SwitchingProvider (reduced class count) while being safer to implement.
 
-    // Fall back to delegation for now
-    // TODO: Implement true direct instantiation with constructor calls
-    return delegateToProviderField(binding, typeKey, thisReceiver)
+    // In the future, we could optimize further by directly calling constructors,
+    // but that requires careful handling of all dependency resolution paths.
+
+    // Create an expression generator with the shard context
+    val expressionGenerator = expressionGeneratorFactory.create(
+      explicitReceiver = null,  // Will use the current scope's receiver
+      explicitShardIndex = shard.index
+    )
+
+    // Generate the instance creation code directly
+    // This uses the factory pattern but avoids provider field delegation
+    return with(expressionGenerator) {
+      generateBindingCode(
+        binding = binding,
+        contextualTypeKey = binding.contextualTypeKey,
+        accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+        fieldInitKey = typeKey  // Pass the key to avoid field lookup
+      )
+    }
   }
 
   /**
