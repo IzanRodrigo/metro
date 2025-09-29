@@ -117,9 +117,11 @@ internal fun buildShardingPlan(
   val deferredOrdinals = BitSet(totalBindings)
 
   // Single pass: assign ordinals and classify bindings
+  // CRITICAL: Use topologically sorted order to ensure dependencies come before dependents
   var ordinal = 0
   var shardableCount = 0
-  for ((key, binding) in allBindings) {
+  for (key in topo.sortedKeys) {
+    val binding = allBindings[key] ?: continue // Skip if not in bindings (shouldn't happen)
     bindingOrdinals[key] = ordinal
     ordinalToBinding[ordinal] = binding
 

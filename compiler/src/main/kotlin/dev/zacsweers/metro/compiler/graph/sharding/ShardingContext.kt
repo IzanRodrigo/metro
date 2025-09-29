@@ -5,6 +5,7 @@ package dev.zacsweers.metro.compiler.graph.sharding
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.types.IrType
 import java.util.*
 
 // Shared context to pass between generators
@@ -24,6 +25,12 @@ internal class ShardingContext(
   // Ordinals that have provider fields (filtered by ProviderFieldCollector)
   // Bindings not in this set don't need provider fields (e.g., used only once, not scoped)
   var ordinalsWithProviderFields: Set<Int> = emptySet(),
+  // Global field name registry to ensure unique field names across all shards
+  val globalFieldNameRegistry: GlobalFieldNameRegistry = GlobalFieldNameRegistry(),
+  // Track SwitchingProvider IDs for each shard (for fastInit mode)
+  val switchingProviderIdCounters: MutableMap<Int, Int> = mutableMapOf(),
+  // Track which type keys are accessed from other shards (need PUBLIC visibility)
+  val crossShardAccessedTypeKeys: MutableSet<IrTypeKey> = mutableSetOf(),
 ) {
   // Helper to get shard class by index
   fun getShardClass(index: Int): IrClass = shardClasses[index]

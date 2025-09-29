@@ -28,6 +28,8 @@ import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrConstructorCallImpl
+import org.jetbrains.kotlin.ir.expressions.impl.fromSymbolOwner
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.classOrNull
@@ -162,6 +164,7 @@ internal class IrGraphGenerator(
     shardingPlan: ShardingPlan,
     ordinalToKey: Map<Int, IrTypeKey>,
     graphClass: IrClass,
+    shardingContext: ShardingContext,
   ): List<ShardRequirement> {
     if (shard.bindingOrdinals.isEmpty()) return emptyList()
 
@@ -210,7 +213,22 @@ internal class IrGraphGenerator(
       if (requirements.containsKey(key)) return
 
       // Check where this dependency lives
-      val dependencyOrdinal = shardingPlan.bindingOrdinals[key]
+      // CRITICAL FIX: Resolve aliases to find the actual implementation
+      val resolvedKey = key
+      val dependencyOrdinal = shardingPlan.bindingOrdinals[resolvedKey] ?: run {
+        // If not found, check if this is an interface with an alias binding
+        val aliasBinding = bindingGraph.bindingsSnapshot().values
+          .filterIsInstance<IrBinding.Alias>()
+          .firstOrNull { it.typeKey == key }
+
+        if (aliasBinding != null) {
+          // Found an alias - use the implementation's ordinal
+          shardingPlan.bindingOrdinals[aliasBinding.aliasedType]
+        } else {
+          null
+        }
+      }
+
       if (dependencyOrdinal != null) {
         val dependencyShardIndex = shardingPlan.bindingToShard.getOrElse(dependencyOrdinal) { -1 }
 
@@ -219,6 +237,9 @@ internal class IrGraphGenerator(
 
         if (dependencyShardIndex >= 0) {
           // Cross-shard dependency
+          // Mark this type key as needing PUBLIC visibility for cross-shard access
+          shardingContext.crossShardAccessedTypeKeys.add(key)
+
           requirements[key] = ShardRequirement(
             key = key,
             access = access,
@@ -234,7 +255,7 @@ internal class IrGraphGenerator(
         if (dependencyShardIndex == -1) {
           // Try to get the actual binding to determine how to handle it
           val actualBinding = binding ?: try {
-            bindingGraph.requireBinding(key, IrBindingStack.empty())
+            bindingGraph.requireBinding(key)
           } catch (e: Exception) {
             null
           }
@@ -262,7 +283,7 @@ internal class IrGraphGenerator(
 
       // Check if it's a main graph binding
       val actualBinding = binding ?: try {
-        bindingGraph.requireBinding(key, IrBindingStack.empty())
+        bindingGraph.requireBinding(key)
       } catch (e: Exception) {
         null
       }
@@ -291,7 +312,7 @@ internal class IrGraphGenerator(
       if (processedKeys.contains(bindingKey)) continue
       processedKeys.add(bindingKey)
 
-      val binding = bindingGraph.requireBinding(bindingKey, IrBindingStack.empty())
+      val binding = bindingGraph.requireBinding(bindingKey)
 
       // Check if the binding itself needs main graph access (e.g., GraphDependency)
       if (binding is IrBinding.GraphDependency) {
@@ -333,7 +354,7 @@ internal class IrGraphGenerator(
             val key = ordinalToKey[ordinal]
             if (key != null) {
               val binding = try {
-                bindingGraph.requireBinding(key, IrBindingStack.empty())
+                bindingGraph.requireBinding(key)
               } catch (e: Exception) {
                 null
               }
@@ -363,7 +384,7 @@ internal class IrGraphGenerator(
           for (ordinal in shard.bindingOrdinals) {
             val key = ordinalToKey[ordinal] ?: continue
             val binding = try {
-              bindingGraph.requireBinding(key, IrBindingStack.empty())
+              bindingGraph.requireBinding(key)
             } catch (e: Exception) {
               continue
             }
@@ -591,7 +612,7 @@ internal class IrGraphGenerator(
     }
 
     val shardRequirementsByIndex = nonEmptyShards.associate { shard ->
-      shard.index to collectShardRequirements(shard, shardingContext.plan, ordinalToKey, this)
+      shard.index to collectShardRequirements(shard, shardingContext.plan, ordinalToKey, this, shardingContext)
     }
 
     // Collect all required type keys from shard requirements that need early initialization
@@ -601,7 +622,7 @@ internal class IrGraphGenerator(
       .distinct()
       .filter { key ->
         // Check if this is a multibinding that needs early initialization
-        val binding = bindingGraph.requireBinding(key, IrBindingStack.empty())
+        val binding = bindingGraph.requireBinding(key)
         binding is IrBinding.Multibinding
       }
       .toSet()
@@ -633,11 +654,11 @@ internal class IrGraphGenerator(
 
       // Create a placeholder field that will be properly typed later
       // For now, use Any? as the type - we'll update it after shard class creation
-      // Use INTERNAL visibility to avoid synthetic accessor generation issues
+      // Use PUBLIC visibility for cross-shard access without synthetic accessors
       val placeholderField = addField(
         fieldName = "shard${shard.index}".asName(),
         fieldType = pluginContext.irBuiltIns.anyNType, // Temporary type
-        fieldVisibility = DescriptorVisibilities.INTERNAL, // Changed from PRIVATE to avoid synthetic accessors
+        fieldVisibility = DescriptorVisibilities.PUBLIC, // PUBLIC for cross-shard access
       ).apply {
         isFinal = true
       }
@@ -645,10 +666,21 @@ internal class IrGraphGenerator(
       shardingContext.shardFields[actualIndex] = placeholderField
     }
 
-    // Generate shard classes
+    // Generate shard classes and update field types immediately
+    // IMPORTANT: We must update each shard field's type right after generating its class,
+    // so that later shards can correctly access earlier shard fields with proper types
     for (shard in nonEmptyShards) {
       val requirements = shardRequirementsByIndex[shard.index].orEmpty()
       generateShardClass(shard, shardingContext, initOrder, requirements, expressionGeneratorFactory)
+
+      // Update the shard field type IMMEDIATELY after generating the shard class
+      // This ensures cross-shard field access has the correct type information
+      val actualIndex = shardingContext.shardIndexMapping[shard.index]
+        ?: error("Missing shard index mapping for shard ${shard.index}")
+      val shardClass = shardingContext.shardClasses[actualIndex]
+      val shardField = shardingContext.shardFields[actualIndex]
+        ?: error("Missing shard field for index $actualIndex")
+      shardField.type = shardClass.defaultType
     }
 
     // Update shard field types and initialize them IN ORDER
@@ -665,12 +697,9 @@ internal class IrGraphGenerator(
         reportCompilerBug("Inconsistent shard index mapping: original=$originalIndex, actual=$actualIndex, mapped=${shardingContext.shardIndexMapping[originalIndex]}")
       }
 
-      // Update the placeholder field with the correct type
+      // Get the shard field (type already updated above)
       val shardField = shardingContext.shardFields[actualIndex]
         ?: reportCompilerBug("Missing shard field for index $actualIndex")
-
-      // Update the field type to the actual shard class type
-      shardField.type = shardClass.defaultType
 
       // Build the initialization statement for this shard
       // We'll execute them in order to ensure each shard is available for the next
@@ -740,7 +769,7 @@ internal class IrGraphGenerator(
       val earlyInitStatements = mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
 
       for (typeKey in requiredMultibindingKeys) {
-        val binding = bindingGraph.requireBinding(typeKey, IrBindingStack.empty())
+        val binding = bindingGraph.requireBinding(typeKey)
         if (binding is IrBinding.Multibinding) {
           val field = bindingFieldContext.providerFieldDescriptor(typeKey)?.field
           if (field != null) {
@@ -790,7 +819,7 @@ internal class IrGraphGenerator(
     // Handle deferred types (same as non-sharded)
     val deferredFields: Map<IrTypeKey, IrField> =
       sealResult.deferredTypes.associateWith { deferredTypeKey ->
-        val binding = bindingGraph.requireBinding(deferredTypeKey, IrBindingStack.empty())
+        val binding = bindingGraph.requireBinding(deferredTypeKey)
         val field =
           getOrCreateBindingField(
             binding.typeKey,
@@ -811,7 +840,7 @@ internal class IrGraphGenerator(
 
     // Add deferred field initialization statements
     for ((deferredTypeKey, field) in deferredFields) {
-      val binding = bindingGraph.requireBinding(deferredTypeKey, IrBindingStack.empty())
+      val binding = bindingGraph.requireBinding(deferredTypeKey)
       initStatements.add { thisReceiver ->
         irInvoke(
           dispatchReceiver = irGetObject(symbols.metroDelegateFactoryCompanion),
@@ -1177,7 +1206,7 @@ internal class IrGraphGenerator(
       // Add statements to our constructor's deferred fields _after_ we've added all provider
       // fields for everything else. This is important in case they reference each other
       for ((deferredTypeKey, field) in deferredFields) {
-        val binding = bindingGraph.requireBinding(deferredTypeKey, IrBindingStack.empty())
+        val binding = bindingGraph.requireBinding(deferredTypeKey)
         initStatements.add { thisReceiver ->
           irInvoke(
             dispatchReceiver = irGetObject(symbols.metroDelegateFactoryCompanion),
@@ -1267,11 +1296,12 @@ internal class IrGraphGenerator(
     targetClass: IrClass,
     bindings: List<IrBinding>,
     bindingFieldContext: BindingFieldContext,
-    fieldNameAllocator: NameAllocator,
+    fieldNameAllocator: NameAllocator?,
     thisReceiver: IrValueParameter,
     expressionGeneratorFactory: IrGraphExpressionGenerator.Factory,
     fieldOwner: BindingFieldContext.FieldOwner,
     initializeFields: Boolean = true,
+    shardingContext: ShardingContext? = null,
   ): ProviderFieldGenerationResult {
     val fieldInitializers = mutableMapOf<IrField, FieldInitializer>()
     val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
@@ -1297,25 +1327,78 @@ internal class IrGraphGenerator(
           }
 
         // If we've reserved a field for this key here, pull it out and use that
-        val fieldName = fieldNameAllocator.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
+        // Use GlobalFieldNameRegistry if in sharding context, otherwise use NameAllocator
+        val fieldName = if (shardingContext != null) {
+          // Use global registry for shard fields to ensure uniqueness across all shards
+          // Extract shard index from fieldOwner for debugging
+          val shardIndex = (fieldOwner as? BindingFieldContext.FieldOwner.Shard)?.index
+          shardingContext.globalFieldNameRegistry.generateUniqueFieldName(
+            baseName = binding.nameHint.decapitalizeUS(),
+            typeHint = suffix,
+            shardIndex = shardIndex
+          )
+        } else {
+          // Regular field name generation for non-sharded context
+          requireNotNull(fieldNameAllocator) {
+            "NameAllocator must be provided when not in sharding context"
+          }.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
+        }
         val isShardContext = bindingFieldContext.currentShardClass == this
         val field =
           if (isShardContext) {
             // Shards need their own provider fields; do not reuse the main graph's reserved fields
+            // Debug logging for Shard0 field creation
+            if (targetClass.name.asString().contains("Shard0")) {
+              println("[IrGraphGenerator] Adding provider field to Shard0:")
+              println("  Field name: $fieldName")
+              println("  Binding: ${binding.nameHint}")
+              println("  Type: ${binding.typeKey}")
+              println("  isShardContext: $isShardContext")
+
+              // Check if field already exists in the class
+              val existingField = targetClass.declarations.filterIsInstance<IrField>()
+                .firstOrNull { it.name.asString() == fieldName }
+              if (existingField != null) {
+                println("  WARNING: Field '$fieldName' already exists in ${targetClass.name}!")
+                println("  Existing field type: ${existingField.type}")
+                println("  New field type would be: $fieldType")
+                println("  This would cause a ClassFormatError!")
+              }
+            }
+
+            // Simply create the field - the GlobalFieldNameRegistry should ensure uniqueness
+            // Use PUBLIC visibility for cross-shard accessed fields to avoid synthetic accessor issues
+            val fieldVisibility = if (shardingContext?.crossShardAccessedTypeKeys?.contains(binding.typeKey) == true) {
+              DescriptorVisibilities.PUBLIC
+            } else {
+              DescriptorVisibilities.INTERNAL
+            }
             addField {
               name = fieldName.asName()
               type = fieldType
-              visibility = DescriptorVisibilities.INTERNAL
+              visibility = fieldVisibility
             }
           } else {
+            // Use PUBLIC visibility for cross-shard accessed fields to avoid synthetic accessor issues
+            val fieldVisibility = if (shardingContext?.crossShardAccessedTypeKeys?.contains(binding.typeKey) == true) {
+              DescriptorVisibilities.PUBLIC
+            } else {
+              DescriptorVisibilities.INTERNAL
+            }
             getOrCreateBindingField(
               binding.typeKey,
               { fieldName },
               { fieldType },
-              DescriptorVisibilities.INTERNAL,
+              fieldVisibility,
             )
           }
-        field.visibility = DescriptorVisibilities.INTERNAL
+        // Ensure correct visibility is set for cross-shard accessed fields
+        val finalVisibility = if (shardingContext?.crossShardAccessedTypeKeys?.contains(binding.typeKey) == true) {
+          DescriptorVisibilities.PUBLIC
+        } else {
+          DescriptorVisibilities.INTERNAL
+        }
+        field.visibility = finalVisibility
 
         val accessType =
           if (isProviderType) {
@@ -1328,14 +1411,59 @@ internal class IrGraphGenerator(
           createIrBuilder(symbol).run {
             // Extract shard index from fieldOwner if it's a shard
             val shardIndex = (fieldOwner as? BindingFieldContext.FieldOwner.Shard)?.index
-            expressionGeneratorFactory
-              .create(thisRec, shardIndex)  // Pass receiver and shard index for proper context
-              .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
-              .letIf(binding.isScoped() && isProviderType) {
-                // If it's scoped, wrap it in double-check
-                // DoubleCheck.provider(<provider>)
-                it.doubleCheck(this@run, symbols, binding.typeKey)
+
+            // Use SwitchingProvider when:
+            // 1. fastInit is enabled
+            // 2. The field belongs to a shard (shardIndex != null)
+            // 3. It's a provider type
+            // 4. We're NOT in a shard context (we're in the main graph)
+            // This ensures SwitchingProvider is used for main graph -> shard delegation, not within shards
+            if (options.fastInit && shardIndex != null && isProviderType && !isShardContext) {
+              // Get or create a counter for this shard's SwitchingProvider IDs
+              val switchingProviderId = shardingContext?.let { context ->
+                // Get the next ID for this shard
+                val currentId = context.switchingProviderIdCounters.getOrPut(shardIndex) { 0 }
+                context.switchingProviderIdCounters[shardIndex] = currentId + 1
+                currentId
+              } ?: 0
+
+              // Get the SwitchingProvider class for this shard
+              val switchingProviderClass = shardingContext?.switchingProviders?.get(shardIndex)
+
+              if (switchingProviderClass != null) {
+                // Create: new SwitchingProvider(shardInstance, id)
+                val switchingProviderCtor = switchingProviderClass.constructors.first()
+                val switchingProviderInstance = IrConstructorCallImpl.fromSymbolOwner(
+                  type = switchingProviderClass.defaultType,
+                  constructorSymbol = switchingProviderCtor.symbol
+                ).apply {
+                  // Pass the shard instance (this) as the outer parameter
+                  arguments[0] = irGet(thisRec)
+                  // Pass the unique ID for this binding
+                  arguments[1] = irInt(switchingProviderId)
+                }
+
+                // Don't wrap SwitchingProvider with DoubleCheck - it returns already-wrapped providers
+                // The wrapping happens at the individual field level, not at the SwitchingProvider level
+                switchingProviderInstance
+              } else {
+                // Fallback to original implementation if SwitchingProvider not available
+                expressionGeneratorFactory
+                  .create(thisRec, shardIndex)
+                  .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                  .letIf(binding.isScoped() && isProviderType) {
+                    it.doubleCheck(this@run, symbols, binding.typeKey)
+                  }
               }
+            } else {
+              // Original implementation for non-shard or non-fastInit cases
+              expressionGeneratorFactory
+                .create(thisRec, shardIndex)
+                .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                .letIf(binding.isScoped() && isProviderType) {
+                  it.doubleCheck(this@run, symbols, binding.typeKey)
+                }
+            }
           }
         }
         fieldsToTypeKeys[field] = key
@@ -1499,7 +1627,6 @@ internal class IrGraphGenerator(
       val ctor = shardScaffold.constructor
       val thisReceiverParameter = thisReceiverOrFail
 
-      val requirementNameAllocator = NameAllocator()
       val requirementFieldInfos = mutableListOf<RequirementFieldInfo>()
       val baseConstructorStatements = ctor.body?.statements?.toList().orEmpty()
       val previousProviderFields = mutableMapOf<IrTypeKey, BindingFieldContext.FieldDescriptor?>()
@@ -1508,7 +1635,7 @@ internal class IrGraphGenerator(
       // Handle external requirements (MAIN_GRAPH and CROSS_SHARD) - these need constructor parameters
       // CRITICAL FIX: Always use Provider<T> for external dependencies to ensure proper lazy initialization
       for (requirement in requirements) {
-        val baseName = requirementNameAllocator.newName(requirement.key.toVariableName())
+        val baseName = requirement.key.toVariableName()
         val sanitizedBase = baseName.removePrefix("$$").decapitalizeUS()
         // Always use Provider suffix since we're passing Provider<T>
         val parameterName = (sanitizedBase + "Provider").suffixIfNot("Param").asName()
@@ -1521,7 +1648,11 @@ internal class IrGraphGenerator(
           origin = Origins.Default
         }
 
-        val fieldName = fieldNameAllocator.newName((sanitizedBase + "Provider").suffixIfNot("Field"))
+        val fieldName = shardingContext.globalFieldNameRegistry.generateUniqueFieldName(
+          baseName = (sanitizedBase + "Provider"),
+          typeHint = "Field",
+          shardIndex = shard.index
+        )
 
         // Use ContextAwareFieldFactory to create field with correct parent metadata
         val field = contextAwareFieldFactory.createParameterField(
@@ -1532,7 +1663,30 @@ internal class IrGraphGenerator(
         )
 
         // Add the field to the shard class
-        shardClass.addChild(field)
+        // Debug logging for Shard0 requirement field addition
+        if (shard.index == 0) {
+          println("[IrGraphGenerator] Adding requirement field to Shard0:")
+          println("  Field name: ${field.name}")
+          println("  Requirement: ${requirement.key}")
+          println("  Access type: ${requirement.access}")
+
+          // Check for existing field with same name
+          val existingField = shardClass.declarations.filterIsInstance<IrField>()
+            .firstOrNull { it.name.asString() == field.name.asString() }
+          if (existingField != null) {
+            println("  ERROR: Field '${field.name}' already exists in Shard0!")
+            println("  This will cause a ClassFormatError!")
+          }
+        }
+
+        // Only add field if it doesn't already exist
+        val existingField = shardClass.declarations.filterIsInstance<IrField>()
+          .firstOrNull { it.name.asString() == field.name.asString() }
+        if (existingField == null) {
+          shardClass.addChild(field)
+        } else {
+          println("[IrGraphGenerator] DUPLICATE PREVENTED: Requirement field '${field.name}' already exists in ${shardClass.name}, skipping addition")
+        }
 
         // Register in fieldOwnershipRegistry as shard field
         fieldOwnershipRegistry.registerShardField(requirement.key, shard.index, field)
@@ -1560,9 +1714,6 @@ internal class IrGraphGenerator(
           }
         }
       }
-
-      // Create a separate name allocator for this shard
-      val shardFieldNameAllocator = NameAllocator()
 
       // Filter bindings for this shard to only those with provider fields
       // Bindings without provider fields (e.g., used only once, not scoped) should not be in shards
@@ -1634,12 +1785,35 @@ internal class IrGraphGenerator(
         targetClass = this,
         bindings = shardProviderBindings,
         bindingFieldContext = bindingFieldContext,
-        fieldNameAllocator = shardFieldNameAllocator,
+        fieldNameAllocator = null, // Use shardingContext's registry instead
         thisReceiver = thisReceiverParameter,
         expressionGeneratorFactory = expressionGeneratorFactory,
         fieldOwner = BindingFieldContext.FieldOwner.Shard(shard.index),
         initializeFields = false, // We'll initialize them separately
+        shardingContext = shardingContext, // Pass sharding context for global field name registry
       )
+
+      // Generate SwitchingProvider BEFORE field initialization so it's available when needed
+      // SwitchingProvider is essential for accessing bindings from shards, especially in fastInit mode
+      if (shardBindings.isNotEmpty()) {
+        // Check if any of the shard's bindings are actually shardable
+        val hasShardableBindings = shard.bindingOrdinals.any { ordinal ->
+          shardingContext.plan.shardableBindings[ordinal]
+        }
+
+        if (hasShardableBindings) {
+          val switchingProviderGenerator = IrSwitchingProviderGenerator(
+            context = this@IrGraphGenerator,
+            shardClass = this,
+            shard = shard,
+            shardingContext = shardingContext,
+            bindingFieldContext = bindingFieldContext,
+            bindingGraph = bindingGraph,
+            expressionGeneratorFactory = expressionGeneratorFactory
+          )
+          switchingProviderGenerator.generate()
+        }
+      }
 
       // Register fields in the shard field registry
       for ((field, _) in providerFieldResult.fieldInitializers) {
@@ -1703,9 +1877,39 @@ internal class IrGraphGenerator(
 
       // Set the constructor body
       ctor.body = createIrBuilder(ctor.symbol).irBlockBody {
-        baseConstructorStatements.forEach { +it }
+        // CRITICAL: Must carefully order initialization to avoid null pointer exceptions
+        // The base constructor statements typically include:
+        // 1. Super constructor call
+        // 2. Instance initializer (which initializes fields)
+        // 3. Graph field storage
+        // 4. Optional initializeFields call
 
-        // Store constructor parameters for shard requirements
+        // We need to reorder to:
+        // 1. Super constructor call (always first)
+        // 2. Graph field storage (needed for cross-shard access)
+        // 3. Requirement field storage (external dependencies)
+        // 4. Instance initializer (uses requirement fields)
+        // 5. Other initialization
+
+        // Separate the base constructor statements by type
+        val superConstructorCall = baseConstructorStatements.firstOrNull {
+          it is org.jetbrains.kotlin.ir.expressions.IrDelegatingConstructorCall
+        }
+        val instanceInitializer = baseConstructorStatements.firstOrNull {
+          it is org.jetbrains.kotlin.ir.expressions.IrInstanceInitializerCall
+        }
+        val otherStatements = baseConstructorStatements.filter {
+          it !== superConstructorCall && it !== instanceInitializer
+        }
+
+        // Execute in the correct order
+        // 1. Super constructor call (if present)
+        superConstructorCall?.let { +it }
+
+        // 2. Graph field and other non-initializer statements (includes graph field storage)
+        otherStatements.forEach { +it }
+
+        // 3. Initialize requirement fields (these are needed by instance initializer)
         for (requirementInfo in requirementFieldInfos) {
           +irSetField(
             irGet(thisReceiverParameter),
@@ -1714,29 +1918,12 @@ internal class IrGraphGenerator(
           )
         }
 
-        // Add our initialization statements
+        // 4. Instance initializer (now requirement fields are available)
+        instanceInitializer?.let { +it }
+
+        // 5. Add our initialization statements
         for (statement in constructorStatements) {
           +statement(thisReceiverParameter)
-        }
-      }
-
-      // Generate SwitchingProvider if there are shardable bindings
-      // SwitchingProvider is essential for accessing bindings from shards, regardless of fastInit setting
-      if (shardBindings.isNotEmpty()) {
-        // Check if any of the shard's bindings are actually shardable
-        val hasShardableBindings = shard.bindingOrdinals.any { ordinal ->
-          shardingContext.plan.shardableBindings[ordinal]
-        }
-
-        if (hasShardableBindings) {
-          val switchingProviderGenerator = IrSwitchingProviderGenerator(
-            context = this@IrGraphGenerator,
-            shardClass = this,
-            shard = shard,
-            shardingContext = shardingContext,
-            bindingFieldContext = bindingFieldContext
-          )
-          switchingProviderGenerator.generate()
         }
       }
     }

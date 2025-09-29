@@ -133,6 +133,68 @@ private constructor(
     PROVIDER,
   }
 
+  /**
+   * Generate instance creation code directly without provider wrapping.
+   * Used by SwitchingProvider to create instances in its switch statement.
+   */
+  context(scope: IrBuilderWithScope)
+  fun generateInstanceCreation(
+    binding: IrBinding,
+    contextualTypeKey: IrContextualTypeKey,
+  ): IrExpression = with(scope) {
+    val typeKey = contextualTypeKey.typeKey
+    when (binding) {
+      is IrBinding.ConstructorInjected -> {
+        // Direct constructor call: new ServiceImpl(dependencies...)
+        binding.classFactory.invokeCreateExpression(typeKey) { createFunction, parameters ->
+          generateBindingArguments(
+            targetParams = parameters,
+            function = createFunction,
+            binding = binding,
+            fieldInitKey = null,
+          )
+        }
+      }
+
+      is IrBinding.ObjectClass -> {
+        // Return the singleton object instance
+        irGetObject(binding.type.symbol)
+      }
+
+      is IrBinding.Alias -> {
+        // Delegate to the aliased binding
+        val aliasedBinding = binding.aliasedBinding(bindingGraph)
+        generateInstanceCreation(aliasedBinding, aliasedBinding.contextualTypeKey)
+      }
+
+      is IrBinding.Provided -> {
+        // Call the module's provider method directly
+        val providerFactory = bindingContainerTransformer.getOrLookupProviderFactory(binding)
+          ?: error("No factory found for Provided binding ${binding.typeKey}")
+
+        providerFactory.invokeCreateExpression(typeKey) { createFunction, params ->
+          generateBindingArguments(
+            targetParams = params,
+            function = createFunction,
+            binding = binding,
+            fieldInitKey = null,
+          )
+        }
+      }
+
+      else -> {
+        // For now, delegate to regular binding code generation for complex cases
+        // This will be refined as we handle more binding types
+        generateBindingCode(
+          binding = binding,
+          contextualTypeKey = contextualTypeKey,
+          accessType = AccessType.INSTANCE,
+          fieldInitKey = null
+        )
+      }
+    }
+  }
+
   context(scope: IrBuilderWithScope)
   fun generateBindingCode(
     binding: IrBinding,
@@ -167,7 +229,14 @@ private constructor(
           else -> null
         }
       if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-        bindingFieldContext.providerFieldDescriptor(binding.typeKey)?.let { descriptor ->
+        // CRITICAL FIX: For Alias bindings, look for the field using the aliased type key
+        val fieldLookupKey = if (binding is IrBinding.Alias) {
+          binding.aliasedType
+        } else {
+          binding.typeKey
+        }
+
+        bindingFieldContext.providerFieldDescriptor(fieldLookupKey)?.let { descriptor ->
           accessProviderField(descriptor, binding, currentShardIndex, shardingContext)?.let { expression ->
             val transformedProvider = expression.let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
@@ -1322,13 +1391,17 @@ private constructor(
             val outerField = context.outerFields[currentShardIndex] ?: return null
             val outerRef = irGetField(irGet(currentThisReceiver), outerField)
             val shardField = context.shardFields[actualIndex] ?: return null
+            // The shard field now has the correct type after our fix in IrGraphGenerator
             val shardInstance = irGetField(outerRef, shardField)
+
             irGetField(shardInstance, field)
           }
           else -> {
             // Main graph accessing shard
             val shardField = context.shardFields[actualIndex] ?: return null
+            // The shard field now has the correct type after our fix in IrGraphGenerator
             val shardInstance = irGetField(irGet(currentThisReceiver), shardField)
+
             irGetField(shardInstance, field)
           }
         }
