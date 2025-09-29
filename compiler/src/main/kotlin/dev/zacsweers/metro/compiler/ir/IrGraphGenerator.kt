@@ -977,7 +977,9 @@ internal class IrGraphGenerator(
         .sortedBy { it.kotlinFqName.asString() }
         .forEach { clazz ->
           addBoundInstanceField(IrTypeKey(clazz), clazz.name) { _, _ ->
-            irCallConstructor(clazz.primaryConstructor!!.symbol, emptyList())
+            // Can't use primaryConstructor here because it may be a Java dagger Module in interop
+            val noArgConstructor = clazz.constructors.first { it.parameters.isEmpty() }
+            irCallConstructor(noArgConstructor.symbol, emptyList())
           }
         }
 
@@ -1048,7 +1050,7 @@ internal class IrGraphGenerator(
       @Suppress("UNCHECKED_CAST")
       val deferredFields: Map<IrTypeKey, IrField> =
         sealResult.deferredTypes.associateWith { deferredTypeKey ->
-          val binding = bindingGraph.requireBinding(deferredTypeKey, IrBindingStack.empty())
+          val binding = bindingGraph.requireBinding(deferredTypeKey)
           val field =
             getOrCreateBindingField(
                 binding.typeKey,
@@ -1750,7 +1752,7 @@ internal class IrGraphGenerator(
           declarationToFinalize.finalizeFakeOverride(graphClass.thisReceiverOrFail)
         }
         val irFunction = this
-        val binding = bindingGraph.requireBinding(contextualTypeKey, IrBindingStack.empty())
+        val binding = bindingGraph.requireBinding(contextualTypeKey)
         body =
           createIrBuilder(symbol).run {
             if (binding is IrBinding.Multibinding) {
@@ -1780,7 +1782,7 @@ internal class IrGraphGenerator(
         finalizeFakeOverride(graphClass.thisReceiverOrFail)
         val targetParam = regularParameters[0]
         val binding =
-          bindingGraph.requireBinding(contextKey, IrBindingStack.empty())
+          bindingGraph.requireBinding(contextKey)
             as IrBinding.MembersInjected
 
         // We don't get a MembersInjector instance/provider from the graph. Instead, we call
@@ -1828,7 +1830,6 @@ internal class IrGraphGenerator(
                         val paramBinding =
                           bindingGraph.requireBinding(
                             parameter.contextualTypeKey,
-                            IrBindingStack.empty(),
                           )
                         add(
                           typeAsProviderArgument(

@@ -186,6 +186,12 @@ public class DiagnosticTestGenerated extends AbstractDiagnosticTest {
     }
 
     @Test
+    @TestMetadata("ConfigurableMaxIrErrors.kt")
+    public void testConfigurableMaxIrErrors() {
+      runTest("compiler-tests/src/test/data/diagnostic/dependencygraph/ConfigurableMaxIrErrors.kt");
+    }
+
+    @Test
     @TestMetadata("GraphsCannotDirectlyExtendOtherGraphs.kt")
     public void testGraphsCannotDirectlyExtendOtherGraphs() {
       runTest("compiler-tests/src/test/data/diagnostic/dependencygraph/GraphsCannotDirectlyExtendOtherGraphs.kt");
@@ -302,6 +308,102 @@ public class DiagnosticTestGenerated extends AbstractDiagnosticTest {
       @Test
       public void testAllFilesPresentInAssisted() {
         KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/diagnostic/inject/assisted"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeAnnotationClasses.kt")
+      public void testAssistedFactoriesCannotBeAnnotationClasses() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeAnnotationClasses.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeAnnotationObjects.kt")
+      public void testAssistedFactoriesCannotBeAnnotationObjects() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeAnnotationObjects.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeEnums.kt")
+      public void testAssistedFactoriesCannotBeEnums() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeEnums.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeFinal.kt")
+      public void testAssistedFactoriesCannotBeFinal() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeFinal.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeLocal.kt")
+      public void testAssistedFactoriesCannotBeLocal() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeLocal.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBePrivate.kt")
+      public void testAssistedFactoriesCannotBePrivate() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBePrivate.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeProtected.kt")
+      public void testAssistedFactoriesCannotBeProtected() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeProtected.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeSealedClasses.kt")
+      public void testAssistedFactoriesCannotBeSealedClasses() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeSealedClasses.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoriesCannotBeSealedInterfaces.kt")
+      public void testAssistedFactoriesCannotBeSealedInterfaces() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoriesCannotBeSealedInterfaces.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoryMustTargetAssistedInjectTypesButMissingConstructor.kt")
+      public void testAssistedFactoryMustTargetAssistedInjectTypesButMissingConstructor() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoryMustTargetAssistedInjectTypesButMissingConstructor.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoryMustTargetAssistedInjectTypesButMissingReturnType.kt")
+      public void testAssistedFactoryMustTargetAssistedInjectTypesButMissingReturnType() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoryMustTargetAssistedInjectTypesButMissingReturnType.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoryMustTargetAssistedInjectTypesWithMatchingParameters.kt")
+      public void testAssistedFactoryMustTargetAssistedInjectTypesWithMatchingParameters() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoryMustTargetAssistedInjectTypesWithMatchingParameters.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoryWithMissingSAM.kt")
+      public void testAssistedFactoryWithMissingSAM() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoryWithMissingSAM.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedFactoryWithMultipleSAMs.kt")
+      public void testAssistedFactoryWithMultipleSAMs() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedFactoryWithMultipleSAMs.kt");
+      }
+
+      @Test
+      @TestMetadata("AssistedInjectMigrationsErrors.kt")
+      public void testAssistedInjectMigrationsErrors() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/AssistedInjectMigrationsErrors.kt");
+      }
+
+      @Test
+      @TestMetadata("InjectingAssistedInjectClassesIsAnError.kt")
+      public void testInjectingAssistedInjectClassesIsAnError() {
+        runTest("compiler-tests/src/test/data/diagnostic/inject/assisted/InjectingAssistedInjectClassesIsAnError.kt");
       }
 
       @Test

@@ -8,6 +8,7 @@ import dev.zacsweers.metro.compiler.error2
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.AGGREGATION_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.ASSISTED_FACTORIES_CANNOT_BE_LAZY
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.ASSISTED_INJECTION_ERROR
+import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.ASSISTED_INJECTION_WARNING
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.AS_CONTRIBUTION_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.BINDING_CONTAINER_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.BINDS_ERROR
@@ -33,6 +34,7 @@ import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.METRO_DECLARATION_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.METRO_DECLARATION_VISIBILITY_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.METRO_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.METRO_TYPE_PARAMETERS_ERROR
+import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.METRO_WARNING
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.MULTIBINDS_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.MULTIBINDS_OVERRIDE_ERROR
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics.ONLY_CLASSES_CAN_BE_INJECTED
@@ -89,6 +91,7 @@ internal object MetroDiagnostics : KtDiagnosticsContainer() {
 
   // Assisted factory/inject errors
   val ASSISTED_INJECTION_ERROR by error1<String>(NAME_IDENTIFIER)
+  val ASSISTED_INJECTION_WARNING by warning1<String>(NAME_IDENTIFIER)
 
   // Provides errors
   val PROVIDES_OR_BINDS_SHOULD_BE_PRIVATE_ERROR by error1<String>(VISIBILITY_MODIFIER)
@@ -118,6 +121,7 @@ internal object MetroDiagnostics : KtDiagnosticsContainer() {
   // IR errors
   val GRAPH_DEPENDENCY_CYCLE by error1<String>(NAME_IDENTIFIER)
   val METRO_ERROR by error1<String>(NAME_IDENTIFIER)
+  val METRO_WARNING by warning1<String>(NAME_IDENTIFIER)
 
   override fun getRendererFactory(): BaseDiagnosticRendererFactory {
     return FirMetroErrorMessages
@@ -182,6 +186,7 @@ private object FirMetroErrorMessages : BaseDiagnosticRendererFactory() {
         )
         put(INJECTED_CLASSES_MUST_BE_VISIBLE, "Injected classes must be {0}.", STRING)
         put(ASSISTED_INJECTION_ERROR, "{0}", STRING)
+        put(ASSISTED_INJECTION_WARNING, "{0}", STRING)
         put(PROVIDES_ERROR, "{0}", STRING)
         put(PROVIDES_WARNING, "{0}", STRING)
         put(AGGREGATION_ERROR, "{0}", STRING)
@@ -211,8 +216,9 @@ private object FirMetroErrorMessages : BaseDiagnosticRendererFactory() {
           "Dagger's `@Reusable` is not supported in Metro. See https://zacsweers.github.io/metro/latest/faq#why-doesnt-metro-support-reusable for more information.",
         )
 
-        // IR errors
+        // IR diagnostics
         put(METRO_ERROR, "{0}", TO_STRING)
+        put(METRO_WARNING, "{0}", TO_STRING)
         put(GRAPH_DEPENDENCY_CYCLE, "[Metro/GraphDependencyCycle] {0}", TO_STRING)
       }
     }

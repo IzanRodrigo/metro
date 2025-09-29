@@ -32,7 +32,6 @@ import org.jetbrains.kotlin.fir.declarations.FirClassLikeDeclaration
 import org.jetbrains.kotlin.fir.declarations.FirDeclarationOrigin
 import org.jetbrains.kotlin.fir.declarations.FirMemberDeclaration
 import org.jetbrains.kotlin.fir.declarations.FirTypeParameterRef
-import org.jetbrains.kotlin.fir.declarations.constructors
 import org.jetbrains.kotlin.fir.declarations.evaluateAs
 import org.jetbrains.kotlin.fir.declarations.findArgumentByName
 import org.jetbrains.kotlin.fir.declarations.getDeprecationsProvider
@@ -76,6 +75,7 @@ import org.jetbrains.kotlin.fir.renderer.ConeTypeRendererForReadability
 import org.jetbrains.kotlin.fir.resolve.defaultType
 import org.jetbrains.kotlin.fir.resolve.getSuperTypes
 import org.jetbrains.kotlin.fir.resolve.lookupSuperTypes
+import org.jetbrains.kotlin.fir.resolve.providers.firProvider
 import org.jetbrains.kotlin.fir.resolve.providers.symbolProvider
 import org.jetbrains.kotlin.fir.resolve.substitution.substitutorByMap
 import org.jetbrains.kotlin.fir.resolve.toClassSymbol
@@ -104,6 +104,7 @@ import org.jetbrains.kotlin.fir.types.FirTypeRef
 import org.jetbrains.kotlin.fir.types.FirUserTypeRef
 import org.jetbrains.kotlin.fir.types.builder.buildUserTypeRef
 import org.jetbrains.kotlin.fir.types.classId
+import org.jetbrains.kotlin.fir.types.classLikeLookupTagIfAny
 import org.jetbrains.kotlin.fir.types.coneTypeOrNull
 import org.jetbrains.kotlin.fir.types.constructClassLikeType
 import org.jetbrains.kotlin.fir.types.constructType
@@ -371,67 +372,105 @@ context(context: CheckerContext, reporter: DiagnosticReporter)
 internal inline fun FirClassSymbol<*>.findInjectConstructor(
   session: FirSession,
   checkClass: Boolean,
+  classIds: Set<ClassId>,
   onError: () -> Nothing,
-): FirConstructorSymbol? {
-  val constructorInjections = findInjectConstructors(session, checkClass = checkClass)
+): FirInjectConstructor? {
+  val constructorInjections =
+    findInjectConstructorsImpl(
+      session = session,
+      annotationClassIds = classIds,
+      checkClass = checkClass,
+    )
   return when (constructorInjections.size) {
     0 -> null
     1 -> {
-      constructorInjections[0].also {
-        val warnOnInjectAnnotationPlacement =
-          session.metroFirBuiltIns.options.warnOnInjectAnnotationPlacement
-        if (warnOnInjectAnnotationPlacement && constructors(session).size == 1) {
-          val isAssisted =
-            it.resolvedCompilerAnnotationsWithClassIds.isAnnotatedWithAny(
-              session,
-              session.classIds.assistedAnnotations,
-            )
-          val inject =
-            it.resolvedCompilerAnnotationsWithClassIds
-              .annotationsIn(session, session.classIds.injectAnnotations)
-              .singleOrNull()
-          if (
-            !isAssisted &&
-              inject != null &&
-              KotlinTarget.CLASS in inject.getAllowedAnnotationTargets(session)
-          ) {
-            reporter.reportOn(inject.source, MetroDiagnostics.SUGGEST_CLASS_INJECTION)
+      constructorInjections[0].also { (injectAnno, _, isOnClass, ctorCount) ->
+        if (!isOnClass) {
+          val warnOnInjectAnnotationPlacement =
+            session.metroFirBuiltIns.options.warnOnInjectAnnotationPlacement
+          if (warnOnInjectAnnotationPlacement && ctorCount == 1) {
+            if (KotlinTarget.CLASS in injectAnno.getAllowedAnnotationTargets(session)) {
+              reporter.reportOn(injectAnno.source, MetroDiagnostics.SUGGEST_CLASS_INJECTION)
+            }
           }
         }
       }
     }
     else -> {
-      reporter.reportOn(
-        constructorInjections[0]
-          .resolvedCompilerAnnotationsWithClassIds
-          .annotationsIn(session, session.classIds.injectAnnotations)
-          .single()
-          .source,
-        MetroDiagnostics.CANNOT_HAVE_MULTIPLE_INJECTED_CONSTRUCTORS,
-      )
+      for (constructorInjection in constructorInjections) {
+        reporter.reportOn(
+          constructorInjection.annotation.source,
+          MetroDiagnostics.CANNOT_HAVE_MULTIPLE_INJECTED_CONSTRUCTORS,
+        )
+      }
       onError()
     }
   }
 }
 
-@OptIn(DirectDeclarationsAccess::class)
+internal fun FirClassSymbol<*>.findAssistedInjectConstructors(
+  session: FirSession,
+  checkClass: Boolean = true,
+): List<FirInjectConstructor> =
+  findInjectConstructorsImpl(
+    session,
+    session.metroFirBuiltIns.classIds.assistedInjectAnnotations,
+    checkClass,
+  )
+
 internal fun FirClassSymbol<*>.findInjectConstructors(
   session: FirSession,
   checkClass: Boolean = true,
-): List<FirConstructorSymbol> {
+): List<FirInjectConstructor> =
+  findInjectConstructorsImpl(
+    session,
+    session.metroFirBuiltIns.classIds.injectAnnotations,
+    checkClass,
+  )
+
+internal fun FirClassSymbol<*>.findInjectLikeConstructors(
+  session: FirSession,
+  checkClass: Boolean = true,
+): List<FirInjectConstructor> =
+  findInjectConstructorsImpl(
+    session = session,
+    annotationClassIds = session.metroFirBuiltIns.classIds.allInjectAnnotations,
+    checkClass = checkClass,
+  )
+
+internal fun FirClassSymbol<*>.findInjectConstructorsImpl(
+  session: FirSession,
+  annotationClassIds: Set<ClassId>,
+  checkClass: Boolean,
+): List<FirInjectConstructor> {
   if (classKind != ClassKind.CLASS) return emptyList()
   rawStatus.modality?.let { if (it != Modality.FINAL && it != Modality.OPEN) return emptyList() }
-  return if (checkClass && isAnnotatedInject(session)) {
-    declarationSymbols.filterIsInstance<FirConstructorSymbol>().filter { it.isPrimary }
-  } else {
-    declarationSymbols.filterIsInstance<FirConstructorSymbol>().filter {
-      it.resolvedCompilerAnnotationsWithClassIds.isAnnotatedWithAny(
-        session,
-        session.classIds.injectAnnotations,
-      )
+
+  // Look at raw declarations, otherwise we infinite loop
+  @OptIn(DirectDeclarationsAccess::class)
+  val ctors = declarationSymbols.filterIsInstance<FirConstructorSymbol>()
+  if (checkClass) {
+    val classInject = annotationsIn(session, annotationClassIds).firstOrNull()
+    if (classInject != null) {
+      val primaryConstructor = ctors.find { it.isPrimary }
+      return listOf(FirInjectConstructor(classInject, primaryConstructor, true, ctors.size))
+    }
+  }
+
+  return buildList {
+    for (ctor in ctors) {
+      val injectAnno = ctor.annotationsIn(session, annotationClassIds).firstOrNull() ?: continue
+      add(FirInjectConstructor(injectAnno, ctor, false, ctors.size))
     }
   }
 }
+
+internal data class FirInjectConstructor(
+  val annotation: FirAnnotation,
+  val constructor: FirConstructorSymbol?,
+  val annotationOnClass: Boolean,
+  val ctorCount: Int,
+)
 
 internal inline fun FirClass.validateInjectedClass(
   context: CheckerContext,
@@ -1175,10 +1214,11 @@ context(context: CheckerContext, reporter: DiagnosticReporter)
 internal fun validateInjectionSiteType(
   session: FirSession,
   typeRef: FirTypeRef,
+  qualifier: MetroFirAnnotation?,
   source: KtSourceElement?,
 ): Boolean {
   val type = typeRef.coneTypeOrNull ?: return true
-  val contextKey = type.asFirContextualTypeKey(session, null, false)
+  val contextKey = type.asFirContextualTypeKey(session, qualifier, false)
 
   if (contextKey.isWrappedInLazy) {
     val canonicalType = contextKey.typeKey.type
@@ -1193,6 +1233,45 @@ internal fun validateInjectionSiteType(
         MetroDiagnostics.ASSISTED_FACTORIES_CANNOT_BE_LAZY,
         canonicalClass.name.asString(),
         canonicalClass.classId.asFqNameString(),
+      )
+      return true
+    }
+  }
+
+  // Check if we're directly injecting a qualifier type
+  if (qualifier == null) {
+    val clazz = type.classLikeLookupTagIfAny?.toClassSymbol(session) ?: return false
+    val isAssistedInject =
+      clazz.findAssistedInjectConstructors(session, checkClass = true).isNotEmpty()
+    if (isAssistedInject) {
+      @OptIn(DirectDeclarationsAccess::class)
+      val nestedFactory =
+        clazz.nestedClasses().find {
+          it.isAnnotatedWithAny(session, session.classIds.assistedFactoryAnnotations)
+        } ?: session.firProvider.getFirClassifierContainerFile(clazz.classId)
+          .declarations
+          .filterIsInstance<FirClass>()
+          .find { it.isAnnotatedWithAny(session, session.classIds.assistedFactoryAnnotations) }
+          ?.symbol
+
+      val message = buildString {
+        val fqName = clazz.classId.asFqNameString()
+        append(
+          "[Metro/InvalidBinding] '$fqName' uses assisted injection and cannot be injected directly into 'test.ExampleGraph.exampleClass'. You must inject a corresponding @AssistedFactory type or provide a qualified instance on the graph instead."
+        )
+        if (nestedFactory != null) {
+          appendLine()
+          appendLine()
+          appendLine("(Hint)")
+          appendLine(
+            "It looks like the @AssistedFactory for '$fqName' may be '${nestedFactory.classId.asFqNameString()}'."
+          )
+        }
+      }
+      reporter.reportOn(
+        typeRef.source ?: source,
+        MetroDiagnostics.ASSISTED_INJECTION_ERROR,
+        message,
       )
       return true
     }
