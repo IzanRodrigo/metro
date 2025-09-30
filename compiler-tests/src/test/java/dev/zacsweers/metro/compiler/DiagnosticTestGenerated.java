@@ -296,6 +296,12 @@ public class DiagnosticTestGenerated extends AbstractDiagnosticTest {
     }
 
     @Test
+    @TestMetadata("CannotMixProviderOfLazyTypes.kt")
+    public void testCannotMixProviderOfLazyTypes() {
+      runTest("compiler-tests/src/test/data/diagnostic/inject/CannotMixProviderOfLazyTypes.kt");
+    }
+
+    @Test
     @TestMetadata("SuggestInjectClassOnSingleContructor.kt")
     public void testSuggestInjectClassOnSingleContructor() {
       runTest("compiler-tests/src/test/data/diagnostic/inject/SuggestInjectClassOnSingleContructor.kt");
@@ -487,6 +493,22 @@ public class DiagnosticTestGenerated extends AbstractDiagnosticTest {
       public void testDoNotSuggestMovingInjectAnnotationToClassWhenUsingJavaxOrJakartaInject() {
         runTest("compiler-tests/src/test/data/diagnostic/interop/dagger/DoNotSuggestMovingInjectAnnotationToClassWhenUsingJavaxOrJakartaInject.kt");
       }
+    }
+  }
+
+  @Nested
+  @TestMetadata("compiler-tests/src/test/data/diagnostic/multibindings")
+  @TestDataPath("$PROJECT_ROOT")
+  public class Multibindings {
+    @Test
+    public void testAllFilesPresentInMultibindings() {
+      KtTestUtil.assertAllTestsPresentByMetadataWithExcluded(this.getClass(), new File("compiler-tests/src/test/data/diagnostic/multibindings"), Pattern.compile("^(.+)\\.kt$"), null, TargetBackend.JVM_IR, true);
+    }
+
+    @Test
+    @TestMetadata("MapKeyDiagnostics.kt")
+    public void testMapKeyDiagnostics() {
+      runTest("compiler-tests/src/test/data/diagnostic/multibindings/MapKeyDiagnostics.kt");
     }
   }
 
