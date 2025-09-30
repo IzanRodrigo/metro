@@ -510,9 +510,10 @@ internal class IrSwitchingProviderGenerator(
     // Check if we should use direct instantiation (fastInit mode)
     return if (options.fastInit) {
       // Direct instantiation path - create instances directly like Dagger
+      // This avoids creating provider fields for each binding
       generateDirectInstance(binding, typeKey, thisReceiver)
     } else {
-      // Delegation path - use provider fields (current implementation)
+      // Delegation path - use provider fields (traditional approach)
       delegateToProviderField(binding, typeKey, thisReceiver)
     }
   }
@@ -527,29 +528,24 @@ internal class IrSwitchingProviderGenerator(
     typeKey: IrTypeKey,
     thisReceiver: IrValueParameter
   ): IrExpression {
-    // For now, we'll use the simpler approach of instantiating through factories
-    // but avoiding the provider field indirection. This still gives us the main benefit
-    // of SwitchingProvider (reduced class count) while being safer to implement.
+    // For SwitchingProvider to work with fastInit, we need to create instances directly
+    // This is complex because we need to:
+    // 1. Access the outer shard through this$0
+    // 2. Resolve dependencies that may be in provider fields
+    // 3. Call constructors or factories directly
 
-    // In the future, we could optimize further by directly calling constructors,
-    // but that requires careful handling of all dependency resolution paths.
+    // For now, fall back to delegation to ensure correctness
+    // A full implementation would need to handle all binding types and dependency resolution
+    // without relying on provider fields for the bindings handled by SwitchingProvider
 
-    // Create an expression generator with the shard context
-    val expressionGenerator = expressionGeneratorFactory.create(
-      explicitReceiver = null,  // Will use the current scope's receiver
-      explicitShardIndex = shard.index
-    )
+    // TODO: Implement direct instantiation that:
+    // - Calls constructors/factories directly
+    // - Resolves dependencies from the outer shard
+    // - Handles scoped instances (DoubleCheck) properly
+    // - Works with all binding types (Constructor, Provides, Binds, etc.)
 
-    // Generate the instance creation code directly
-    // This uses the factory pattern but avoids provider field delegation
-    return with(expressionGenerator) {
-      generateBindingCode(
-        binding = binding,
-        contextualTypeKey = binding.contextualTypeKey,
-        accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
-        fieldInitKey = typeKey  // Pass the key to avoid field lookup
-      )
-    }
+    // Temporary: Use delegation until direct instantiation is fully implemented
+    return delegateToProviderField(binding, typeKey, thisReceiver)
   }
 
   /**
