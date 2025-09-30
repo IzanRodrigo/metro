@@ -471,6 +471,12 @@ internal class DependencyGraphTransformer(
 
       processedMetroDependencyGraphsByClass[graphClassId] = result
     } catch (e: Exception) {
+      writeDiagnostic({
+        "graph-dumpKotlin-${node.sourceGraph.kotlinFqName.asString().replace(".", "-")}.kt"
+      }) {
+        metroGraph.dumpKotlinLike()
+      }
+
       if (e is ExitProcessingException) {
         // Implement unimplemented overrides to reduce noise in failure output
         // Otherwise compiler may complain that these are invalid bytecode

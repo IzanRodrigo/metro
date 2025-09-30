@@ -1341,6 +1341,95 @@ internal class IrGraphGenerator(
           }.newName(binding.nameHint.decapitalizeUS().suffixIfNot(suffix))
         }
         val isShardContext = bindingFieldContext.currentShardClass == this
+
+        // Special dual-field handling in shard + fastInit context to avoid SwitchingProvider recursion
+        if (isShardContext && options.fastInit && isProviderType && shardingContext != null) {
+          // Build distinct names for backing and accessor fields via global registry
+          val shardIndex = (fieldOwner as? BindingFieldContext.FieldOwner.Shard)?.index
+          val baseName = binding.nameHint.decapitalizeUS()
+          val backingFieldName = shardingContext.globalFieldNameRegistry.generateUniqueFieldName(
+            baseName = baseName,
+            typeHint = "BackingProvider",
+            shardIndex = shardIndex
+          ).asName()
+          val accessorFieldName = shardingContext.globalFieldNameRegistry.generateUniqueFieldName(
+            baseName = baseName,
+            typeHint = "Provider",
+            shardIndex = shardIndex
+          ).asName()
+
+          // Visibility: PUBLIC if cross-shard accessed, else INTERNAL
+          val isCrossShard = shardingContext.crossShardAccessedTypeKeys.contains(binding.typeKey)
+          val fieldVisibility = if (isCrossShard) DescriptorVisibilities.PUBLIC else DescriptorVisibilities.INTERNAL
+
+          // Create backing provider field (normal generation)
+          val backingField = addField {
+            name = backingFieldName
+            type = symbols.metroProvider.typeWith(key.type)
+            visibility = fieldVisibility
+          }
+          // Register BACKING field in BindingFieldContext so SwitchingProvider delegate uses this
+          bindingFieldContext.putProviderField(key, backingField, fieldOwner)
+
+          // Create accessor provider field (will hold SwitchingProvider)
+          val accessorField = addField {
+            name = accessorFieldName
+            type = symbols.metroProvider.typeWith(key.type)
+            visibility = fieldVisibility
+          }
+
+          // Backing field initializer: normal provider code path
+          fieldInitializers[backingField] = { thisRec: IrValueParameter, typeKey: IrTypeKey ->
+            createIrBuilder(symbol).run {
+              expressionGeneratorFactory
+                .create(thisRec, shardIndex)
+                .generateBindingCode(binding, accessType = IrGraphExpressionGenerator.AccessType.PROVIDER, fieldInitKey = typeKey)
+                .letIf(binding.isScoped()) {
+                  it.doubleCheck(this@run, symbols, binding.typeKey)
+                }
+            }
+          }
+          fieldsToTypeKeys[backingField] = key
+
+          // Accessor field initializer: SwitchingProvider if available; otherwise delegate to backing field
+          fieldInitializers[accessorField] = { thisRec: IrValueParameter, _: IrTypeKey ->
+            createIrBuilder(symbol).run {
+              // Get switching provider class for this shard
+              val switchingProviderClass = shardingContext.switchingProviders[shardIndex!!]
+              if (switchingProviderClass != null) {
+                val ctor = switchingProviderClass.constructors.first()
+                irCall(ctor.symbol).apply {
+                  // Prepare value arguments (3 total)
+                  for (i in 0 until 3) {
+                    arguments.add(null)
+                  }
+                  // arg0: shard instance (this)
+                  arguments[0] = irGet(thisRec)
+                  // arg1: graph instance via outer field if present
+                  val outerField = shardingContext.outerFields[shardIndex]
+                  val graphInstance = if (outerField != null) {
+                    irGetField(irGet(thisRec), outerField)
+                  } else {
+                    irGet(thisRec)
+                  }
+                  arguments[1] = graphInstance
+                  // arg2: unique id for this binding in this shard
+                  val currentId = shardingContext.switchingProviderIdCounters.getOrPut(shardIndex) { 0 }
+                  shardingContext.switchingProviderIdCounters[shardIndex] = currentId + 1
+                  arguments[2] = irInt(currentId)
+                }
+              } else {
+                // Fallback: delegate to backing provider field directly
+                irGetField(irGet(thisRec), backingField)
+              }
+            }
+          }
+          fieldsToTypeKeys[accessorField] = key
+
+          // Skip default single-field logic for this binding
+          return@forEach
+        }
+
         val field =
           if (isShardContext) {
             // Shards need their own provider fields; do not reuse the main graph's reserved fields
@@ -1395,7 +1484,7 @@ internal class IrGraphGenerator(
         } else {
           DescriptorVisibilities.INTERNAL
         }
-        field.visibility = finalVisibility
+  field.visibility = finalVisibility
 
         val accessType =
           if (isProviderType) {
@@ -1415,55 +1504,13 @@ internal class IrGraphGenerator(
             // 3. We're IN a shard context (generating fields for the shard itself)
             // Dagger uses SwitchingProvider for all provider fields within shards
             if (options.fastInit && isProviderType && isShardContext && shardIndex != null) {
-              // Get or create a counter for this shard's SwitchingProvider IDs
-              val switchingProviderId = shardingContext?.let { context ->
-                // Get the next ID for this shard
-                val currentId = context.switchingProviderIdCounters.getOrPut(shardIndex) { 0 }
-                context.switchingProviderIdCounters[shardIndex] = currentId + 1
-                currentId
-              } ?: 0
-
-              // Get the SwitchingProvider class for this shard
-              val switchingProviderClass = shardingContext?.switchingProviders?.get(shardIndex)
-
-              if (switchingProviderClass != null) {
-                // Create: new SwitchingProvider(shardInstance, graphInstance, id)
-                val switchingProviderCtor = switchingProviderClass.constructors.first()
-                val switchingProviderInstance = IrConstructorCallImpl.fromSymbolOwner(
-                  type = switchingProviderClass.defaultType,
-                  constructorSymbol = switchingProviderCtor.symbol
-                ).apply {
-                  // Pass the shard instance (this) as the outer parameter
-                  arguments[0] = irGet(thisRec)
-                  // Pass the graph instance for cross-shard access
-                  // In a shard context, we need to access the outer graph field
-                  val outerField = shardingContext?.outerFields?.get(shardIndex)
-                  val graphInstance = if (outerField != null) {
-                    irGetField(irGet(thisRec), outerField)
-                  } else {
-                    // Fallback to parent reference if outer field not found
-                    irGet(thisRec)
-                  }
-                  arguments[1] = graphInstance
-                  // Pass the unique ID for this binding
-                  arguments[2] = irInt(switchingProviderId)
+              // In shard fastInit single-field case, still fall back to regular providers (dual-field handled above)
+              expressionGeneratorFactory
+                .create(thisRec, shardIndex)
+                .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                .letIf(binding.isScoped() && isProviderType) {
+                  it.doubleCheck(this@run, symbols, binding.typeKey)
                 }
-
-                // Wrap SwitchingProvider with DoubleCheck for scoped bindings, just like Dagger
-                if (binding.isScoped()) {
-                  switchingProviderInstance.doubleCheck(this@run, symbols, binding.typeKey)
-                } else {
-                  switchingProviderInstance
-                }
-              } else {
-                // Fallback to original implementation if SwitchingProvider not available
-                expressionGeneratorFactory
-                  .create(thisRec, shardIndex)
-                  .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
-                  .letIf(binding.isScoped() && isProviderType) {
-                    it.doubleCheck(this@run, symbols, binding.typeKey)
-                  }
-              }
             } else {
               // Original implementation for non-shard or non-fastInit cases
               expressionGeneratorFactory
@@ -1790,8 +1837,22 @@ internal class IrGraphGenerator(
       // knows to use outer references for BoundInstance fields
       bindingFieldContext.currentShardClass = this
 
-      // Generate SwitchingProvider FIRST so it's available when creating field initializers
-      // This is essential for fastInit mode where fields use SwitchingProvider instances
+      // Generate provider field DECLARATIONS for this shard's bindings (excluding BoundInstance)
+      // We do declarations first so SwitchingProvider codegen can find provider fields.
+      // Field initialization happens later after SwitchingProvider is generated.
+      val providerFieldResult = generateProviderFields(
+        targetClass = this,
+        bindings = shardProviderBindings,
+        bindingFieldContext = bindingFieldContext,
+        fieldNameAllocator = null, // Use shardingContext's registry instead
+        thisReceiver = thisReceiverParameter,
+        expressionGeneratorFactory = expressionGeneratorFactory,
+        fieldOwner = BindingFieldContext.FieldOwner.Shard(shard.index),
+        initializeFields = false, // We'll initialize them separately
+        shardingContext = shardingContext, // Pass sharding context for global field name registry
+      )
+
+      // Now generate SwitchingProvider so initializers can reference it (fastInit path)
       if (shardProviderBindings.isNotEmpty()) {
         // Check if any of the shard's bindings are actually shardable
         val hasShardableBindings = shard.bindingOrdinals.any { ordinal ->
@@ -1811,20 +1872,6 @@ internal class IrGraphGenerator(
           switchingProviderGenerator.generate()
         }
       }
-
-      // Generate provider fields for this shard's bindings (excluding BoundInstance)
-      // Now the SwitchingProvider is available for field initialization
-      val providerFieldResult = generateProviderFields(
-        targetClass = this,
-        bindings = shardProviderBindings,
-        bindingFieldContext = bindingFieldContext,
-        fieldNameAllocator = null, // Use shardingContext's registry instead
-        thisReceiver = thisReceiverParameter,
-        expressionGeneratorFactory = expressionGeneratorFactory,
-        fieldOwner = BindingFieldContext.FieldOwner.Shard(shard.index),
-        initializeFields = false, // We'll initialize them separately
-        shardingContext = shardingContext, // Pass sharding context for global field name registry
-      )
 
       // Register fields in the shard field registry
       for ((field, _) in providerFieldResult.fieldInitializers) {
