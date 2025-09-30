@@ -3,6 +3,7 @@
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.ClassIds
+import dev.zacsweers.metro.compiler.MetroConstants
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.asName
@@ -23,6 +24,7 @@ import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrBranch
 import org.jetbrains.kotlin.ir.expressions.IrExpression
@@ -231,7 +233,7 @@ internal class IrSwitchingProviderGenerator(
 
   /**
    * Generate the invoke() method with consolidated switch statement like Dagger.
-   * Uses single switch with all shard bindings for optimal performance.
+   * Splits into multiple helper methods if exceeding STATEMENTS_PER_METHOD limit.
    */
   private fun generateGetMethod(providerClass: IrClass, idField: IrField) {
     val getMethod = providerClass.addFunction {
@@ -252,25 +254,47 @@ internal class IrSwitchingProviderGenerator(
       type = providerClass.defaultType
     ))
 
-    getMethod.body = createIrBuilder(getMethod.symbol).irBlockBody {
-      // Now use the method's dispatch receiver
-      val thisReceiver = getMethod.dispatchReceiverParameter
-        ?: error("Failed to create dispatch receiver for invoke method")
+    // Get all valid ordinals for this shard
+    val validOrdinals = shard.bindingOrdinals.filter { ordinal ->
+      shardingContext.plan.shardableBindings[ordinal] && ordinal in shardingContext.ordinalsWithProviderFields
+    }
 
-      // Get all valid ordinals for this shard
-      val validOrdinals = shard.bindingOrdinals.filter { ordinal ->
-        shardingContext.plan.shardableBindings[ordinal] && ordinal in shardingContext.ordinalsWithProviderFields
-      }
-
-      if (validOrdinals.isEmpty()) {
+    if (validOrdinals.isEmpty()) {
+      getMethod.body = createIrBuilder(getMethod.symbol).irBlockBody {
+        val thisReceiver = getMethod.dispatchReceiverParameter
+          ?: error("Failed to create dispatch receiver for invoke method")
         +irReturn(
           irInvoke(
             callee = symbols.stdlibErrorFunction,
             args = listOf(irString("SwitchingProvider for shard ${shard.index} has no shardable bindings"))
           )
         )
-        return@irBlockBody
       }
+      return
+    }
+
+    // Check if we need to split into multiple methods
+    val statementsPerMethod = MetroConstants.STATEMENTS_PER_METHOD
+    if (validOrdinals.size <= statementsPerMethod) {
+      // Small enough to fit in one method
+      generateSingleInvokeMethod(getMethod, idField, validOrdinals)
+    } else {
+      // Split into multiple helper methods
+      generateSplitInvokeMethods(providerClass, getMethod, idField, validOrdinals)
+    }
+  }
+
+  /**
+   * Generate a single invoke method when the number of cases fits within the limit.
+   */
+  private fun generateSingleInvokeMethod(
+    getMethod: IrSimpleFunction,
+    idField: IrField,
+    validOrdinals: List<Int>
+  ) {
+    getMethod.body = createIrBuilder(getMethod.symbol).irBlockBody {
+      val thisReceiver = getMethod.dispatchReceiverParameter
+        ?: error("Failed to create dispatch receiver for invoke method")
 
       // Generate switch statement with all ordinals
       val branches = mutableListOf<IrBranch>()
@@ -313,6 +337,151 @@ internal class IrSwitchingProviderGenerator(
       )
 
       +irReturn(irWhen(irBuiltIns.anyNType, branches))
+    }
+  }
+
+  /**
+   * Generate multiple helper methods when the number of cases exceeds the limit.
+   * The main invoke() delegates to helper methods based on ID ranges.
+   */
+  private fun generateSplitInvokeMethods(
+    providerClass: IrClass,
+    getMethod: IrSimpleFunction,
+    idField: IrField,
+    validOrdinals: List<Int>
+  ) {
+    val statementsPerMethod = MetroConstants.STATEMENTS_PER_METHOD
+    val chunks = validOrdinals.chunked(statementsPerMethod)
+    val helperMethods = mutableListOf<IrSimpleFunction>()
+
+    // Generate helper methods for each chunk
+    chunks.forEachIndexed { chunkIndex, chunk ->
+      val helperMethod = providerClass.addFunction {
+        name = "get${chunkIndex}".asName()
+        returnType = irBuiltIns.anyNType
+        modality = Modality.FINAL
+        visibility = DescriptorVisibilities.PRIVATE
+      }
+
+      // Set the dispatch receiver
+      helperMethod.setDispatchReceiver(providerClass.thisReceiver!!.copyTo(
+        helperMethod,
+        type = providerClass.defaultType
+      ))
+
+      // Add id parameter
+      val idParam = helperMethod.addValueParameter {
+        name = "id".asName()
+        type = irBuiltIns.intType
+      }
+
+      helperMethod.body = createIrBuilder(helperMethod.symbol).irBlockBody {
+        val thisReceiver = helperMethod.dispatchReceiverParameter
+          ?: error("Failed to create dispatch receiver for helper method")
+
+        val branches = mutableListOf<IrBranch>()
+        val startIndex = chunkIndex * statementsPerMethod
+
+        chunk.forEachIndexed { localIndex, ordinal ->
+          val globalIndex = startIndex + localIndex
+          val condition = irEquals(
+            irGet(idParam),
+            irInt(globalIndex)
+          )
+
+          val result = try {
+            generateProviderCall(ordinal, thisReceiver)
+          } catch (e: Exception) {
+            println("ERROR: Failed to generate provider call for ordinal $ordinal in shard ${shard.index}: ${e.message}")
+            throw e
+          }
+
+          branches.add(
+            IrBranchImpl(
+              UNDEFINED_OFFSET,
+              UNDEFINED_OFFSET,
+              condition,
+              result
+            )
+          )
+        }
+
+        // Default case for this chunk - should not happen
+        branches.add(
+          IrBranchImpl(
+            UNDEFINED_OFFSET,
+            UNDEFINED_OFFSET,
+            irTrue(),
+            irInvoke(
+              callee = symbols.stdlibErrorFunction,
+              args = listOf(irString("Invalid id in helper method get${chunkIndex}"))
+            )
+          )
+        )
+
+        +irReturn(irWhen(irBuiltIns.anyNType, branches))
+      }
+
+      helperMethods.add(helperMethod)
+    }
+
+    // Generate the main invoke method that delegates to helpers
+    getMethod.body = createIrBuilder(getMethod.symbol).irBlockBody {
+      val thisReceiver = getMethod.dispatchReceiverParameter
+        ?: error("Failed to create dispatch receiver for invoke method")
+
+      val idValue = irGetField(irGet(thisReceiver), idField)
+
+      // Simple approach: check ranges sequentially
+      // Each helper handles statementsPerMethod cases, so we can calculate which helper to call
+      val result = when (helperMethods.size) {
+        1 -> {
+          // Only one helper method, just call it
+          irCall(helperMethods[0].symbol).apply {
+            dispatchReceiver = irGet(thisReceiver)
+            arguments[0] = idValue
+          }
+        }
+        else -> {
+          // Multiple helpers - use if-else chain
+          val branches = mutableListOf<IrBranch>()
+
+          helperMethods.forEachIndexed { chunkIndex, helperMethod ->
+            val startIndex = chunkIndex * statementsPerMethod
+            val endIndex = minOf(startIndex + statementsPerMethod - 1, validOrdinals.size - 1)
+
+            // For each chunk except the last, check if id is in range
+            val condition = if (chunkIndex == helperMethods.size - 1) {
+              // Last chunk gets everything else
+              irTrue()
+            } else {
+              // Check if id <= endIndex (will handle from previous startIndex)
+              irCall(irBuiltIns.lessFunByOperandType[irBuiltIns.intClass]!!).apply {
+                arguments[0] = idValue
+                arguments[1] = irInt(endIndex + 1)  // exclusive upper bound
+              }
+            }
+
+            val callHelper = irCall(helperMethod.symbol).apply {
+              dispatchReceiver = irGet(thisReceiver)
+              arguments[0] = idValue
+            }
+
+            branches.add(
+              IrBranchImpl(
+                UNDEFINED_OFFSET,
+                UNDEFINED_OFFSET,
+                condition,
+                callHelper
+              )
+            )
+          }
+
+          irWhen(irBuiltIns.anyNType, branches)
+        }
+      }
+
+      +irReturn(result)
     }
   }
 
