@@ -1414,11 +1414,10 @@ internal class IrGraphGenerator(
 
             // Use SwitchingProvider when:
             // 1. fastInit is enabled
-            // 2. The field belongs to a shard (shardIndex != null)
-            // 3. It's a provider type
-            // 4. We're NOT in a shard context (we're in the main graph)
-            // This ensures SwitchingProvider is used for main graph -> shard delegation, not within shards
-            if (options.fastInit && shardIndex != null && isProviderType && !isShardContext) {
+            // 2. It's a provider type
+            // 3. We're IN a shard context (generating fields for the shard itself)
+            // Dagger uses SwitchingProvider for all provider fields within shards
+            if (options.fastInit && isProviderType && isShardContext && shardIndex != null) {
               // Get or create a counter for this shard's SwitchingProvider IDs
               val switchingProviderId = shardingContext?.let { context ->
                 // Get the next ID for this shard
@@ -1443,9 +1442,12 @@ internal class IrGraphGenerator(
                   arguments[1] = irInt(switchingProviderId)
                 }
 
-                // Don't wrap SwitchingProvider with DoubleCheck - it returns already-wrapped providers
-                // The wrapping happens at the individual field level, not at the SwitchingProvider level
-                switchingProviderInstance
+                // Wrap SwitchingProvider with DoubleCheck for scoped bindings, just like Dagger
+                if (binding.isScoped()) {
+                  switchingProviderInstance.doubleCheck(this@run, symbols, binding.typeKey)
+                } else {
+                  switchingProviderInstance
+                }
               } else {
                 // Fallback to original implementation if SwitchingProvider not available
                 expressionGeneratorFactory
@@ -1777,25 +1779,13 @@ internal class IrGraphGenerator(
         return
       }
 
-      // Generate provider fields for this shard's bindings (excluding BoundInstance)
       // Set the current shard class in the binding context so the expression generator
       // knows to use outer references for BoundInstance fields
       bindingFieldContext.currentShardClass = this
-      val providerFieldResult = generateProviderFields(
-        targetClass = this,
-        bindings = shardProviderBindings,
-        bindingFieldContext = bindingFieldContext,
-        fieldNameAllocator = null, // Use shardingContext's registry instead
-        thisReceiver = thisReceiverParameter,
-        expressionGeneratorFactory = expressionGeneratorFactory,
-        fieldOwner = BindingFieldContext.FieldOwner.Shard(shard.index),
-        initializeFields = false, // We'll initialize them separately
-        shardingContext = shardingContext, // Pass sharding context for global field name registry
-      )
 
-      // Generate SwitchingProvider BEFORE field initialization so it's available when needed
-      // SwitchingProvider is essential for accessing bindings from shards, especially in fastInit mode
-      if (shardBindings.isNotEmpty()) {
+      // Generate SwitchingProvider FIRST so it's available when creating field initializers
+      // This is essential for fastInit mode where fields use SwitchingProvider instances
+      if (shardProviderBindings.isNotEmpty()) {
         // Check if any of the shard's bindings are actually shardable
         val hasShardableBindings = shard.bindingOrdinals.any { ordinal ->
           shardingContext.plan.shardableBindings[ordinal]
@@ -1814,6 +1804,20 @@ internal class IrGraphGenerator(
           switchingProviderGenerator.generate()
         }
       }
+
+      // Generate provider fields for this shard's bindings (excluding BoundInstance)
+      // Now the SwitchingProvider is available for field initialization
+      val providerFieldResult = generateProviderFields(
+        targetClass = this,
+        bindings = shardProviderBindings,
+        bindingFieldContext = bindingFieldContext,
+        fieldNameAllocator = null, // Use shardingContext's registry instead
+        thisReceiver = thisReceiverParameter,
+        expressionGeneratorFactory = expressionGeneratorFactory,
+        fieldOwner = BindingFieldContext.FieldOwner.Shard(shard.index),
+        initializeFields = false, // We'll initialize them separately
+        shardingContext = shardingContext, // Pass sharding context for global field name registry
+      )
 
       // Register fields in the shard field registry
       for ((field, _) in providerFieldResult.fieldInitializers) {
