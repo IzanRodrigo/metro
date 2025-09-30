@@ -62,6 +62,7 @@ internal class IrSwitchingProviderGenerator(
 
   private lateinit var switchingProviderClass: IrClass
   private lateinit var outerThisField: IrField
+  private lateinit var graphField: IrField
 
   /**
    * Generate a single generic SwitchingProvider<T> class per shard, exactly like Dagger does.
@@ -78,6 +79,16 @@ internal class IrSwitchingProviderGenerator(
       isFinal = true
     }
 
+    // Add graph field for cross-shard access
+    // The graph field is needed to access other shards from within the SwitchingProvider
+    val graphType = (shardClass.parent as IrClass).defaultType  // The parent of the shard is the main graph
+    graphField = switchingProviderClass.addField {
+      name = "graph".asName()
+      type = graphType
+      visibility = DescriptorVisibilities.PRIVATE
+      isFinal = true
+    }
+
     // Add id field
     val idField = createIdField(switchingProviderClass)
 
@@ -85,7 +96,7 @@ internal class IrSwitchingProviderGenerator(
     val constructor = createConstructor(switchingProviderClass)
 
     // Generate constructor body
-    generateConstructorBody(constructor, idField, outerThisField)
+    generateConstructorBody(constructor, idField, outerThisField, graphField)
 
     // Generate get() method with switch - the key method!
     generateGetMethod(switchingProviderClass, idField)
@@ -151,13 +162,20 @@ internal class IrSwitchingProviderGenerator(
     }
   }
 
-  private fun generateConstructorBody(constructor: IrConstructor, idField: IrField, outerThisField: IrField) {
-    // For static nested class, we need explicit parameters for outer reference and id
+  private fun generateConstructorBody(constructor: IrConstructor, idField: IrField, outerThisField: IrField, graphField: IrField) {
+    // For static nested class, we need explicit parameters for outer reference, graph, and id
 
     // Add outer reference parameter (replaces implicit dispatch receiver of inner class)
     val outerParam = constructor.addValueParameter {
       name = "outer".asName()
       type = shardClass.defaultType
+      origin = Origins.Default
+    }
+
+    // Add graph parameter for cross-shard access
+    val graphParam = constructor.addValueParameter {
+      name = "graph".asName()
+      type = (shardClass.parent as IrClass).defaultType  // The parent of the shard is the main graph
       origin = Origins.Default
     }
 
@@ -193,6 +211,13 @@ internal class IrSwitchingProviderGenerator(
         irGet(thisReceiver),
         outerThisField,
         irGet(outerParam)
+      )
+
+      // Set the graph field for cross-shard access
+      +irSetField(
+        irGet(thisReceiver),
+        graphField,
+        irGet(graphParam)
       )
 
       // Set id field

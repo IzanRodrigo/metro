@@ -1430,7 +1430,7 @@ internal class IrGraphGenerator(
               val switchingProviderClass = shardingContext?.switchingProviders?.get(shardIndex)
 
               if (switchingProviderClass != null) {
-                // Create: new SwitchingProvider(shardInstance, id)
+                // Create: new SwitchingProvider(shardInstance, graphInstance, id)
                 val switchingProviderCtor = switchingProviderClass.constructors.first()
                 val switchingProviderInstance = IrConstructorCallImpl.fromSymbolOwner(
                   type = switchingProviderClass.defaultType,
@@ -1438,8 +1438,18 @@ internal class IrGraphGenerator(
                 ).apply {
                   // Pass the shard instance (this) as the outer parameter
                   arguments[0] = irGet(thisRec)
+                  // Pass the graph instance for cross-shard access
+                  // In a shard context, we need to access the outer graph field
+                  val outerField = shardingContext?.outerFields?.get(shardIndex)
+                  val graphInstance = if (outerField != null) {
+                    irGetField(irGet(thisRec), outerField)
+                  } else {
+                    // Fallback to parent reference if outer field not found
+                    irGet(thisRec)
+                  }
+                  arguments[1] = graphInstance
                   // Pass the unique ID for this binding
-                  arguments[1] = irInt(switchingProviderId)
+                  arguments[2] = irInt(switchingProviderId)
                 }
 
                 // Wrap SwitchingProvider with DoubleCheck for scoped bindings, just like Dagger
