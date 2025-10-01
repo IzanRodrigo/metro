@@ -16,6 +16,9 @@ internal class ShardingContext(
   val shardedTypeKeys: Set<IrTypeKey>,
   val shardClasses: MutableList<IrClass> = mutableListOf(),
   val switchingProviders: MutableMap<Int, IrClass> = mutableMapOf(),
+  // SwitchingProvider per shard -> fields to access outer shard instance and graph
+  val switchingProviderOuterThisFields: MutableMap<Int, IrField> = mutableMapOf(),
+  val switchingProviderGraphFields: MutableMap<Int, IrField> = mutableMapOf(),
   val shardFields: MutableMap<Int, IrField> = mutableMapOf(),
   val mainGraphFields: MutableMap<IrTypeKey, IrField> = mutableMapOf(),
   val outerFields: MutableMap<Int, IrField> = mutableMapOf(), // Track outer reference fields for static nested shards

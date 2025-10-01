@@ -1,5 +1,6 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
+@file:Suppress("DEPRECATION", "DEPRECATION_ERROR")
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.ClassIds
@@ -105,6 +106,8 @@ internal class IrSwitchingProviderGenerator(
 
     // Register in context for other shards to reference
     shardingContext.switchingProviders[shard.index] = switchingProviderClass
+    shardingContext.switchingProviderOuterThisFields[shard.index] = outerThisField
+    shardingContext.switchingProviderGraphFields[shard.index] = graphField
 
     return switchingProviderClass
   }
@@ -273,6 +276,24 @@ internal class IrSwitchingProviderGenerator(
       return
     }
 
+    // Optional diagnostic: log which ordinals will use direct instantiation vs delegation
+    if (options.debug) {
+      writeDiagnostic("switching-provider-dispatch-shard-${shard.index}.txt") {
+        buildString {
+          appendLine("=== SwitchingProvider Dispatch for Shard ${shard.index} (${shard.name}) ===")
+          appendLine("fastInit=${options.fastInit}")
+          appendLine("Cases (id -> ordinal : mode [scoped]):")
+          validOrdinals.forEachIndexed { idx, ordinal ->
+            val key = getTypeKeyForOrdinal(ordinal)
+            val binding = bindingGraph.requireBinding(key)
+            val scoped = binding.isScoped()
+            val mode = if (options.fastInit && !scoped) "DIRECT" else "DELEGATED"
+            appendLine("  $idx -> $ordinal : $mode [scoped=$scoped]  $key")
+          }
+        }
+      }
+    }
+
     // Check if we need to split into multiple methods
     val statementsPerMethod = MetroConstants.STATEMENTS_PER_METHOD
     if (validOrdinals.size <= statementsPerMethod) {
@@ -437,45 +458,51 @@ internal class IrSwitchingProviderGenerator(
       val result = when (helperMethods.size) {
         1 -> {
           // Only one helper method, just call it
-          irCall(helperMethods[0].symbol).apply {
-            dispatchReceiver = irGet(thisReceiver)
-            arguments[0] = idValue
-          }
+          irInvoke(
+            callee = helperMethods[0].symbol,
+            dispatchReceiver = irGet(thisReceiver),
+            args = listOf(idValue)
+          )
         }
         else -> {
-          // Multiple helpers - use if-else chain
+          // Multiple helpers - build a flat when mapping each id to its helper call
           val branches = mutableListOf<IrBranch>()
 
           helperMethods.forEachIndexed { chunkIndex, helperMethod ->
             val startIndex = chunkIndex * statementsPerMethod
             val endIndex = minOf(startIndex + statementsPerMethod - 1, validOrdinals.size - 1)
 
-            // For each chunk except the last, check if id is in range
-            val condition = if (chunkIndex == helperMethods.size - 1) {
-              // Last chunk gets everything else
-              irTrue()
-            } else {
-              // Check if id <= endIndex (will handle from previous startIndex)
-              irCall(irBuiltIns.lessFunByOperandType[irBuiltIns.intClass]!!).apply {
-                arguments[0] = idValue
-                arguments[1] = irInt(endIndex + 1)  // exclusive upper bound
-              }
-            }
+            for (globalIndex in startIndex..endIndex) {
+              val condition = irEquals(idValue, irInt(globalIndex))
+              val callHelper = irInvoke(
+                callee = helperMethod.symbol,
+                dispatchReceiver = irGet(thisReceiver),
+                args = listOf(idValue)
+              )
 
-            val callHelper = irCall(helperMethod.symbol).apply {
-              dispatchReceiver = irGet(thisReceiver)
-              arguments[0] = idValue
+              branches.add(
+                IrBranchImpl(
+                  UNDEFINED_OFFSET,
+                  UNDEFINED_OFFSET,
+                  condition,
+                  callHelper
+                )
+              )
             }
+          }
 
-            branches.add(
-              IrBranchImpl(
-                UNDEFINED_OFFSET,
-                UNDEFINED_OFFSET,
-                condition,
-                callHelper
+          // Default case - throw error
+          branches.add(
+            IrBranchImpl(
+              UNDEFINED_OFFSET,
+              UNDEFINED_OFFSET,
+              irTrue(),
+              irInvoke(
+                callee = symbols.stdlibErrorFunction,
+                args = listOf(irString("Invalid SwitchingProvider id for shard ${shard.index}"))
               )
             )
-          }
+          )
 
           irWhen(irBuiltIns.anyNType, branches)
         }
@@ -507,45 +534,22 @@ internal class IrSwitchingProviderGenerator(
     // Get the binding to know HOW to create the instance
     val binding = bindingGraph.requireBinding(typeKey)
 
-    // Check if we should use direct instantiation (fastInit mode)
-    return if (options.fastInit) {
-      // Direct instantiation path - create instances directly like Dagger
-      // This avoids creating provider fields for each binding
-      generateDirectInstance(binding, typeKey, thisReceiver)
+    // In fastInit, we prefer direct instantiation to avoid provider indirection.
+    // However, for SCOPED bindings we must preserve DoubleCheck semantics, so we
+    // delegate to the provider field path which applies the appropriate wrapper.
+    return if (options.fastInit && !binding.isScoped()) {
+      // Direct instantiation path: create instances directly using the graph expression generator.
+      // We construct an expression generator with explicit receiver = this SwitchingProvider's
+      // this$0 (the shard instance) and explicit shard index = this shard. That allows resolution
+      // of dependencies from the shard and cross-shard/main-graph via ShardingContext.
+      val contextual = IrContextualTypeKey(typeKey)
+      expressionGeneratorFactory
+        .create(explicitReceiver = thisReceiver, explicitShardIndex = shard.index)
+        .generateInstanceCreation(binding, contextual)
     } else {
       // Delegation path - use provider fields (traditional approach)
       delegateToProviderField(binding, typeKey, thisReceiver)
     }
-  }
-
-  /**
-   * Generate direct instance creation for fastInit mode.
-   * Creates instances directly without going through provider fields.
-   * This follows Dagger's pattern of directly instantiating objects in the switch statement.
-   */
-  private fun IrBuilderWithScope.generateDirectInstance(
-    binding: IrBinding,
-    typeKey: IrTypeKey,
-    thisReceiver: IrValueParameter
-  ): IrExpression {
-    // For SwitchingProvider to work with fastInit, we need to create instances directly
-    // This is complex because we need to:
-    // 1. Access the outer shard through this$0
-    // 2. Resolve dependencies that may be in provider fields
-    // 3. Call constructors or factories directly
-
-    // For now, fall back to delegation to ensure correctness
-    // A full implementation would need to handle all binding types and dependency resolution
-    // without relying on provider fields for the bindings handled by SwitchingProvider
-
-    // TODO: Implement direct instantiation that:
-    // - Calls constructors/factories directly
-    // - Resolves dependencies from the outer shard
-    // - Handles scoped instances (DoubleCheck) properly
-    // - Works with all binding types (Constructor, Provides, Binds, etc.)
-
-    // Temporary: Use delegation until direct instantiation is fully implemented
-    return delegateToProviderField(binding, typeKey, thisReceiver)
   }
 
   /**

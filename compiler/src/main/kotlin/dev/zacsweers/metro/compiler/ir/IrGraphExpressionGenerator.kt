@@ -1350,11 +1350,34 @@ private constructor(
     shardingContext: ShardingContext?,
   ): IrExpression? {
     val field = descriptor.field
+    // Determine if we are inside a SwitchingProvider context for this shard.
+    // If so, we must access the shard instance via the provider's captured outer-this field.
+    val inSwitchingProviderContext =
+      currentShardIndex != null && shardingContext != null &&
+        shardingContext.switchingProviders[currentShardIndex]?.let { spClass ->
+          currentThisReceiver.enclosingClassOrNull() == spClass
+        } == true
+
+    // Helper: returns an expression for the current shard instance in this context
+    fun shardThisExpression(): IrExpression? {
+      return when {
+        currentShardIndex == null || shardingContext == null -> null
+        inSwitchingProviderContext -> {
+          val outerThisField = shardingContext.switchingProviderOuterThisFields[currentShardIndex]
+            ?: return null
+          val providerThis = irGet(currentThisReceiver)
+          irGetField(providerThis, outerThisField)
+        }
+        else -> irGet(currentThisReceiver)
+      }
+    }
+
     return when (val owner = descriptor.owner) {
       BindingFieldContext.FieldOwner.MainGraph -> {
         if (currentShardIndex != null && shardingContext != null) {
           val outerField = shardingContext.outerFields[currentShardIndex] ?: return null
-          val outerRef = irGetField(irGet(currentThisReceiver), outerField)
+          val shardThis = shardThisExpression() ?: return null
+          val outerRef = irGetField(shardThis, outerField)
           irGetField(outerRef, field)
         } else {
           irGetField(irGet(currentThisReceiver), field)
@@ -1366,7 +1389,8 @@ private constructor(
         return when {
           currentShardIndex != null && owner.index == currentShardIndex -> {
             // Same shard - direct field access
-            irGetField(irGet(currentThisReceiver), field)
+            val shardThis = shardThisExpression() ?: return null
+            irGetField(shardThis, field)
           }
           currentShardIndex != null -> {
             // CRITICAL FIX: Check if this is a requirement field first
@@ -1375,13 +1399,15 @@ private constructor(
             val requirementField = context.requirementFields[currentShardIndex]?.get(binding.typeKey)
             if (requirementField != null) {
               // Use the local requirement field that was passed through constructor
-              return irGetField(irGet(currentThisReceiver), requirementField)
+              val shardThis = shardThisExpression() ?: return null
+              return irGetField(shardThis, requirementField)
             }
 
             // Fallback to accessing through graph.shardX pattern
             // This should only happen for bindings that weren't identified as requirements
             val outerField = context.outerFields[currentShardIndex] ?: return null
-            val outerRef = irGetField(irGet(currentThisReceiver), outerField)
+            val shardThis = shardThisExpression() ?: return null
+            val outerRef = irGetField(shardThis, outerField)
             val shardField = context.shardFields[actualIndex] ?: return null
             // The shard field now has the correct type after our fix in IrGraphGenerator
             val shardInstance = irGetField(outerRef, shardField)
