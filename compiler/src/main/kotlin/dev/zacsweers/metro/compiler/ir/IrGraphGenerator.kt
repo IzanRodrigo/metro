@@ -1,5 +1,7 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
+//
+
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.METRO_VERSION
@@ -24,41 +26,77 @@ import org.jetbrains.kotlin.descriptors.DescriptorVisibility
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addField
+import org.jetbrains.kotlin.ir.builders.declarations.buildClass
+import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
+import org.jetbrains.kotlin.ir.builders.declarations.addTypeParameter
+ 
 import org.jetbrains.kotlin.ir.builders.irBlockBody
+import org.jetbrains.kotlin.ir.builders.irCall
+import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irReturn
+import org.jetbrains.kotlin.ir.builders.irWhen
+import org.jetbrains.kotlin.ir.builders.irBranch
+import org.jetbrains.kotlin.ir.builders.irElseBranch
 import org.jetbrains.kotlin.ir.builders.irSetField
+import org.jetbrains.kotlin.ir.builders.irString
+import org.jetbrains.kotlin.ir.builders.irEquals
+import org.jetbrains.kotlin.ir.builders.irIfThenElse
+import org.jetbrains.kotlin.ir.builders.irAs
+import org.jetbrains.kotlin.ir.types.defaultType
+import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.util.functions
+import org.jetbrains.kotlin.ir.util.getSimpleFunction
+import org.jetbrains.kotlin.ir.util.copyTypeParametersFrom
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+// use builder DSL instead of Impl classes for K2 compatibility
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
+import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.ir.util.copyTo
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.ir.util.propertyIfAccessor
 import org.jetbrains.kotlin.ir.util.statements
+import org.jetbrains.kotlin.ir.util.SYNTHETIC_OFFSET
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.name.FqName
+import org.jetbrains.kotlin.name.StandardClassIds
+import dev.zacsweers.metro.compiler.graph.buildFullAdjacency
+import dev.zacsweers.metro.compiler.graph.computeStronglyConnectedComponents
 
 internal typealias FieldInitializer =
   IrBuilderWithScope.(thisReceiver: IrValueParameter, key: IrTypeKey) -> IrExpression
 
 // Borrowed from Dagger
 // https://github.com/google/dagger/blob/b39cf2d0640e4b24338dd290cb1cb2e923d38cb3/dagger-compiler/main/java/dagger/internal/codegen/writing/ComponentImplementation.java#L263
-private const val STATEMENTS_PER_METHOD = 25
+private fun IrMetroContext.statementsPerInit(): Int {
+  // If keysPerComponentShard is set, prefer it as our per-init partition target.
+  val byShard = options.keysPerComponentShard
+  if (byShard > 0) return byShard
+  // Else respect chunkFieldInits + maxStatementsPerInit; if maxStatementsPerInit <= 0, disable chunking
+  if (!options.chunkFieldInits || options.maxStatementsPerInit <= 0) return Int.MAX_VALUE
+  return options.maxStatementsPerInit
+}
 
 internal class IrGraphGenerator(
   metroContext: IrMetroContext,
@@ -86,6 +124,14 @@ internal class IrGraphGenerator(
    */
   private val fieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
+  // Fast-init: collect provider entries to assign ids and generate per-shard selectors later
+  private data class FastInitEntry(
+    val key: IrTypeKey,
+    val binding: IrBinding,
+    val field: IrField,
+    val scoped: Boolean,
+  )
+  private val fastInitEntries = mutableListOf<FastInitEntry>()
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
       context = this,
@@ -347,18 +393,267 @@ internal class IrGraphGenerator(
               IrGraphExpressionGenerator.AccessType.INSTANCE
             }
 
-          field.withInit(key) { thisReceiver, typeKey ->
-            expressionGeneratorFactory
-              .create(thisReceiver)
-              .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
-              .letIf(binding.isScoped() && isProviderType) {
-                // If it's scoped, wrap it in double-check
-                // DoubleCheck.provider(<provider>)
-                it.doubleCheck(this@withInit, symbols, binding.typeKey)
-              }
+          if (isProviderType && options.fastInit) {
+            // Fast-init path: initialize as DelegateFactory and defer setDelegate.
+            // We'll later assign stable ids, generate per-shard selector lambdas, and set
+            // delegates to SwitchingProvider(id, selector).
+            field.withInit(key) { _, _ ->
+              irInvoke(
+                callee = symbols.metroDelegateFactoryConstructor,
+                typeArgs = listOf(key.type),
+              )
+            }
+            fastInitEntries += FastInitEntry(key = key, binding = binding, field = field, scoped = binding.isScoped())
+            bindingFieldContext.putProviderField(key, field)
+          } else {
+            // Default path: assign provider/factory directly
+            field.withInit(key) { thisReceiver, typeKey ->
+              expressionGeneratorFactory
+                .create(thisReceiver)
+                .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
+                .letIf(binding.isScoped() && isProviderType) {
+                  // If it's scoped, wrap it in double-check
+                  // DoubleCheck.provider(<provider>)
+                  it.doubleCheck(this@withInit, symbols, binding.typeKey)
+                }
+            }
+            bindingFieldContext.putProviderField(key, field)
           }
-          bindingFieldContext.putProviderField(key, field)
         }
+
+      // If fast-init is enabled, generate per-shard selector lambdas and set delegates to
+      // SwitchingProvider(id, selector) with stable ids.
+      if (options.fastInit && fastInitEntries.isNotEmpty()) {
+        // Build global order for stable ids
+        val globalOrderIndex = sealResult.sortedKeys.withIndex().associate { it.value to it.index }
+
+        // Provider keys in this graph (fast-init only)
+        val providerKeys = fastInitEntries.map { it.key }
+        val providerBindings = providerKeys.associateWith { bindingGraph.requireBinding(it) }
+
+        // Compute SCCs among provider-only subgraph
+        val adjacency = buildFullAdjacency(
+          bindings = providerBindings,
+          dependenciesOf = { b -> b.dependencies.map { it.typeKey }.filter { it in providerBindings } },
+          onMissing = { _, _ -> /* ignore */ },
+        )
+        val (components, componentOf) = adjacency.computeStronglyConnectedComponents()
+
+        // Group keys by component and order components by earliest appearance in global order
+        val compToKeys = mutableMapOf<Int, MutableList<IrTypeKey>>()
+        for (key in providerKeys) {
+          val cid = componentOf.getValue(key)
+          compToKeys.getOrPut(cid, ::mutableListOf) += key
+        }
+        val componentsOrdered = compToKeys.values.sortedBy { keys -> keys.minOf { globalOrderIndex.getValue(it) } }
+
+        // Pack components into shards up to keysPerShard (or single shard if <= 0)
+        val keysPerShard = options.keysPerComponentShard
+        val shardKeyBins = mutableListOf<List<IrTypeKey>>()
+        var current = mutableListOf<IrTypeKey>()
+        var count = 0
+        for (compKeys in componentsOrdered) {
+          val compSize = compKeys.size
+          if (keysPerShard > 0 && count > 0 && count + compSize > keysPerShard) {
+            shardKeyBins += current.toList()
+            current = mutableListOf()
+            count = 0
+          }
+          current.addAll(compKeys)
+          count += compSize
+        }
+        if (current.isNotEmpty()) shardKeyBins += current.toList()
+
+        // Per-shard ShardN classes each with their own nested SwitchingProvider and IDs
+        data class ShardInfo(
+          val shardClass: IrClass,
+          val shardFieldOnGraph: IrField,
+          val nestedSwitchingProviderClass: IrClass,
+          val idOf: Map<IrTypeKey, Int>,
+          val makeFunctionsById: Map<Int, IrSimpleFunction>
+        )
+        val shardInfos = mutableMapOf<Int, ShardInfo>()
+        val keyToShard = mutableMapOf<IrTypeKey, Int>()
+        // Map binding keys to their backing provider fields on the graph
+        val keyToProviderField: Map<IrTypeKey, IrField> =
+          fieldsToTypeKeys.entries.associate { (field, key) -> key to field }
+
+        for ((shardIndex, bin) in shardKeyBins.withIndex()) {
+          val orderedKeys = bin.sortedBy { globalOrderIndex.getValue(it) }
+          val idOf = orderedKeys.withIndex().associate { (i, k) -> k to i }
+
+          // For each key, generate a "make" function on the graph that returns the INSTANCE for that key.
+          // SwitchingProvider will call these to avoid recursive provider->SwitchingProvider invocations.
+          val makeFunctionsById = buildMap {
+            for (key in orderedKeys) {
+              val id = idOf.getValue(key)
+              val funName = Name.identifier("__make_${shardIndex}_$id")
+              val makeFun = graphClass.addFunction {
+                name = funName
+                visibility = DescriptorVisibilities.INTERNAL
+                modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
+                origin = Origins.Default
+                returnType = key.type
+              }.apply {
+                // Dispatch receiver is the graph instance
+                setDispatchReceiver(thisReceiverOrFail.copyTo(this))
+                body = createIrBuilder(symbol).run {
+                  val binding = bindingGraph.requireBinding(key)
+                  val expr = expressionGeneratorFactory
+                    .create(dispatchReceiverParameter!!)
+                    .generateBindingCode(
+                      binding,
+                      accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+                    )
+                  irExprBody(expr)
+                }
+              }
+              put(id, makeFun)
+            }
+          }
+
+          // class ShardN(owner: Graph) { inner SwitchingProvider will dispatch by id using owner }
+          val shardName = Name.identifier("Shard$shardIndex")
+          val shardClass = pluginContext.irFactory
+            .buildClass {
+              name = shardName
+              kind = org.jetbrains.kotlin.descriptors.ClassKind.CLASS
+              visibility = DescriptorVisibilities.PRIVATE
+              modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
+              origin = Origins.Default
+              isCompanion = false
+            }
+            .apply {
+              createThisReceiverParameter()
+              graphClass.addChild(this)
+              // private val owner: GraphClass
+              val shardOwnerField = addField("owner", graphClass.defaultType, DescriptorVisibilities.PRIVATE)
+              // Primary constructor(owner: GraphClass) { this.owner = owner }
+              addConstructor {
+                visibility = DescriptorVisibilities.PUBLIC
+                isPrimary = true
+                this.returnType = this@apply.defaultType
+              }.apply {
+                val pOwner = addValueParameter("owner", graphClass.defaultType)
+                body = generateDefaultConstructorBody {
+                  +irSetField(irGet(thisReceiverOrFail), shardOwnerField, irGet(pOwner))
+                }
+              }
+            }
+          // Nested provider that switches based on id and reads from owner
+          // Retrieve the owner field symbol for later use in nested provider code
+          val shardOwnerField = shardClass.declarations
+            .filterIsInstance<IrField>()
+            .first { it.name.asString() == "owner" }
+
+          // class SwitchingProvider<T>(private val id: Int, private val shard: ShardN) : Provider<T> { override fun invoke(): T = when(id){...} }
+          val nestedProviderClass = pluginContext.irFactory
+            .buildClass {
+              name = Name.identifier("SwitchingProvider")
+              kind = org.jetbrains.kotlin.descriptors.ClassKind.CLASS
+              visibility = DescriptorVisibilities.PRIVATE
+              modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
+              origin = Origins.Default
+            }
+            .apply {
+              shardClass.addChild(this)
+              createThisReceiverParameter()
+              // Copy single type parameter <T> from Provider<T>
+              typeParameters = copyTypeParametersFrom(symbols.metroProvider.owner)
+              val tParam = typeParameters.first()
+              // Super type: Provider<T>
+              superTypes = listOf(symbols.metroProvider.typeWith(tParam.defaultType))
+
+              // Fields: private val id: Int; private val shard: ShardN
+              val idField = addField("id", irBuiltIns.intType, DescriptorVisibilities.PRIVATE)
+              val shardRefField = addField("shard", shardClass.defaultType, DescriptorVisibilities.PRIVATE)
+
+              // Primary constructor(id: Int, shard: ShardN) { this.id = id; this.shard = shard }
+              val ownerDefaultType = this.defaultType
+              addConstructor {
+                visibility = DescriptorVisibilities.PUBLIC
+                isPrimary = true
+                this.returnType = ownerDefaultType
+              }.apply {
+                val pId = addValueParameter("id", irBuiltIns.intType)
+                val pShard = addValueParameter("shard", shardClass.defaultType)
+                body = generateDefaultConstructorBody {
+                  +irSetField(irGet(thisReceiverOrFail), idField, irGet(pId))
+                  +irSetField(irGet(thisReceiverOrFail), shardRefField, irGet(pShard))
+                }
+              }
+
+              // override fun invoke(): T = when(id){ ... -> owner.provider.invoke() ... else -> error("Invalid selector id") }
+              val invokeFun = addFunction {
+                name = Name.identifier("invoke")
+                visibility = DescriptorVisibilities.PUBLIC
+                modality = org.jetbrains.kotlin.descriptors.Modality.FINAL
+                origin = Origins.Default
+                returnType = tParam.defaultType
+              }
+              // Configure dispatch receiver and build body explicitly
+              invokeFun.setDispatchReceiver(thisReceiverOrFail.copyTo(invokeFun))
+              invokeFun.body = createIrBuilder(invokeFun.symbol).run {
+                val recvParam = invokeFun.dispatchReceiverParameter!!
+                val idExpr = irGetField(irGet(recvParam), idField)
+                val ownerExpr = irGetField(
+                  irGetField(irGet(recvParam), shardRefField),
+                  shardOwnerField
+                )
+                  val branches = buildList {
+                  for (key in orderedKeys) {
+                    val idValue = idOf.getValue(key)
+                      val cond = irEquals(idExpr, irInt(idValue))
+                      val makeFun = makeFunctionsById.getValue(idValue)
+                      val valueExpr = irInvoke(ownerExpr, callee = makeFun.symbol)
+                      add(irBranch(cond, valueExpr))
+                  }
+                  add(irElseBranch(stubExpression("Invalid selector id")))
+                }
+                val whenExpr = irWhen(tParam.defaultType, branches)
+                irExprBody(whenExpr)
+              }
+            }
+
+          // Create a field on the graph to hold the shard instance and initialize it
+          val shardField = graphClass.addField("shard$shardIndex", shardClass.defaultType, DescriptorVisibilities.PRIVATE)
+          initStatements.add { thisReceiver ->
+            val ctor = shardClass.primaryConstructor!!.symbol
+            val newShard = irCall(ctor).apply {
+              arguments[0] = irGet(thisReceiver)
+            }
+            irSetField(irGet(thisReceiver), shardField, newShard)
+          }
+
+          shardInfos[shardIndex] = ShardInfo(shardClass, shardField, nestedProviderClass, idOf, makeFunctionsById)
+          for (k in orderedKeys) keyToShard[k] = shardIndex
+        }
+
+        // Emit setDelegate statements for fast-init entries using id+selector
+        for (entry in fastInitEntries) {
+          initStatements.add { thisReceiver ->
+            val shardIndex = keyToShard.getValue(entry.key)
+            val shardInfo = shardInfos.getValue(shardIndex)
+            val idValue = shardInfo.idOf.getValue(entry.key)
+            val switchingCtor = irCall(shardInfo.nestedSwitchingProviderClass.primaryConstructor!!.symbol).apply {
+              typeArguments[0] = entry.key.type
+              arguments[0] = irInt(idValue)
+              arguments[1] = irGetField(irGet(thisReceiver), shardInfo.shardFieldOnGraph)
+            }
+            // Wrap with DoubleCheck only when scoped; otherwise return raw switching provider
+            val switching: IrExpression = if (entry.scoped) switchingCtor.doubleCheck(this, symbols, entry.key) else switchingCtor
+            irInvoke(
+              dispatchReceiver = irGetObject(symbols.metroDelegateFactoryCompanion),
+              callee = symbols.metroDelegateFactorySetDelegate,
+              typeArgs = listOf(entry.key.type),
+              args = listOf(
+                irGetField(irGet(thisReceiver), entry.field),
+                switching,
+              ),
+            )
+          }
+        }
+      }
 
       // Add statements to our constructor's deferred fields _after_ we've added all provider
       // fields for everything else. This is important in case they reference each other
@@ -392,34 +687,73 @@ internal class IrGraphGenerator(
         }
       }
 
-      if (
-        options.chunkFieldInits &&
-          fieldInitializers.size + initStatements.size > STATEMENTS_PER_METHOD
-      ) {
-        // Larger graph, split statements
-        // Chunk our constructor statements and split across multiple init functions
-        val chunks =
+      val keysPerShard = options.keysPerComponentShard
+      if (keysPerShard > 0 && fieldInitializers.size > keysPerShard) {
+        // Key-count based sharding: split only the provider field initializers by key count.
+        // Deferred setDelegate statements are emitted in a trailing init() to preserve ordering
+        // and avoid interleaving complexity.
+        // Build topology-preserving order for the provider fields using the global graph order
+        val providerKeys = fieldInitializers.map { (field, _) -> fieldsToTypeKeys.getValue(field) }
+        val globalOrderIndex = sealResult.sortedKeys.withIndex().associate { it.value to it.index }
+
+        // Subgraph over provider keys for SCC computation
+        val providerBindings = providerKeys.associateWith { bindingGraph.requireBinding(it) }
+        val adjacency = buildFullAdjacency(
+          bindings = providerBindings,
+          dependenciesOf = { b -> b.dependencies.map { it.typeKey }.filter { it in providerBindings } },
+          onMissing = { _, _ -> /* ignore missing edges outside of provider set */ },
+        )
+        val (components, componentOf) = adjacency.computeStronglyConnectedComponents()
+
+        // Group provider keys by SCC id
+        val compToKeys = mutableMapOf<Int, MutableList<IrTypeKey>>()
+        for (key in providerKeys) {
+          val cid = componentOf.getValue(key)
+          compToKeys.getOrPut(cid, ::mutableListOf) += key
+        }
+        // Sort components by earliest appearance in global order
+        val componentsOrdered = compToKeys.values.sortedBy { keys -> keys.minOf { globalOrderIndex.getValue(it) } }
+
+        // Pack components into shards up to keysPerShard
+        val shardKeyBins = mutableListOf<List<IrTypeKey>>()
+        var current = mutableListOf<IrTypeKey>()
+        var count = 0
+        for (compKeys in componentsOrdered) {
+          val compSize = compKeys.size
+          if (count > 0 && count + compSize > keysPerShard) {
+            shardKeyBins += current.toList()
+            current = mutableListOf()
+            count = 0
+          }
+          current.addAll(compKeys)
+          count += compSize
+        }
+        if (current.isNotEmpty()) shardKeyBins += current.toList()
+
+        // Build init statement chunks per shard, with keys in global topological order
+        val keyToFieldInit = fieldInitializers.associateBy({ fieldsToTypeKeys.getValue(it.first) }, { it })
+        val fieldChunks = shardKeyBins.map { bin ->
+          val orderedKeys = bin.sortedBy { globalOrderIndex.getValue(it) }
           buildList<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement> {
-              // Add field initializers first
-              for ((field, init) in fieldInitializers) {
-                add { thisReceiver ->
-                  irSetField(
-                    irGet(thisReceiver),
-                    field,
-                    init(thisReceiver, fieldsToTypeKeys.getValue(field)),
-                  )
-                }
-              }
-              for (statement in initStatements) {
-                add { thisReceiver -> statement(thisReceiver) }
+            for (key in orderedKeys) {
+              val (field, init) = keyToFieldInit.getValue(key)
+              add { thisReceiver ->
+                irSetField(
+                  irGet(thisReceiver),
+                  field,
+                  init(thisReceiver, key),
+                )
               }
             }
-            .chunked(STATEMENTS_PER_METHOD)
+          }
+        }
+    val initAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
+    val initFunctionsToCall = mutableListOf<IrSimpleFunction>()
 
-        val initAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
-        val initFunctionsToCall =
-          chunks.map { statementsChunk ->
-            val initName = initAllocator.newName("init")
+        // Generate per-key chunks as init functions
+        for (statementsChunk in fieldChunks) {
+          val initName = initAllocator.newName("init")
+          val initFun =
             addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
               .apply {
                 val localReceiver = thisReceiverParameter.copyTo(this)
@@ -430,7 +764,29 @@ internal class IrGraphGenerator(
                   }
                 }
               }
+          initFunctionsToCall += initFun
+        }
+
+        // After all field initializers, emit deferred setDelegate statements in chunks as well
+        if (initStatements.isNotEmpty()) {
+          val delegateChunks = initStatements.chunked(keysPerShard)
+          for (delegateChunk in delegateChunks) {
+            val initName = initAllocator.newName("init")
+            val initFun =
+              addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
+                .apply {
+                  val localReceiver = thisReceiverParameter.copyTo(this)
+                  setDispatchReceiver(localReceiver)
+                  buildBlockBody {
+                    for (statement in delegateChunk) {
+                      +statement(localReceiver)
+                    }
+                  }
+                }
+            initFunctionsToCall += initFun
           }
+        }
+
         constructorStatements += buildList {
           for (initFunction in initFunctionsToCall) {
             add { dispatchReceiver ->
@@ -439,6 +795,50 @@ internal class IrGraphGenerator(
           }
         }
       } else {
+        val maxPerInit = metroContext.statementsPerInit()
+        if (fieldInitializers.size + initStatements.size > maxPerInit) {
+          // Larger graph, split statements by total statement count (legacy behavior)
+          val chunks =
+            buildList<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement> {
+                // Add field initializers first
+                for ((field, init) in fieldInitializers) {
+                  add { thisReceiver ->
+                    irSetField(
+                      irGet(thisReceiver),
+                      field,
+                      init(thisReceiver, fieldsToTypeKeys.getValue(field)),
+                    )
+                  }
+                }
+                for (statement in initStatements) {
+                  add { thisReceiver -> statement(thisReceiver) }
+                }
+              }
+              .chunked(maxPerInit)
+
+          val initAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
+          val initFunctionsToCall =
+            chunks.map { statementsChunk ->
+              val initName = initAllocator.newName("init")
+              addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
+                .apply {
+                  val localReceiver = thisReceiverParameter.copyTo(this)
+                  setDispatchReceiver(localReceiver)
+                  buildBlockBody {
+                    for (statement in statementsChunk) {
+                      +statement(localReceiver)
+                    }
+                  }
+                }
+            }
+          constructorStatements += buildList {
+            for (initFunction in initFunctionsToCall) {
+              add { dispatchReceiver ->
+                irInvoke(dispatchReceiver = irGet(dispatchReceiver), callee = initFunction.symbol)
+              }
+            }
+          }
+        } else {
         // Small graph, just do it in the constructor
         // Assign those initializers directly to their fields and mark them as final
         for ((field, init) in fieldInitializers) {
@@ -448,6 +848,7 @@ internal class IrGraphGenerator(
           }
         }
         constructorStatements += initStatements
+        }
       }
 
       // Add extra constructor statements
@@ -470,7 +871,7 @@ internal class IrGraphGenerator(
           val metroMetadata = MetroMetadata(METRO_VERSION, dependency_graph = graphProto)
 
           writeDiagnostic({
-            "graph-metadata-${node.sourceGraph.kotlinFqName.asString().replace(".", "-")}.kt"
+            "graph-metadata-${node.sourceGraph.classIdOrFail.asString().replace(".", "-")}.kt"
           }) {
             metroMetadata.toString()
           }
@@ -554,9 +955,9 @@ internal class IrGraphGenerator(
             val wrappedType =
               typeKey.copy(typeKey.type.expectAs<IrSimpleType>().arguments[0].typeOrFail)
 
+            @Suppress("DEPRECATION")
             for (type in
-              pluginContext
-                .referenceClass(binding.targetClassId)!!
+              pluginContext.referenceClass(binding.targetClassId)!!
                 .owner
                 .getAllSuperTypes(excludeSelf = false, excludeAny = true)) {
               val clazz = type.rawType()

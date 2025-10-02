@@ -1,6 +1,7 @@
 // Copyright (C) 2024 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
+// (no-op) selector helpers removed – switching provider initial integration uses delegate constructor
 
 import dev.zacsweers.metro.compiler.MetroOptions
 import dev.zacsweers.metro.compiler.Origins
@@ -151,6 +152,12 @@ import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
 import org.jetbrains.kotlin.name.StandardClassIds
 import org.jetbrains.kotlin.types.Variance
+// Small helper to build a null literal expression of type Any?
+internal fun IrBuilderWithScope.irNull(): IrExpression {
+  // Kotlin's IR uses IrConstImpl.constNull with the desired type; Any? is safe here
+  return IrConstImpl.constNull(SYNTHETIC_OFFSET, SYNTHETIC_OFFSET, context.irBuiltIns.anyNType)
+}
+
 
 /** Finds the line and column of [this] within its file. */
 internal fun IrDeclaration.location(): CompilerMessageSourceLocation {

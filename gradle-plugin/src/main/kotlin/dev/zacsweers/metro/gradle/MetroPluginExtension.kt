@@ -109,6 +109,18 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val chunkFieldInits: Property<Boolean> =
     objects.property(Boolean::class.javaObjectType).convention(true)
 
+  /** Maximum number of statements per generated init method when chunking is enabled. */
+  public val maxStatementsPerInit: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(25)
+
+  /** Enable/disable fast-init (switching providers) codegen where applicable. */
+  public val fastInit: Property<Boolean> =
+    objects.property(Boolean::class.javaObjectType).convention(false)
+
+  /** Target number of provider keys per init() shard. 0 means disabled (use maxStatementsPerInit). */
+  public val keysPerComponentShard: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(0)
+
   /** Enable/disable automatic transformation of providers to be private. Enabled by default. */
   public val transformProvidersToPrivate: Property<Boolean> =
     objects.property(Boolean::class.javaObjectType).convention(true)

@@ -148,6 +148,9 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
         add(lazyOption("transform-providers-to-private", extension.transformProvidersToPrivate))
         add(lazyOption("shrink-unused-bindings", extension.shrinkUnusedBindings))
         add(lazyOption("chunk-field-inits", extension.chunkFieldInits))
+  add(lazyOption("max-statements-per-init", extension.maxStatementsPerInit))
+  add(lazyOption("keys-per-component-shard", extension.keysPerComponentShard))
+  add(lazyOption("fast-init", extension.fastInit))
         add(lazyOption("public-provider-severity", extension.publicProviderSeverity))
         add(lazyOption("assisted-inject-deprecation-severity", extension.assistedInjectMigrationSeverity))
         add(

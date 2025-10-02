@@ -169,6 +169,38 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
+  KEYS_PER_COMPONENT_SHARD(
+    RawMetroOption(
+      name = "keys-per-component-shard",
+      defaultValue = 0,
+      valueDescription = "<count>",
+      description = "Target number of provider keys per init() shard. If > 0, this overrides max-statements-per-init for splitting initN().",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it.toInt() },
+    )
+  ),
+  MAX_STATEMENTS_PER_INIT(
+    RawMetroOption(
+      name = "max-statements-per-init",
+      defaultValue = 25,
+      valueDescription = "<count>",
+      description = "Maximum number of field init statements per init method when chunking is enabled. If <= 0, chunking will be disabled.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it.toInt() },
+    )
+  ),
+  FAST_INIT(
+    RawMetroOption.boolean(
+      name = "fast-init",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Enable/disable fast-init (switching providers) codegen where applicable.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   PUBLIC_PROVIDER_SEVERITY(
     RawMetroOption(
       name = "public-provider-severity",
@@ -550,6 +582,10 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
+  val keysPerComponentShard: Int = MetroOption.KEYS_PER_COMPONENT_SHARD.raw.defaultValue.expectAs(),
+  val maxStatementsPerInit: Int =
+    MetroOption.MAX_STATEMENTS_PER_INIT.raw.defaultValue.expectAs(),
+  val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE
@@ -694,6 +730,14 @@ public data class MetroOptions(
 
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
+          MetroOption.KEYS_PER_COMPONENT_SHARD ->
+            options = options.copy(keysPerComponentShard = configuration.getAsInt(entry))
+
+          MetroOption.MAX_STATEMENTS_PER_INIT ->
+            options = options.copy(maxStatementsPerInit = configuration.getAsInt(entry))
+
+          MetroOption.FAST_INIT ->
+            options = options.copy(fastInit = configuration.getAsBoolean(entry))
 
           MetroOption.PUBLIC_PROVIDER_SEVERITY ->
             options =

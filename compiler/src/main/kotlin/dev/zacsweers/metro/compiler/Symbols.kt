@@ -336,6 +336,28 @@ internal class Symbols(
     metroDelegateFactoryCompanion.requireSimpleFunction("setDelegate")
   }
 
+  // SwitchingProvider<T>(id: Int, selector: (Int) -> Any?)
+  private val metroSwitchingProvider: IrClassSymbol by lazy {
+    pluginContext.referenceClass(
+      ClassId(metroRuntimeInternal.packageFqName, "SwitchingProvider".asName())
+    )!!
+  }
+
+  val metroSwitchingProviderConstructor: IrConstructorSymbol by lazy {
+    // Primary constructor (id: Int, selector: (Int) -> Any?)
+    metroSwitchingProvider.constructors.single { ctor ->
+      val params = ctor.owner.parameters
+      params.size == 2
+    }
+  }
+
+  val metroSwitchingProviderDelegateConstructor: IrConstructorSymbol by lazy {
+    // Secondary convenience ctor: constructor(provider: Provider<T>)
+    metroSwitchingProvider.constructors.single { ctor ->
+      ctor.owner.parameters.size == 1
+    }
+  }
+
   val metroMembersInjector: IrClassSymbol by lazy {
     pluginContext.referenceClass(ClassId(metroRuntime.packageFqName, "MembersInjector".asName()))!!
   }

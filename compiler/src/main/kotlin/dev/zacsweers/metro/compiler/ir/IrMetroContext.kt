@@ -257,7 +257,13 @@ internal fun writeDiagnostic(fileName: String, text: () -> String) {
 
 context(context: IrMetroContext)
 internal fun writeDiagnostic(fileName: () -> String, text: () -> String) {
-  context.reportsDir?.resolve(fileName())?.apply { deleteIfExists() }?.writeText(text())
+  val base = context.reportsDir ?: return
+  val path = base.resolve(fileName())
+  // Ensure parent directories exist when fileName contains subdirectories
+  path.parent?.createDirectories()
+  // Overwrite any existing file with fresh contents
+  path.deleteIfExists()
+  path.writeText(text())
 }
 
 context(context: IrMetroContext)
