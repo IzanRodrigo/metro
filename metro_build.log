@@ -1,0 +1,1253 @@
+Calculating task graph as configuration cache cannot be reused because an input to unknown location has changed.
+> Task :assemble UP-TO-DATE
+> Task :compiler:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :compiler-tests:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :gradle-plugin:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :interop-dagger:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :runtime:cleanMingwX64Test UP-TO-DATE
+> Task :runtime:kmpPartiallyResolvedDependenciesChecker
+> Task :runtime:cleanTvosX64Test UP-TO-DATE
+> Task :runtime:cleanIosSimulatorArm64Test UP-TO-DATE
+> Task :runtime:cleanWatchosSimulatorArm64Test UP-TO-DATE
+> Task :runtime:checkKotlinGradlePluginConfigurationErrors SKIPPED
+> Task :runtime:cleanLinuxX64Test UP-TO-DATE
+> Task :runtime:cleanIosX64Test UP-TO-DATE
+> Task :runtime:cleanMacosX64Test UP-TO-DATE
+> Task :runtime:cleanMacosArm64Test UP-TO-DATE
+> Task :runtime:cleanWatchosX64Test UP-TO-DATE
+> Task :runtime:cleanTvosSimulatorArm64Test UP-TO-DATE
+> Task :kotlinKotlinNpmCachesSetup
+> Task :kotlinWasmKotlinNpmCachesSetup
+> Task :runtime:cleanWasmJsBrowserTest
+> Task :runtime:cleanJvmTest
+> Task :runtime:cleanJsBrowserTest
+> Task :runtime:cleanJsNodeTest
+> Task :runtime:cleanAllTests
+> Task :interop-dagger:clean
+> Task :interop-dagger:processResources NO-SOURCE
+> Task :interop-dagger:processTestResources NO-SOURCE
+> Task :compiler-tests:clean
+> Task :compiler-tests:generateBuildConfig SKIPPED
+> Task :compiler-tests:processResources NO-SOURCE
+> Task :compiler-tests:processTestResources NO-SOURCE
+> Task :compiler-tests:compileKotlin NO-SOURCE
+> Task :compiler-tests:compileJava NO-SOURCE
+> Task :compiler-tests:classes UP-TO-DATE
+> Task :runtime:kotlinWasmBinaryenSetup UP-TO-DATE
+> Task :compiler-tests:generateTestBuildConfig
+> Task :compiler-tests:jar
+> Task :compiler-tests:assemble
+> Task :interop-dagger:sourcesJar
+> Task :gradle-plugin:clean
+> Task :gradle-plugin:generateTestBuildConfig SKIPPED
+> Task :gradle-plugin:deleteOldFuncTests UP-TO-DATE
+> Task :gradle-plugin:generateFunctionalTestBuildConfig SKIPPED
+> Task :gradle-plugin:processFunctionalTestResources NO-SOURCE
+> Task :gradle-plugin:processTestResources NO-SOURCE
+> Task :gradle-plugin:pluginDescriptors
+> Task :gradle-plugin:generateBuildConfig
+> Task :compiler:clean
+> Task :compiler:processTestResources NO-SOURCE
+> Task :compiler:processResources
+> Task :gradle-plugin:processResources
+> Task :compiler:generateTestBuildConfig
+> Task :compiler:generateBuildConfig
+> Task :compiler:generatePomFileForMavenPublication
+> Task :gradle-plugin:generatePomFileForPluginMavenPublication
+> Task :gradle-plugin:generatePomFileForMetroPluginPluginMarkerMavenPublication
+> Task :gradle-plugin:publishMetroPluginPluginMarkerMavenPublicationToFunctionalTestRepository
+> Task :compiler:generateMainProtos
+> Task :runtime:kotlinWasmNodeJsSetup UP-TO-DATE
+> Task :kotlinWasmNodeJsSetup UP-TO-DATE
+> Task :runtime:kotlinNodeJsSetup UP-TO-DATE
+> Task :gradle-plugin:sourcesJar
+> Task :runtime:clean
+> Task :runtime:generatePomFileForAndroidNativeX64Publication
+> Task :runtime:generatePomFileForAndroidNativeArm64Publication
+> Task :runtime:generatePomFileForAndroidNativeArm32Publication
+> Task :runtime:metadataNativeMainProcessResources NO-SOURCE
+> Task :runtime:metadataCommonMainProcessResources NO-SOURCE
+> Task :runtime:jvmProcessResources NO-SOURCE
+> Task :runtime:metadataAppleMainProcessResources NO-SOURCE
+> Task :runtime:processJvmMainResources SKIPPED
+> Task :runtime:metadataMacosMainProcessResources NO-SOURCE
+> Task :runtime:metadataIosMainProcessResources NO-SOURCE
+> Task :runtime:metadataWatchosMainProcessResources NO-SOURCE
+> Task :runtime:metadataTvosMainProcessResources NO-SOURCE
+> Task :runtime:generatePomFileForAndroidNativeX86Publication
+> Task :runtime:generatePomFileForIosSimulatorArm64Publication
+> Task :runtime:generatePomFileForIosArm64Publication
+> Task :runtime:androidNativeArm64SourcesJar
+> Task :runtime:iosSimulatorArm64SourcesJar
+> Task :runtime:androidNativeArm32SourcesJar
+> Task :runtime:androidNativeX86SourcesJar
+> Task :runtime:androidNativeX64SourcesJar
+> Task :runtime:iosArm64SourcesJar
+> Task :runtime:jsProcessResources NO-SOURCE
+> Task :runtime:generatePomFileForIosX64Publication
+> Task :runtime:generatePomFileForJsPublication
+> Task :runtime:metadataAndroidNativeMainProcessResources NO-SOURCE
+> Task :runtime:metadataConcurrentTestMainProcessResources NO-SOURCE
+> Task :runtime:generatePomFileForJvmPublication
+> Task :runtime:metadataLinuxMainProcessResources NO-SOURCE
+> Task :runtime:metadataWebMainProcessResources NO-SOURCE
+> Task :kotlinNodeJsSetup UP-TO-DATE
+> Task :runtime:iosX64SourcesJar
+> Task :runtime:generateProjectStructureMetadata
+> Task :runtime:buildKotlinToolingMetadata
+> Task :runtime:jsSourcesJar
+> Task :runtime:jvmSourcesJar
+> Task :runtime:generatePomFileForKotlinMultiplatformPublication
+> Task :runtime:generatePomFileForLinuxArm64Publication
+> Task :runtime:sourcesJar
+> Task :runtime:generatePomFileForLinuxX64Publication
+> Task :runtime:linuxX64SourcesJar
+> Task :runtime:generatePomFileForMacosArm64Publication
+> Task :runtime:linuxArm64SourcesJar
+> Task :runtime:generatePomFileForMacosX64Publication
+> Task :runtime:macosArm64SourcesJar
+> Task :runtime:macosX64SourcesJar
+> Task :runtime:mingwX64SourcesJar
+> Task :compiler:sourcesJar
+> Task :runtime:generatePomFileForMingwX64Publication
+> Task :runtime:generatePomFileForTvosArm64Publication
+> Task :runtime:tvosArm64SourcesJar
+> Task :runtime:tvosSimulatorArm64SourcesJar
+> Task :runtime:generatePomFileForTvosSimulatorArm64Publication
+> Task :runtime:transformCommonMainDependenciesMetadata
+> Task :clean
+> Task :spotlessInternalRegisterDependencies
+> Task :kotlinWasmToolingSetup UP-TO-DATE
+> Task :spotlessJava
+> Task :spotlessKotlin
+> Task :spotlessKotlinCheck
+> Task :spotlessJavaCheck
+> Task :spotlessKotlinGradle
+> Task :spotlessKotlinGradleCheck
+> Task :spotlessLicenseJava
+> Task :spotlessLicenseJavaCheck
+> Task :spotlessMisc
+> Task :spotlessMiscCheck
+> Task :compiler:spotlessJava
+> Task :compiler:spotlessJavaCheck
+> Task :spotlessLicenseKotlin
+> Task :spotlessLicenseKotlinCheck
+> Task :spotlessCheck
+> Task :check
+> Task :build
+> Task :compiler:spotlessKotlinGradle
+> Task :compiler:spotlessKotlinGradleCheck
+> Task :compiler:spotlessLicenseJava
+> Task :compiler:spotlessLicenseJavaCheck
+> Task :runtime:compileCommonMainKotlinMetadata
+> Task :compiler:spotlessMisc
+> Task :compiler:spotlessMiscCheck
+> Task :compiler-tests:spotlessJava
+> Task :compiler-tests:spotlessJavaCheck
+> Task :compiler-tests:spotlessKotlin
+> Task :compiler-tests:spotlessKotlinCheck
+> Task :compiler-tests:spotlessKotlinGradle
+> Task :compiler-tests:spotlessKotlinGradleCheck
+> Task :compiler-tests:spotlessLicenseJava
+> Task :compiler-tests:spotlessLicenseJavaCheck
+> Task :compiler-tests:spotlessLicenseKotlin
+> Task :compiler-tests:spotlessLicenseKotlinCheck
+> Task :compiler-tests:spotlessMisc
+> Task :compiler-tests:spotlessMiscCheck
+> Task :compiler-tests:spotlessCheck
+> Task :runtime:metadataCommonMainClasses
+> Task :runtime:transformNativeMainDependenciesMetadata
+> Task :runtime:transformAppleMainDependenciesMetadata
+> Task :runtime:transformAndroidNativeMainDependenciesMetadata
+> Task :runtime:transformConcurrentTestMainDependenciesMetadata
+> Task :runtime:transformIosMainDependenciesMetadata
+> Task :runtime:transformLinuxMainDependenciesMetadata
+> Task :runtime:transformMacosMainDependenciesMetadata
+> Task :runtime:transformTvosMainDependenciesMetadata
+> Task :runtime:transformWatchosMainDependenciesMetadata
+> Task :runtime:transformWebMainDependenciesMetadata
+> Task :runtime:jsPackageJson
+> Task :runtime:jsPublicPackageJson
+> Task :runtime:compileConcurrentTestMainKotlinMetadata NO-SOURCE
+> Task :runtime:compileWebMainKotlinMetadata NO-SOURCE
+> Task :runtime:metadataConcurrentTestMainClasses UP-TO-DATE
+> Task :runtime:metadataWebMainClasses UP-TO-DATE
+> Task :runtime:tvosX64SourcesJar
+> Task :runtime:generatePomFileForTvosX64Publication
+> Task :runtime:compileKotlinJs
+> Task :runtime:jsMainClasses
+> Task :runtime:jsJar
+> Task :runtime:generateMetadataFileForJsPublication
+> Task :runtime:wasmJsProcessResources NO-SOURCE
+> Task :runtime:wasmJsPackageJson
+> Task :runtime:wasmJsPublicPackageJson
+> Task :runtime:wasmJsSourcesJar
+> Task :runtime:generatePomFileForWasmJsPublication
+> Task :runtime:commonizeNativeDistribution
+> Task :runtime:compileNativeMainKotlinMetadata NO-SOURCE
+> Task :runtime:metadataNativeMainClasses UP-TO-DATE
+> Task :compiler:spotlessLicenseKotlin
+> Task :compiler:spotlessLicenseKotlinCheck
+> Task :runtime:compileAppleMainKotlinMetadata NO-SOURCE
+> Task :runtime:metadataAppleMainClasses UP-TO-DATE
+> Task :runtime:compileAndroidNativeMainKotlinMetadata NO-SOURCE
+> Task :runtime:compileIosMainKotlinMetadata NO-SOURCE
+> Task :runtime:compileMacosMainKotlinMetadata NO-SOURCE
+> Task :compiler:spotlessKotlin
+> Task :compiler:spotlessKotlinCheck
+> Task :compiler:spotlessCheck
+> Task :runtime:compileTvosMainKotlinMetadata NO-SOURCE
+> Task :runtime:compileWatchosMainKotlinMetadata NO-SOURCE
+> Task :runtime:metadataIosMainClasses UP-TO-DATE
+> Task :runtime:metadataMacosMainClasses UP-TO-DATE
+> Task :runtime:metadataTvosMainClasses UP-TO-DATE
+> Task :runtime:metadataWatchosMainClasses UP-TO-DATE
+> Task :runtime:iosSimulatorArm64MetadataElements
+> Task :runtime:iosArm64MetadataElements
+> Task :runtime:compileLinuxMainKotlinMetadata NO-SOURCE
+> Task :runtime:metadataAndroidNativeMainClasses UP-TO-DATE
+> Task :runtime:metadataLinuxMainClasses UP-TO-DATE
+> Task :runtime:iosX64MetadataElements
+> Task :runtime:macosArm64MetadataElements
+> Task :runtime:macosX64MetadataElements
+> Task :runtime:allMetadataJar
+> Task :runtime:tvosArm64MetadataElements
+> Task :runtime:tvosSimulatorArm64MetadataElements
+> Task :runtime:generateMetadataFileForKotlinMultiplatformPublication
+> Task :runtime:tvosX64MetadataElements
+> Task :runtime:watchosArm32MetadataElements
+> Task :runtime:generatePomFileForWatchosArm32Publication
+> Task :runtime:watchosArm32SourcesJar
+> Task :runtime:watchosArm64MetadataElements
+> Task :runtime:watchosArm64SourcesJar
+> Task :runtime:generatePomFileForWatchosArm64Publication
+> Task :runtime:compileKotlinWasmJs
+> Task :runtime:wasmJsMainClasses
+> Task :runtime:wasmJsJar
+> Task :runtime:generateMetadataFileForWasmJsPublication
+> Task :runtime:watchosDeviceArm64MetadataElements
+> Task :runtime:watchosDeviceArm64SourcesJar
+> Task :runtime:generatePomFileForWatchosDeviceArm64Publication
+> Task :runtime:compileKotlinJvm
+> Task :runtime:compileJvmMainJava NO-SOURCE
+> Task :runtime:jvmMainClasses
+> Task :runtime:transformJvmMainAtomicfu
+> Task :runtime:jvmJar
+> Task :interop-dagger:compileKotlin
+> Task :interop-dagger:compileJava NO-SOURCE
+> Task :interop-dagger:classes UP-TO-DATE
+> Task :interop-dagger:jar
+> Task :runtime:generateMetadataFileForJvmPublication
+> Task :runtime:watchosSimulatorArm64MetadataElements
+> Task :runtime:watchosSimulatorArm64SourcesJar
+> Task :runtime:generatePomFileForWatchosSimulatorArm64Publication
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/DiagnosticSeverity/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroExtensionMarker/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroGradleSubplugin/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroGradleSubplugin/apply/#org.gradle.api.Project/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroGradleSubplugin/getCompilerPluginId/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroGradleSubplugin/getPluginArtifact/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroGradleSubplugin/isApplicable/#org.jetbrains.kotlin.gradle.plugin.KotlinCompilation[*]/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroGradleSubplugin/applyToCompilation/#org.jetbrains.kotlin.gradle.plugin.KotlinCompilation[*]/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension/interop/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/includeAnvil/#kotlin.Boolean#kotlin.Boolean/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/enableDaggerRuntimeInterop/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/provider/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/lazy/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/assisted/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/assistedFactory/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/assistedInject/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/binds/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/contributesTo/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/contributesBinding/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/contributesIntoSet/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/elementsIntoSet/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/dependencyGraph/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/dependencyGraphFactory/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/graphExtension/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/graphExtensionFactory/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/inject/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/intoMap/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/intoSet/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/mapKey/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/multibinds/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/provides/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/qualifier/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/scope/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/bindingContainer/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/origin/#/ (jvm)
+w: [:gradle-plugin:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.gradle/MetroPluginExtension.InteropHandler/enableDaggerAnvilInterop/#/ (jvm)
+
+> Task :gradle-plugin:compileKotlin
+w: Language version 1.9 is deprecated and its support will be removed in a future version of Kotlin
+
+> Task :gradle-plugin:compileJava NO-SOURCE
+> Task :gradle-plugin:classes
+> Task :gradle-plugin:jar
+> Task :gradle-plugin:assemble
+> Task :gradle-plugin:dokkaGeneratePublicationHtml
+> Task :gradle-plugin:compileTestKotlin NO-SOURCE
+> Task :gradle-plugin:compileTestJava NO-SOURCE
+> Task :gradle-plugin:pluginUnderTestMetadata
+> Task :gradle-plugin:testClasses UP-TO-DATE
+> Task :gradle-plugin:test NO-SOURCE
+
+> Task :gradle-plugin:logLinkDokkaGeneratePublicationHtml
+Generated Dokka HTML publication: http://localhost:63342/metro/gradle-plugin/build/dokkaDir/html/index.html
+
+> Task :gradle-plugin:dokkaJavadocJar
+> Task :gradle-plugin:generateMetadataFileForPluginMavenPublication
+> Task :gradle-plugin:publishPluginMavenPublicationToFunctionalTestRepository
+> Task :gradle-plugin:publishAllPublicationsToFunctionalTestRepository
+> Task :runtime:watchosX64MetadataElements
+> Task :runtime:watchosX64SourcesJar
+> Task :runtime:generatePomFileForWatchosX64Publication
+> Task :gradle-plugin:apiBuild
+> Task :gradle-plugin:apiCheck
+> Task :gradle-plugin:generateJvmMainLintModel
+
+> Task :gradle-plugin:compileFunctionalTestKotlin
+w: Language version 1.9 is deprecated and its support will be removed in a future version of Kotlin
+
+> Task :gradle-plugin:generateJvmTestLintModel
+> Task :gradle-plugin:compileFunctionalTestJava NO-SOURCE
+> Task :gradle-plugin:functionalTestClasses UP-TO-DATE
+> Task :gradle-plugin:spotlessJava
+> Task :gradle-plugin:spotlessJavaCheck
+> Task :gradle-plugin:spotlessKotlinGradle
+> Task :gradle-plugin:spotlessKotlinGradleCheck
+> Task :gradle-plugin:spotlessKotlin
+> Task :gradle-plugin:spotlessKotlinCheck
+> Task :gradle-plugin:spotlessLicenseJava
+> Task :gradle-plugin:spotlessLicenseJavaCheck
+> Task :gradle-plugin:spotlessMisc
+> Task :gradle-plugin:spotlessMiscCheck
+> Task :gradle-plugin:spotlessLicenseKotlin
+> Task :gradle-plugin:spotlessLicenseKotlinCheck
+> Task :gradle-plugin:spotlessCheck
+> Task :interop-dagger:assemble
+> Task :interop-dagger:apiBuild
+> Task :interop-dagger:apiCheck
+> Task :interop-dagger:spotlessJava
+> Task :interop-dagger:spotlessJavaCheck
+> Task :interop-dagger:spotlessKotlin
+> Task :interop-dagger:spotlessKotlinCheck
+> Task :interop-dagger:spotlessKotlinGradle
+> Task :interop-dagger:spotlessKotlinGradleCheck
+> Task :interop-dagger:spotlessLicenseJava
+> Task :interop-dagger:spotlessLicenseJavaCheck
+> Task :interop-dagger:spotlessLicenseKotlin
+> Task :interop-dagger:spotlessLicenseKotlinCheck
+> Task :interop-dagger:spotlessMisc
+> Task :interop-dagger:spotlessMiscCheck
+> Task :interop-dagger:spotlessCheck
+> Task :interop-dagger:compileTestKotlin NO-SOURCE
+> Task :interop-dagger:compileTestJava NO-SOURCE
+> Task :interop-dagger:testClasses UP-TO-DATE
+> Task :interop-dagger:test NO-SOURCE
+> Task :interop-dagger:check
+> Task :interop-dagger:build
+> Task :runtime:androidNativeArm32MetadataElements
+> Task :runtime:androidNativeArm64MetadataElements
+> Task :runtime:androidNativeX64MetadataElements
+> Task :runtime:androidNativeX86MetadataElements
+> Task :gradle-plugin:validatePlugins
+> Task :runtime:compileKotlinTvosX64
+> Task :runtime:compileKotlinWatchosSimulatorArm64
+> Task :runtime:compileKotlinLinuxArm64
+> Task :runtime:compileKotlinWatchosX64
+> Task :runtime:compileKotlinWatchosArm32
+> Task :runtime:compileKotlinMingwX64
+> Task :runtime:compileKotlinWatchosArm64
+> Task :runtime:compileKotlinIosX64
+> Task :runtime:compileKotlinAndroidNativeArm64
+> Task :runtime:compileKotlinTvosSimulatorArm64
+> Task :runtime:compileKotlinIosArm64
+> Task :runtime:compileKotlinTvosArm64
+> Task :runtime:compileKotlinLinuxX64
+> Task :runtime:compileKotlinMacosX64
+> Task :runtime:compileKotlinIosSimulatorArm64
+> Task :runtime:compileKotlinAndroidNativeX64
+> Task :runtime:compileKotlinAndroidNativeArm32
+> Task :runtime:watchosArm64Klib
+> Task :runtime:compileKotlinAndroidNativeX86
+> Task :runtime:compileKotlinWatchosDeviceArm64
+> Task :runtime:watchosSimulatorArm64Klib
+> Task :runtime:linuxArm64Klib
+> Task :runtime:mingwX64Klib
+> Task :runtime:watchosX64Klib
+> Task :runtime:androidNativeX64Klib
+> Task :runtime:tvosArm64Klib
+> Task :runtime:watchosArm32Klib
+> Task :runtime:tvosSimulatorArm64Klib
+> Task :runtime:compileKotlinMacosArm64
+> Task :runtime:iosX64Klib
+> Task :runtime:iosSimulatorArm64Klib
+> Task :runtime:androidNativeArm64Klib
+> Task :runtime:androidNativeX86Klib
+> Task :runtime:generateMetadataFileForWatchosArm64Publication
+> Task :runtime:linuxX64Klib
+> Task :runtime:tvosX64Klib
+> Task :runtime:androidNativeArm32ProcessResources NO-SOURCE
+> Task :runtime:androidNativeArm32MainKlibrary
+> Task :runtime:watchosDeviceArm64Klib
+> Task :runtime:generateMetadataFileForLinuxArm64Publication
+> Task :runtime:macosX64Klib
+> Task :runtime:androidNativeArm32Klib
+> Task :runtime:iosArm64Klib
+> Task :runtime:generateMetadataFileForAndroidNativeX64Publication
+> Task :runtime:androidNativeArm64ProcessResources NO-SOURCE
+> Task :runtime:androidNativeArm64MainKlibrary
+> Task :runtime:androidNativeX64ProcessResources NO-SOURCE
+> Task :runtime:androidNativeX64MainKlibrary
+> Task :runtime:macosArm64Klib
+> Task :runtime:generateMetadataFileForWatchosX64Publication
+> Task :runtime:androidNativeX86ProcessResources NO-SOURCE
+> Task :runtime:androidNativeX86MainKlibrary
+> Task :runtime:generateMetadataFileForLinuxX64Publication
+> Task :runtime:iosArm64ProcessResources NO-SOURCE
+> Task :runtime:generateMetadataFileForTvosX64Publication
+> Task :runtime:generateMetadataFileForAndroidNativeArm64Publication
+> Task :runtime:iosArm64MainKlibrary
+> Task :runtime:generateMetadataFileForWatchosDeviceArm64Publication
+> Task :runtime:generateMetadataFileForAndroidNativeX86Publication
+> Task :runtime:generateMetadataFileForWatchosArm32Publication
+> Task :runtime:iosSimulatorArm64ProcessResources NO-SOURCE
+> Task :runtime:generateMetadataFileForIosSimulatorArm64Publication
+> Task :runtime:generateMetadataFileForIosX64Publication
+> Task :runtime:iosX64ProcessResources NO-SOURCE
+> Task :runtime:iosSimulatorArm64MainKlibrary
+> Task :runtime:iosX64MainKlibrary
+> Task :runtime:generateMetadataFileForMacosArm64Publication
+> Task :runtime:macosX64ProcessResources NO-SOURCE
+> Task :runtime:linuxArm64ProcessResources NO-SOURCE
+> Task :runtime:mingwX64ProcessResources NO-SOURCE
+> Task :runtime:macosArm64ProcessResources NO-SOURCE
+> Task :runtime:linuxX64ProcessResources NO-SOURCE
+> Task :runtime:linuxArm64MainKlibrary
+> Task :runtime:mingwX64MainKlibrary
+> Task :runtime:macosX64MainKlibrary
+> Task :runtime:macosArm64MainKlibrary
+> Task :runtime:linuxX64MainKlibrary
+> Task :runtime:generateMetadataFileForMingwX64Publication
+> Task :runtime:generateMetadataFileForTvosArm64Publication
+> Task :runtime:generateMetadataFileForAndroidNativeArm32Publication
+> Task :runtime:generateMetadataFileForWatchosSimulatorArm64Publication
+> Task :runtime:generateMetadataFileForTvosSimulatorArm64Publication
+> Task :runtime:generateMetadataFileForIosArm64Publication
+> Task :runtime:tvosArm64ProcessResources NO-SOURCE
+> Task :runtime:generateMetadataFileForMacosX64Publication
+> Task :runtime:tvosArm64MainKlibrary
+> Task :runtime:watchosArm32ProcessResources NO-SOURCE
+> Task :runtime:tvosSimulatorArm64ProcessResources NO-SOURCE
+> Task :runtime:watchosX64ProcessResources NO-SOURCE
+> Task :runtime:watchosArm64ProcessResources NO-SOURCE
+> Task :runtime:tvosX64ProcessResources NO-SOURCE
+> Task :runtime:watchosSimulatorArm64ProcessResources NO-SOURCE
+> Task :runtime:watchosArm64MainKlibrary
+> Task :runtime:watchosDeviceArm64ProcessResources NO-SOURCE
+> Task :runtime:tvosSimulatorArm64MainKlibrary
+> Task :runtime:tvosX64MainKlibrary
+> Task :runtime:watchosX64MainKlibrary
+> Task :runtime:watchosArm32MainKlibrary
+> Task :runtime:watchosSimulatorArm64MainKlibrary
+> Task :runtime:watchosDeviceArm64MainKlibrary
+> Task :runtime:compileProductionExecutableKotlinJs
+> Task :runtime:compileProductionExecutableKotlinWasmJs
+> Task :kotlinRestorePackageLock
+> Task :runtime:jsTestPackageJson
+> Task :runtime:jsTestPublicPackageJson
+> Task :kotlinPackageJsonUmbrella
+> Task :rootPackageJson
+> Task :runtime:compileProductionExecutableKotlinWasmJsOptimize
+> Task :runtime:wasmJsProductionExecutableCompileSync
+> Task :runtime:jsProductionExecutableCompileSync
+> Task :runtime:linuxArm64MetadataElements
+> Task :runtime:linuxX64MetadataElements
+> Task :runtime:mingwX64MetadataElements
+> Task :kotlinWasmRestorePackageLock
+> Task :runtime:wasmJsTestPackageJson
+> Task :runtime:wasmJsTestPublicPackageJson
+> Task :kotlinWasmPackageJsonUmbrella
+> Task :wasmRootPackageJson
+> Task :kotlinWasmNpmInstall
+> Task :kotlinWasmStorePackageLock UP-TO-DATE
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto/equals/#kotlin.Any?/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto/hashCode/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto/toString/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto/copy/#kotlin.Boolean#kotlin.collections.List[kotlin.String]#kotlin.collections.List[kotlin.String]#kotlin.Int#kotlin.collections.List[kotlin.String]#okio.ByteString/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto.Companion/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/DependencyGraphProto.Companion/ADAPTER/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto/equals/#kotlin.Any?/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto/hashCode/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto/toString/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto/copy/#kotlin.collections.List[kotlin.String]#okio.ByteString/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto/member_inject_functions/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto.Companion/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/InjectedClassProto.Companion/ADAPTER/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/equals/#kotlin.Any?/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/hashCode/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/toString/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/copy/#kotlin.String#dev.zacsweers.metro.compiler.proto.DependencyGraphProto?#dev.zacsweers.metro.compiler.proto.InjectedClassProto?#okio.ByteString/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/version/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/dependency_graph/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata/injected_class/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata.Companion/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.proto/MetroMetadata.Companion/ADAPTER/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/generatedClass/org.jetbrains.kotlin.name.ClassId#kotlin.String/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/asFqNames/kotlin.collections.Collection[org.jetbrains.kotlin.name.ClassId]#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/ClassIds/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/ClassIds.Companion/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/ClassIds.Companion/fromOptions/#dev.zacsweers.metro.compiler.MetroOptions/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCommandLineProcessor/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCommandLineProcessor/processOption/#org.jetbrains.kotlin.compiler.plugin.AbstractCliOption#kotlin.String#org.jetbrains.kotlin.config.CompilerConfiguration/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCommandLineProcessor/pluginId/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCommandLineProcessor/pluginOptions/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCompilerPluginRegistrar/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCompilerPluginRegistrar/registerExtensions/org.jetbrains.kotlin.compiler.plugin.CompilerPluginRegistrar.ExtensionStorage#org.jetbrains.kotlin.config.CompilerConfiguration/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroCompilerPluginRegistrar/supportsK2/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger/indent/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger/unindent/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger/log/#kotlin.String/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger/log/#kotlin.Function0[kotlin.String]/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger/type/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger.Type/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger.Companion/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger.Companion/invoke/#dev.zacsweers.metro.compiler.MetroLogger.Type#kotlin.Function1[kotlin.String,kotlin.Unit]#kotlin.String?/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroLogger.Companion/NONE/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/debug/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enabled/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/reportsDestination/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/generateAssistedFactories/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enableTopLevelFunctionInjection/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/generateContributionHints/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/generateJvmContributionHintsInFir/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/transformProvidersToPrivate/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/shrinkUnusedBindings/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/chunkFieldInits/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/keysPerShard/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/shardGraphExtensions/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/fastInit/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/publicProviderSeverity/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/assistedInjectMigrationSeverity/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/warnOnInjectAnnotationPlacement/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enabledLoggers/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enableDaggerRuntimeInterop/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/maxIrErrorsCount/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customProviderTypes/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customLazyTypes/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customAssistedAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customAssistedFactoryAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customAssistedInjectAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customBindsAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customContributesToAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customContributesBindingAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customContributesIntoSetAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customGraphExtensionAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customGraphExtensionFactoryAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customElementsIntoSetAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customGraphAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customGraphFactoryAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customInjectAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customIntoMapAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customIntoSetAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customMapKeyAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customMultibindsAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customProvidesAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customQualifierAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customScopeAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customBindingContainerAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enableDaggerAnvilInterop/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enableFullBindingGraphValidation/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/enableGraphImplClassAsReturnType/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions/customOriginAnnotations/#/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions.DiagnosticSeverity/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler/MetroOptions.Properties/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.fir/MetroFirExtensionRegistrar/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.ir/MetroIrGenerationExtension/ (jvm)
+w: [:compiler:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro.compiler.ir/MetroIrGenerationExtension/generate/#org.jetbrains.kotlin.ir.declarations.IrModuleFragment#org.jetbrains.kotlin.backend.common.extensions.IrPluginContext/ (jvm)
+w: [:runtime:dokkaGeneratePublicationHtml] Couldn't resolve link for dev.zacsweers.metro.annotations in MapKey.kt/dev.zacsweers.metro.MapKey
+w: [:runtime:dokkaGeneratePublicationHtml] Couldn't resolve link for dev.zacsweers.metro.annotations in MapKey.kt
+
+> Task :runtime:wasmJsBrowserProductionWebpack
+asset runtime.js 5.38 KiB [emitted] [minimized] (name: main) 1 related asset
+asset 53c59bfc95a697d609db.wasm 97 bytes [emitted] [immutable] [from: kotlin/metro-runtime.wasm] (auxiliary name: main)
+runtime modules 4.38 KiB 7 modules
+cacheable modules 5.87 KiB (javascript) 97 bytes (asset)
+  ./kotlin/metro-runtime.mjs 171 bytes [built] [code generated]
+  ./kotlin/metro-runtime.uninstantiated.mjs 5.66 KiB [built] [code generated] [3 warnings]
+  ./kotlin/metro-runtime.wasm 97 bytes (asset) 42 bytes (javascript) [built] [code generated]
+webpack 5.100.2 compiled successfully in 393 ms
+
+> Task :runtime:wasmJsBrowserDistribution
+> Task :runtime:compileTestKotlinMacosX64
+> Task :runtime:compileTestKotlinIosArm64
+> Task :runtime:compileTestKotlinTvosSimulatorArm64
+> Task :runtime:compileTestKotlinAndroidNativeArm32
+> Task :runtime:compileTestKotlinTvosX64
+> Task :runtime:compileTestKotlinAndroidNativeX64
+> Task :runtime:compileTestKotlinMingwX64
+> Task :runtime:jvmTestProcessResources NO-SOURCE
+> Task :runtime:processJvmTestResources SKIPPED
+> Task :runtime:compileTestKotlinLinuxX64
+> Task :runtime:compileTestKotlinIosSimulatorArm64
+> Task :runtime:compileTestKotlinLinuxArm64
+> Task :runtime:compileTestKotlinWatchosArm32
+> Task :runtime:compileTestKotlinAndroidNativeArm64
+> Task :runtime:jsTestProcessResources NO-SOURCE
+> Task :runtime:compileTestKotlinWatchosDeviceArm64
+> Task :runtime:compileTestKotlinWatchosArm64
+> Task :runtime:compileTestKotlinWatchosSimulatorArm64
+> Task :runtime:compileTestKotlinAndroidNativeX86
+> Task :runtime:compileTestKotlinMacosArm64
+> Task :runtime:compileTestKotlinTvosArm64
+> Task :runtime:wasmJsTestProcessResources NO-SOURCE
+> Task :runtime:compileTestKotlinIosX64
+> Task :runtime:compileTestKotlinWatchosX64
+
+> Task :kotlinNpmInstall
+npm warn deprecated inflight@1.0.6: This module is not supported, and leaks memory. Do not use it. Check out lru-cache if you want a good and tested way to coalesce async requests by a key value, which is much more comprehensive and powerful.
+npm warn deprecated rimraf@3.0.2: Rimraf versions prior to v4 are no longer supported
+
+> Task :runtime:klibApiExtractForValidation
+> Task :compiler:dokkaGeneratePublicationHtml
+
+> Task :compiler:logLinkDokkaGeneratePublicationHtml
+Generated Dokka HTML publication: http://localhost:63342/metro/compiler/build/dokkaDir/html/index.html
+
+> Task :compiler:dokkaJavadocJar
+> Task :runtime:iosArm64ApiBuild
+> Task :runtime:androidNativeX86ApiBuild
+> Task :runtime:iosSimulatorArm64ApiBuild
+> Task :runtime:androidNativeArm64ApiBuild
+> Task :runtime:androidNativeArm32ApiBuild
+> Task :runtime:androidNativeX64ApiBuild
+> Task :runtime:iosX64ApiBuild
+> Task :runtime:jvmApiBuild
+> Task :runtime:jvmApiCheck
+> Task :runtime:jsApiBuild
+> Task :runtime:macosArm64ApiBuild
+> Task :runtime:linuxX64ApiBuild
+> Task :runtime:macosX64ApiBuild
+> Task :runtime:linuxArm64ApiBuild
+> Task :runtime:compileTestKotlinJs
+> Task :runtime:compileTestKotlinWasmJs
+> Task :runtime:jsTestClasses
+> Task :runtime:wasmJsTestClasses
+> Task :runtime:tvosArm64ApiBuild
+> Task :runtime:mingwX64ApiBuild
+> Task :runtime:tvosSimulatorArm64ApiBuild
+> Task :runtime:tvosX64ApiBuild
+> Task :runtime:watchosArm32ApiBuild
+> Task :runtime:spotlessKotlinGradle
+> Task :runtime:spotlessKotlinGradleCheck
+> Task :runtime:watchosArm64ApiBuild
+> Task :runtime:spotlessMisc
+> Task :runtime:spotlessMiscCheck
+> Task :runtime:spotlessJava
+> Task :runtime:spotlessJavaCheck
+> Task :runtime:wasmJsApiBuild
+> Task :runtime:watchosDeviceArm64ApiBuild
+> Task :runtime:watchosSimulatorArm64ApiBuild
+> Task :runtime:spotlessKotlin
+> Task :runtime:spotlessKotlinCheck
+> Task :runtime:spotlessLicenseJava
+> Task :runtime:spotlessLicenseJavaCheck
+> Task :runtime:watchosX64ApiBuild
+> Task :runtime:klibApiMerge
+> Task :runtime:klibApiCheck
+> Task :runtime:apiCheck
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/ClassKey/value/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/ForScope/scope/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/IntKey/value/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/Multibinds/allowEmpty/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/Named/name/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/Origin/value/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/Provider/invoke/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/SingleIn/scope/#/ (common)
+w: [:runtime:dokkaGeneratePublicationHtml] Undocumented: dev.zacsweers.metro/StringKey/value/#/ (common)
+
+> Task :kotlinNpmInstall
+npm warn deprecated glob@7.2.3: Glob versions prior to v9 are no longer supported
+
+> Task :kotlinStorePackageLock UP-TO-DATE
+> Task :runtime:compileTestKotlinJvm
+> Task :runtime:compileJvmTestJava NO-SOURCE
+> Task :runtime:jvmTestClasses
+> Task :runtime:transformJvmTestAtomicfu
+
+> Task :runtime:jsBrowserProductionWebpack
+asset runtime.js 519 bytes [emitted] [minimized] (name: main) 1 related asset
+./kotlin/metro-runtime.js 453 bytes [built] [code generated]
+webpack 5.100.2 compiled successfully in 366 ms
+
+> Task :runtime:jsBrowserDistribution
+> Task :runtime:assemble
+> Task :runtime:dokkaGeneratePublicationHtml
+
+> Task :runtime:logLinkDokkaGeneratePublicationHtml
+Generated Dokka HTML publication: http://localhost:63342/metro/runtime/build/dokkaDir/html/index.html
+
+> Task :runtime:androidNativeArm32DokkaJavadocJar
+> Task :runtime:iosArm64DokkaJavadocJar
+> Task :runtime:jsDokkaJavadocJar
+> Task :runtime:kotlinMultiplatformDokkaJavadocJar
+> Task :runtime:androidNativeX86DokkaJavadocJar
+> Task :runtime:androidNativeArm64DokkaJavadocJar
+> Task :runtime:jvmDokkaJavadocJar
+> Task :runtime:iosSimulatorArm64DokkaJavadocJar
+> Task :runtime:jvmTest
+> Task :runtime:iosX64DokkaJavadocJar
+> Task :runtime:publishKotlinMultiplatformPublicationToFunctionalTestRepository
+> Task :runtime:androidNativeX64DokkaJavadocJar
+> Task :runtime:publishIosSimulatorArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishAndroidNativeArm32PublicationToFunctionalTestRepository
+> Task :runtime:publishJvmPublicationToFunctionalTestRepository
+> Task :runtime:publishIosX64PublicationToFunctionalTestRepository
+> Task :runtime:publishJsPublicationToFunctionalTestRepository
+> Task :runtime:publishAndroidNativeArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishIosArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishAndroidNativeX86PublicationToFunctionalTestRepository
+> Task :runtime:publishAndroidNativeX64PublicationToFunctionalTestRepository
+> Task :runtime:linuxArm64DokkaJavadocJar
+> Task :runtime:tvosX64DokkaJavadocJar
+> Task :runtime:linuxX64DokkaJavadocJar
+> Task :runtime:publishLinuxArm64PublicationToFunctionalTestRepository
+> Task :runtime:tvosSimulatorArm64DokkaJavadocJar
+> Task :runtime:macosArm64DokkaJavadocJar
+> Task :runtime:wasmJsDokkaJavadocJar
+> Task :runtime:macosX64DokkaJavadocJar
+> Task :runtime:watchosArm32DokkaJavadocJar
+> Task :runtime:mingwX64DokkaJavadocJar
+> Task :runtime:tvosArm64DokkaJavadocJar
+> Task :runtime:watchosArm64DokkaJavadocJar
+> Task :runtime:publishTvosSimulatorArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishLinuxX64PublicationToFunctionalTestRepository
+> Task :runtime:publishMingwX64PublicationToFunctionalTestRepository
+> Task :runtime:publishTvosX64PublicationToFunctionalTestRepository
+> Task :runtime:publishWasmJsPublicationToFunctionalTestRepository
+> Task :runtime:publishWatchosArm32PublicationToFunctionalTestRepository
+> Task :runtime:publishMacosArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishTvosArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishMacosX64PublicationToFunctionalTestRepository
+> Task :runtime:publishWatchosArm64PublicationToFunctionalTestRepository
+> Task :runtime:watchosDeviceArm64DokkaJavadocJar
+> Task :runtime:watchosX64DokkaJavadocJar
+> Task :runtime:watchosSimulatorArm64DokkaJavadocJar
+> Task :runtime:publishWatchosDeviceArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishWatchosX64PublicationToFunctionalTestRepository
+
+> Task :runtime:linkDebugTestIosSimulatorArm64 FAILED
+e: Failed to build cache for /Users/izan/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/atomicfu-iossimulatorarm64/0.29.0/561273c851e78a473b948c9d91a297bd514aca94/atomicfu-iosSimulatorArm64Cinterop-interopMain-0.29.0.
+As a workaround, please try to disable compiler caches (kotlin.native.cacheKind=none)
+
+Also, consider filing an issue with full Gradle log here: https://kotl.in/issue
+
+An error occurred during an xcrun execution. Make sure that Xcode and its command line tools are properly installed.
+Failed command: /usr/bin/xcrun xcodebuild -version
+Try running this command in Terminal and fix the errors by making Xcode (and its command line tools) configuration correct.
+
+org.jetbrains.kotlin.konan.MissingXcodeException: An error occurred during an xcrun execution. Make sure that Xcode and its command line tools are properly installed.
+Failed command: /usr/bin/xcrun xcodebuild -version
+Try running this command in Terminal and fix the errors by making Xcode (and its command line tools) configuration correct.
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.xcrun(Xcode.kt:147)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.getXcodebuildVersion$kotlin_native_utils(Xcode.kt:120)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode$version$2.invoke(Xcode.kt:132)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode$version$2.invoke(Xcode.kt:128)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.getVersion(Xcode.kt:128)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl$xcodePartsProvider$2.invoke(Apple.kt:66)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl$xcodePartsProvider$2.invoke(Apple.kt:58)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl.getXcodePartsProvider(Apple.kt:58)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl.getAbsoluteTargetToolchain(Apple.kt:40)
+	at org.jetbrains.kotlin.konan.target.ClangArgs.<init>(ClangArgs.kt:28)
+	at org.jetbrains.kotlin.konan.target.ClangArgs.<init>(ClangArgs.kt)
+	at org.jetbrains.kotlin.konan.target.ClangArgs$Native.<init>(ClangArgs.kt:244)
+	at org.jetbrains.kotlin.konan.target.Platform$clang$2.invoke(Platform.kt:22)
+	at org.jetbrains.kotlin.konan.target.Platform$clang$2.invoke(Platform.kt:21)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.konan.target.Platform.getClang(Platform.kt:21)
+	at org.jetbrains.kotlin.backend.konan.KonanConfig.clang_delegate$lambda$0(KonanConfig.kt:332)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.backend.konan.KonanConfig.getClang$backend_native(KonanConfig.kt:332)
+	at org.jetbrains.kotlin.backend.konan.CompilerOutputKt.produceCStubs(CompilerOutput.kt:74)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.BitcodeKt.CStubsPhase$lambda$0(Bitcode.kt:120)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseBuildersKt$createSimpleNamedCompilerPhase$3.phaseBody(PhaseBuilders.kt:78)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseBuildersKt$createSimpleNamedCompilerPhase$3.phaseBody(PhaseBuilders.kt:67)
+	at org.jetbrains.kotlin.config.phaser.NamedCompilerPhase.invoke(CompilerPhase.kt:102)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseEngine.runPhase(PhaseEngine.kt:64)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseEngine.runPhase$default(PhaseEngine.kt:56)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseEngine.runPhase(PhaseEngine.kt:68)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.runBackendCodegen(TopLevelPhases.kt:473)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.compileModule(TopLevelPhases.kt:382)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.runBackend$lambda$0$runAfterLowerings(TopLevelPhases.kt:214)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.runBackend(TopLevelPhases.kt:243)
+	at org.jetbrains.kotlin.backend.konan.driver.NativeCompilerDriver.produceBinary(NativeCompilerDriver.kt:206)
+	at org.jetbrains.kotlin.backend.konan.driver.NativeCompilerDriver.run$lambda$0$0$0(NativeCompilerDriver.kt:48)
+	at org.jetbrains.kotlin.backend.konan.driver.MachineryKt$startTopLevel$topLevelPhase$1.phaseBody(Machinery.kt:60)
+	at org.jetbrains.kotlin.backend.konan.driver.MachineryKt$startTopLevel$topLevelPhase$1.phaseBody(Machinery.kt:57)
+	at org.jetbrains.kotlin.config.phaser.NamedCompilerPhase.invoke(CompilerPhase.kt:102)
+	at org.jetbrains.kotlin.backend.konan.driver.MachineryKt.startTopLevel(Machinery.kt:67)
+	at org.jetbrains.kotlin.backend.konan.driver.NativeCompilerDriver.run(NativeCompilerDriver.kt:38)
+	at org.jetbrains.kotlin.backend.konan.KonanDriver.run(KonanDriver.kt:138)
+	at org.jetbrains.kotlin.cli.bc.K2Native.runKonanDriver(K2Native.kt:171)
+	at org.jetbrains.kotlin.cli.bc.K2Native.access$runKonanDriver(K2Native.kt:35)
+	at org.jetbrains.kotlin.cli.bc.K2Native$runKonanDriver$konanDriver$1.spawn(K2Native.kt:164)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.spawnLibraryCacheBuild(CacheBuilder.kt:435)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.tryBuildingLibraryCache(CacheBuilder.kt:399)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.buildLibraryCache(CacheBuilder.kt:316)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.build(CacheBuilder.kt:119)
+	at org.jetbrains.kotlin.backend.konan.KonanDriver.run(KonanDriver.kt:130)
+	at org.jetbrains.kotlin.cli.bc.K2Native.runKonanDriver(K2Native.kt:171)
+	at org.jetbrains.kotlin.cli.bc.K2Native.doExecute(K2Native.kt:68)
+	at org.jetbrains.kotlin.cli.bc.K2Native.doExecute(K2Native.kt:35)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.execImpl(CLICompiler.kt:123)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.exec(CLICompiler.kt:352)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.exec(CLICompiler.kt:330)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.exec(CLICompiler.kt:294)
+	at org.jetbrains.kotlin.cli.common.CLICompiler$Companion.doMainNoExit(CLICompiler.kt:431)
+	at org.jetbrains.kotlin.cli.bc.K2Native$Companion.mainNoExitWithRenderer$lambda$0(K2Native.kt:221)
+	at org.jetbrains.kotlin.util.UtilKt.profileIf(Util.kt:22)
+	at org.jetbrains.kotlin.util.UtilKt.profile(Util.kt:16)
+	at org.jetbrains.kotlin.cli.bc.K2Native$Companion.mainNoExitWithRenderer(K2Native.kt:220)
+	at org.jetbrains.kotlin.cli.bc.K2NativeKt.mainNoExitWithGradleRenderer(K2Native.kt:238)
+	at org.jetbrains.kotlin.cli.utilities.MainKt$daemonMain$1.invoke(main.kt:47)
+	at org.jetbrains.kotlin.cli.utilities.MainKt$daemonMain$1.invoke(main.kt:47)
+	at org.jetbrains.kotlin.cli.utilities.MainKt.mainImpl(main.kt:20)
+	at org.jetbrains.kotlin.cli.utilities.MainKt.inProcessMain(main.kt:53)
+	at org.jetbrains.kotlin.cli.utilities.MainKt.daemonMain(main.kt:47)
+	at jdk.internal.reflect.GeneratedMethodAccessor956.invoke(Unknown Source)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:569)
+	at org.jetbrains.kotlin.internal.compilerRunner.native.KotlinNativeToolRunner.runInProcess(KotlinNativeToolRunner.kt:178)
+	at org.jetbrains.kotlin.internal.compilerRunner.native.KotlinNativeToolRunner.runTool(KotlinNativeToolRunner.kt:68)
+	at org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink$compile$1.invoke(KotlinNativeLink.kt:488)
+	at org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink$compile$1.invoke(KotlinNativeLink.kt:443)
+	at org.jetbrains.kotlin.compilerRunner.ReportUtilsKt.addBuildMetricsForTaskAction(reportUtils.kt:260)
+	at org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink.compile(KotlinNativeLink.kt:443)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:569)
+	at org.gradle.internal.reflect.JavaMethod.invoke(JavaMethod.java:125)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.doExecute(StandardTaskAction.java:58)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.execute(StandardTaskAction.java:51)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.execute(StandardTaskAction.java:29)
+	at org.gradle.api.internal.tasks.execution.TaskExecution$3.run(TaskExecution.java:252)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:29)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:26)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:166)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.run(DefaultBuildOperationRunner.java:47)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeAction(TaskExecution.java:237)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeActions(TaskExecution.java:220)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeWithPreviousOutputFiles(TaskExecution.java:203)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.execute(TaskExecution.java:170)
+	at org.gradle.internal.execution.steps.ExecuteStep.executeInternal(ExecuteStep.java:105)
+	at org.gradle.internal.execution.steps.ExecuteStep.access$000(ExecuteStep.java:44)
+	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:59)
+	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:56)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:209)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:166)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:56)
+	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:44)
+	at org.gradle.internal.execution.steps.CancelExecutionStep.execute(CancelExecutionStep.java:42)
+	at org.gradle.internal.execution.steps.TimeoutStep.executeWithoutTimeout(TimeoutStep.java:75)
+	at org.gradle.internal.execution.steps.TimeoutStep.execute(TimeoutStep.java:55)
+	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:50)
+	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:28)
+	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:68)
+	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:38)
+	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:61)
+	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:26)
+	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:69)
+	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:46)
+	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:39)
+	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:28)
+	at org.gradle.internal.execution.steps.BuildCacheStep.executeWithoutCache(BuildCacheStep.java:189)
+	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$execute$1(BuildCacheStep.java:75)
+	at org.gradle.internal.Either$Right.fold(Either.java:176)
+	at org.gradle.internal.execution.caching.CachingState.fold(CachingState.java:62)
+	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:73)
+	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:48)
+	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:46)
+	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:35)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.executeBecause(SkipUpToDateStep.java:75)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.lambda$execute$2(SkipUpToDateStep.java:53)
+	at java.base/java.util.Optional.orElseGet(Optional.java:364)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:53)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:35)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:37)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:27)
+	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:49)
+	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:27)
+	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:71)
+	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:39)
+	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:64)
+	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:35)
+	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:62)
+	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:40)
+	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:76)
+	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:45)
+	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.executeWithNonEmptySources(AbstractSkipEmptyWorkStep.java:136)
+	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:66)
+	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:38)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsStartedStep.execute(MarkSnapshottingInputsStartedStep.java:38)
+	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:36)
+	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:23)
+	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:75)
+	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:41)
+	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.lambda$execute$0(AssignMutableWorkspaceStep.java:35)
+	at org.gradle.api.internal.tasks.execution.TaskExecution$4.withWorkspace(TaskExecution.java:297)
+	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:31)
+	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:22)
+	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:40)
+	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:23)
+	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.lambda$execute$2(ExecuteWorkBuildOperationFiringStep.java:67)
+	at java.base/java.util.Optional.orElseGet(Optional.java:364)
+	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:67)
+	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:39)
+	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:46)
+	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:34)
+	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:47)
+	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:34)
+	at org.gradle.internal.execution.impl.DefaultExecutionEngine$1.execute(DefaultExecutionEngine.java:64)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:132)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:121)
+	at org.gradle.api.internal.tasks.execution.ProblemsTaskPathTrackingTaskExecuter.execute(ProblemsTaskPathTrackingTaskExecuter.java:41)
+	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
+	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
+	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
+	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
+	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:209)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:166)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
+	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:45)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:355)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:342)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.lambda$execute$0(DefaultTaskExecutionGraph.java:338)
+	at org.gradle.internal.operations.CurrentBuildOperationRef.with(CurrentBuildOperationRef.java:84)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:338)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:327)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:459)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:376)
+	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+	at java.base/java.lang.Thread.run(Thread.java:840)
+Caused by: org.jetbrains.kotlin.konan.KonanExternalToolFailure: The /usr/bin/xcrun command returned non-zero exit code: 72.
+output:
+
+	at org.jetbrains.kotlin.konan.exec.Command.handleExitCode(ExecuteCommand.kt:123)
+	at org.jetbrains.kotlin.konan.exec.Command.getResult(ExecuteCommand.kt:112)
+	at org.jetbrains.kotlin.konan.exec.Command.getOutputLines(ExecuteCommand.kt:87)
+	at org.jetbrains.kotlin.konan.exec.Command.getOutputLines$default(ExecuteCommand.kt:86)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.xcrun(Xcode.kt:137)
+	... 202 more
+
+
+> Task :runtime:publishWatchosSimulatorArm64PublicationToFunctionalTestRepository
+> Task :runtime:publishAllPublicationsToFunctionalTestRepository
+> Task :runtime:installForFunctionalTest
+
+> Task :runtime:linkDebugTestMacosArm64 FAILED
+e: Failed to build cache for /Users/izan/.gradle/caches/modules-2/files-2.1/org.jetbrains.kotlinx/atomicfu-macosarm64/0.29.0/a6d990b552bf9396503f8318ae1188aa961de542/atomicfu-macosArm64Cinterop-interopMain-0.29.0.
+As a workaround, please try to disable compiler caches (kotlin.native.cacheKind=none)
+
+Also, consider filing an issue with full Gradle log here: https://kotl.in/issue
+
+An error occurred during an xcrun execution. Make sure that Xcode and its command line tools are properly installed.
+Failed command: /usr/bin/xcrun xcodebuild -version
+Try running this command in Terminal and fix the errors by making Xcode (and its command line tools) configuration correct.
+
+org.jetbrains.kotlin.konan.MissingXcodeException: An error occurred during an xcrun execution. Make sure that Xcode and its command line tools are properly installed.
+Failed command: /usr/bin/xcrun xcodebuild -version
+Try running this command in Terminal and fix the errors by making Xcode (and its command line tools) configuration correct.
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.xcrun(Xcode.kt:147)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.getXcodebuildVersion$kotlin_native_utils(Xcode.kt:120)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode$version$2.invoke(Xcode.kt:132)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode$version$2.invoke(Xcode.kt:128)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.getVersion(Xcode.kt:128)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl$xcodePartsProvider$2.invoke(Apple.kt:66)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl$xcodePartsProvider$2.invoke(Apple.kt:58)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl.getXcodePartsProvider(Apple.kt:58)
+	at org.jetbrains.kotlin.konan.target.AppleConfigurablesImpl.getAbsoluteTargetToolchain(Apple.kt:40)
+	at org.jetbrains.kotlin.konan.target.ClangArgs.<init>(ClangArgs.kt:28)
+	at org.jetbrains.kotlin.konan.target.ClangArgs.<init>(ClangArgs.kt)
+	at org.jetbrains.kotlin.konan.target.ClangArgs$Native.<init>(ClangArgs.kt:244)
+	at org.jetbrains.kotlin.konan.target.Platform$clang$2.invoke(Platform.kt:22)
+	at org.jetbrains.kotlin.konan.target.Platform$clang$2.invoke(Platform.kt:21)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.konan.target.Platform.getClang(Platform.kt:21)
+	at org.jetbrains.kotlin.backend.konan.KonanConfig.clang_delegate$lambda$0(KonanConfig.kt:332)
+	at kotlin.SynchronizedLazyImpl.getValue(LazyJVM.kt:86)
+	at org.jetbrains.kotlin.backend.konan.KonanConfig.getClang$backend_native(KonanConfig.kt:332)
+	at org.jetbrains.kotlin.backend.konan.CompilerOutputKt.produceCStubs(CompilerOutput.kt:74)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.BitcodeKt.CStubsPhase$lambda$0(Bitcode.kt:120)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseBuildersKt$createSimpleNamedCompilerPhase$3.phaseBody(PhaseBuilders.kt:78)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseBuildersKt$createSimpleNamedCompilerPhase$3.phaseBody(PhaseBuilders.kt:67)
+	at org.jetbrains.kotlin.config.phaser.NamedCompilerPhase.invoke(CompilerPhase.kt:102)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseEngine.runPhase(PhaseEngine.kt:64)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseEngine.runPhase$default(PhaseEngine.kt:56)
+	at org.jetbrains.kotlin.backend.common.phaser.PhaseEngine.runPhase(PhaseEngine.kt:68)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.runBackendCodegen(TopLevelPhases.kt:473)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.compileModule(TopLevelPhases.kt:382)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.runBackend$lambda$0$runAfterLowerings(TopLevelPhases.kt:214)
+	at org.jetbrains.kotlin.backend.konan.driver.phases.TopLevelPhasesKt.runBackend(TopLevelPhases.kt:243)
+	at org.jetbrains.kotlin.backend.konan.driver.NativeCompilerDriver.produceBinary(NativeCompilerDriver.kt:206)
+	at org.jetbrains.kotlin.backend.konan.driver.NativeCompilerDriver.run$lambda$0$0$0(NativeCompilerDriver.kt:48)
+	at org.jetbrains.kotlin.backend.konan.driver.MachineryKt$startTopLevel$topLevelPhase$1.phaseBody(Machinery.kt:60)
+	at org.jetbrains.kotlin.backend.konan.driver.MachineryKt$startTopLevel$topLevelPhase$1.phaseBody(Machinery.kt:57)
+	at org.jetbrains.kotlin.config.phaser.NamedCompilerPhase.invoke(CompilerPhase.kt:102)
+	at org.jetbrains.kotlin.backend.konan.driver.MachineryKt.startTopLevel(Machinery.kt:67)
+	at org.jetbrains.kotlin.backend.konan.driver.NativeCompilerDriver.run(NativeCompilerDriver.kt:38)
+	at org.jetbrains.kotlin.backend.konan.KonanDriver.run(KonanDriver.kt:138)
+	at org.jetbrains.kotlin.cli.bc.K2Native.runKonanDriver(K2Native.kt:171)
+	at org.jetbrains.kotlin.cli.bc.K2Native.access$runKonanDriver(K2Native.kt:35)
+	at org.jetbrains.kotlin.cli.bc.K2Native$runKonanDriver$konanDriver$1.spawn(K2Native.kt:164)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.spawnLibraryCacheBuild(CacheBuilder.kt:435)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.tryBuildingLibraryCache(CacheBuilder.kt:399)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.buildLibraryCache(CacheBuilder.kt:316)
+	at org.jetbrains.kotlin.backend.konan.CacheBuilder.build(CacheBuilder.kt:119)
+	at org.jetbrains.kotlin.backend.konan.KonanDriver.run(KonanDriver.kt:130)
+	at org.jetbrains.kotlin.cli.bc.K2Native.runKonanDriver(K2Native.kt:171)
+	at org.jetbrains.kotlin.cli.bc.K2Native.doExecute(K2Native.kt:68)
+	at org.jetbrains.kotlin.cli.bc.K2Native.doExecute(K2Native.kt:35)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.execImpl(CLICompiler.kt:123)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.exec(CLICompiler.kt:352)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.exec(CLICompiler.kt:330)
+	at org.jetbrains.kotlin.cli.common.CLICompiler.exec(CLICompiler.kt:294)
+	at org.jetbrains.kotlin.cli.common.CLICompiler$Companion.doMainNoExit(CLICompiler.kt:431)
+	at org.jetbrains.kotlin.cli.bc.K2Native$Companion.mainNoExitWithRenderer$lambda$0(K2Native.kt:221)
+	at org.jetbrains.kotlin.util.UtilKt.profileIf(Util.kt:22)
+	at org.jetbrains.kotlin.util.UtilKt.profile(Util.kt:16)
+	at org.jetbrains.kotlin.cli.bc.K2Native$Companion.mainNoExitWithRenderer(K2Native.kt:220)
+	at org.jetbrains.kotlin.cli.bc.K2NativeKt.mainNoExitWithGradleRenderer(K2Native.kt:238)
+	at org.jetbrains.kotlin.cli.utilities.MainKt$daemonMain$1.invoke(main.kt:47)
+	at org.jetbrains.kotlin.cli.utilities.MainKt$daemonMain$1.invoke(main.kt:47)
+	at org.jetbrains.kotlin.cli.utilities.MainKt.mainImpl(main.kt:20)
+	at org.jetbrains.kotlin.cli.utilities.MainKt.inProcessMain(main.kt:53)
+	at org.jetbrains.kotlin.cli.utilities.MainKt.daemonMain(main.kt:47)
+	at jdk.internal.reflect.GeneratedMethodAccessor956.invoke(Unknown Source)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:569)
+	at org.jetbrains.kotlin.internal.compilerRunner.native.KotlinNativeToolRunner.runInProcess(KotlinNativeToolRunner.kt:178)
+	at org.jetbrains.kotlin.internal.compilerRunner.native.KotlinNativeToolRunner.runTool(KotlinNativeToolRunner.kt:68)
+	at org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink$compile$1.invoke(KotlinNativeLink.kt:488)
+	at org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink$compile$1.invoke(KotlinNativeLink.kt:443)
+	at org.jetbrains.kotlin.compilerRunner.ReportUtilsKt.addBuildMetricsForTaskAction(reportUtils.kt:260)
+	at org.jetbrains.kotlin.gradle.tasks.KotlinNativeLink.compile(KotlinNativeLink.kt:443)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke0(Native Method)
+	at java.base/jdk.internal.reflect.NativeMethodAccessorImpl.invoke(NativeMethodAccessorImpl.java:77)
+	at java.base/jdk.internal.reflect.DelegatingMethodAccessorImpl.invoke(DelegatingMethodAccessorImpl.java:43)
+	at java.base/java.lang.reflect.Method.invoke(Method.java:569)
+	at org.gradle.internal.reflect.JavaMethod.invoke(JavaMethod.java:125)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.doExecute(StandardTaskAction.java:58)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.execute(StandardTaskAction.java:51)
+	at org.gradle.api.internal.project.taskfactory.StandardTaskAction.execute(StandardTaskAction.java:29)
+	at org.gradle.api.internal.tasks.execution.TaskExecution$3.run(TaskExecution.java:252)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:29)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$1.execute(DefaultBuildOperationRunner.java:26)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:166)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.run(DefaultBuildOperationRunner.java:47)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeAction(TaskExecution.java:237)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeActions(TaskExecution.java:220)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.executeWithPreviousOutputFiles(TaskExecution.java:203)
+	at org.gradle.api.internal.tasks.execution.TaskExecution.execute(TaskExecution.java:170)
+	at org.gradle.internal.execution.steps.ExecuteStep.executeInternal(ExecuteStep.java:105)
+	at org.gradle.internal.execution.steps.ExecuteStep.access$000(ExecuteStep.java:44)
+	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:59)
+	at org.gradle.internal.execution.steps.ExecuteStep$1.call(ExecuteStep.java:56)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:209)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:166)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:56)
+	at org.gradle.internal.execution.steps.ExecuteStep.execute(ExecuteStep.java:44)
+	at org.gradle.internal.execution.steps.CancelExecutionStep.execute(CancelExecutionStep.java:42)
+	at org.gradle.internal.execution.steps.TimeoutStep.executeWithoutTimeout(TimeoutStep.java:75)
+	at org.gradle.internal.execution.steps.TimeoutStep.execute(TimeoutStep.java:55)
+	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:50)
+	at org.gradle.internal.execution.steps.PreCreateOutputParentsStep.execute(PreCreateOutputParentsStep.java:28)
+	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:68)
+	at org.gradle.internal.execution.steps.RemovePreviousOutputsStep.execute(RemovePreviousOutputsStep.java:38)
+	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:61)
+	at org.gradle.internal.execution.steps.BroadcastChangingOutputsStep.execute(BroadcastChangingOutputsStep.java:26)
+	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:69)
+	at org.gradle.internal.execution.steps.CaptureOutputsAfterExecutionStep.execute(CaptureOutputsAfterExecutionStep.java:46)
+	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:39)
+	at org.gradle.internal.execution.steps.ResolveInputChangesStep.execute(ResolveInputChangesStep.java:28)
+	at org.gradle.internal.execution.steps.BuildCacheStep.executeWithoutCache(BuildCacheStep.java:189)
+	at org.gradle.internal.execution.steps.BuildCacheStep.lambda$execute$1(BuildCacheStep.java:75)
+	at org.gradle.internal.Either$Right.fold(Either.java:176)
+	at org.gradle.internal.execution.caching.CachingState.fold(CachingState.java:62)
+	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:73)
+	at org.gradle.internal.execution.steps.BuildCacheStep.execute(BuildCacheStep.java:48)
+	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:46)
+	at org.gradle.internal.execution.steps.StoreExecutionStateStep.execute(StoreExecutionStateStep.java:35)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.executeBecause(SkipUpToDateStep.java:75)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.lambda$execute$2(SkipUpToDateStep.java:53)
+	at java.base/java.util.Optional.orElseGet(Optional.java:364)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:53)
+	at org.gradle.internal.execution.steps.SkipUpToDateStep.execute(SkipUpToDateStep.java:35)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:37)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsFinishedStep.execute(MarkSnapshottingInputsFinishedStep.java:27)
+	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:49)
+	at org.gradle.internal.execution.steps.ResolveIncrementalCachingStateStep.executeDelegate(ResolveIncrementalCachingStateStep.java:27)
+	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:71)
+	at org.gradle.internal.execution.steps.AbstractResolveCachingStateStep.execute(AbstractResolveCachingStateStep.java:39)
+	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:64)
+	at org.gradle.internal.execution.steps.ResolveChangesStep.execute(ResolveChangesStep.java:35)
+	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:62)
+	at org.gradle.internal.execution.steps.ValidateStep.execute(ValidateStep.java:40)
+	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:76)
+	at org.gradle.internal.execution.steps.AbstractCaptureStateBeforeExecutionStep.execute(AbstractCaptureStateBeforeExecutionStep.java:45)
+	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.executeWithNonEmptySources(AbstractSkipEmptyWorkStep.java:136)
+	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:66)
+	at org.gradle.internal.execution.steps.AbstractSkipEmptyWorkStep.execute(AbstractSkipEmptyWorkStep.java:38)
+	at org.gradle.internal.execution.steps.legacy.MarkSnapshottingInputsStartedStep.execute(MarkSnapshottingInputsStartedStep.java:38)
+	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:36)
+	at org.gradle.internal.execution.steps.LoadPreviousExecutionStateStep.execute(LoadPreviousExecutionStateStep.java:23)
+	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:75)
+	at org.gradle.internal.execution.steps.HandleStaleOutputsStep.execute(HandleStaleOutputsStep.java:41)
+	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.lambda$execute$0(AssignMutableWorkspaceStep.java:35)
+	at org.gradle.api.internal.tasks.execution.TaskExecution$4.withWorkspace(TaskExecution.java:297)
+	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:31)
+	at org.gradle.internal.execution.steps.AssignMutableWorkspaceStep.execute(AssignMutableWorkspaceStep.java:22)
+	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:40)
+	at org.gradle.internal.execution.steps.ChoosePipelineStep.execute(ChoosePipelineStep.java:23)
+	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.lambda$execute$2(ExecuteWorkBuildOperationFiringStep.java:67)
+	at java.base/java.util.Optional.orElseGet(Optional.java:364)
+	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:67)
+	at org.gradle.internal.execution.steps.ExecuteWorkBuildOperationFiringStep.execute(ExecuteWorkBuildOperationFiringStep.java:39)
+	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:46)
+	at org.gradle.internal.execution.steps.IdentityCacheStep.execute(IdentityCacheStep.java:34)
+	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:47)
+	at org.gradle.internal.execution.steps.IdentifyStep.execute(IdentifyStep.java:34)
+	at org.gradle.internal.execution.impl.DefaultExecutionEngine$1.execute(DefaultExecutionEngine.java:64)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.executeIfValid(ExecuteActionsTaskExecuter.java:132)
+	at org.gradle.api.internal.tasks.execution.ExecuteActionsTaskExecuter.execute(ExecuteActionsTaskExecuter.java:121)
+	at org.gradle.api.internal.tasks.execution.ProblemsTaskPathTrackingTaskExecuter.execute(ProblemsTaskPathTrackingTaskExecuter.java:41)
+	at org.gradle.api.internal.tasks.execution.FinalizePropertiesTaskExecuter.execute(FinalizePropertiesTaskExecuter.java:46)
+	at org.gradle.api.internal.tasks.execution.ResolveTaskExecutionModeExecuter.execute(ResolveTaskExecutionModeExecuter.java:51)
+	at org.gradle.api.internal.tasks.execution.SkipTaskWithNoActionsExecuter.execute(SkipTaskWithNoActionsExecuter.java:57)
+	at org.gradle.api.internal.tasks.execution.SkipOnlyIfTaskExecuter.execute(SkipOnlyIfTaskExecuter.java:74)
+	at org.gradle.api.internal.tasks.execution.CatchExceptionTaskExecuter.execute(CatchExceptionTaskExecuter.java:36)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.executeTask(EventFiringTaskExecuter.java:77)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:55)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter$1.call(EventFiringTaskExecuter.java:52)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:209)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$CallableBuildOperationWorker.execute(DefaultBuildOperationRunner.java:204)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:66)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner$2.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:166)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.execute(DefaultBuildOperationRunner.java:59)
+	at org.gradle.internal.operations.DefaultBuildOperationRunner.call(DefaultBuildOperationRunner.java:53)
+	at org.gradle.api.internal.tasks.execution.EventFiringTaskExecuter.execute(EventFiringTaskExecuter.java:52)
+	at org.gradle.execution.plan.LocalTaskNodeExecutor.execute(LocalTaskNodeExecutor.java:45)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:355)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$InvokeNodeExecutorsAction.execute(DefaultTaskExecutionGraph.java:342)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.lambda$execute$0(DefaultTaskExecutionGraph.java:338)
+	at org.gradle.internal.operations.CurrentBuildOperationRef.with(CurrentBuildOperationRef.java:84)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:338)
+	at org.gradle.execution.taskgraph.DefaultTaskExecutionGraph$BuildOperationAwareExecutionAction.execute(DefaultTaskExecutionGraph.java:327)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.execute(DefaultPlanExecutor.java:459)
+	at org.gradle.execution.plan.DefaultPlanExecutor$ExecutorWorker.run(DefaultPlanExecutor.java:376)
+	at org.gradle.internal.concurrent.ExecutorPolicy$CatchAndRecordFailures.onExecute(ExecutorPolicy.java:64)
+	at org.gradle.internal.concurrent.AbstractManagedExecutor$1.run(AbstractManagedExecutor.java:47)
+	at java.base/java.util.concurrent.ThreadPoolExecutor.runWorker(ThreadPoolExecutor.java:1136)
+	at java.base/java.util.concurrent.ThreadPoolExecutor$Worker.run(ThreadPoolExecutor.java:635)
+	at java.base/java.lang.Thread.run(Thread.java:840)
+Caused by: org.jetbrains.kotlin.konan.KonanExternalToolFailure: The /usr/bin/xcrun command returned non-zero exit code: 72.
+output:
+
+	at org.jetbrains.kotlin.konan.exec.Command.handleExitCode(ExecuteCommand.kt:123)
+	at org.jetbrains.kotlin.konan.exec.Command.getResult(ExecuteCommand.kt:112)
+	at org.jetbrains.kotlin.konan.exec.Command.getOutputLines(ExecuteCommand.kt:87)
+	at org.jetbrains.kotlin.konan.exec.Command.getOutputLines$default(ExecuteCommand.kt:86)
+	at org.jetbrains.kotlin.konan.target.CurrentXcode.xcrun(Xcode.kt:137)
+	... 202 more
+
+
+> Task :compiler:compileKotlin
+> Task :runtime:compileTestDevelopmentExecutableKotlinWasmJs
+> Task :runtime:wasmJsTestTestDevelopmentExecutableCompileSync
+
+> Task :runtime:wasmJsBrowserTest
+> Task :runtime:wasmJsTest
+> Task :runtime:compileTestDevelopmentExecutableKotlinJs
+> Task :runtime:jsTestTestDevelopmentExecutableCompileSync
+
+> Task :runtime:jsNodeTest
+> Task :runtime:jsBrowserTest
+> Task :compiler:compileJava NO-SOURCE
+> Task :compiler:classes
+> Task :compiler:jar SKIPPED
+> Task :compiler:assemble
+> Task :runtime:jsTest
+> Task :gradle-plugin:lintAnalyzeJvmMain
+
+The Daemon will expire immediately since the JVM garbage collector is thrashing.
+The project memory settings are likely not configured or are configured to an insufficient value.
+The memory settings for this project must be adjusted to avoid this failure.
+These settings can be adjusted by setting 'org.gradle.jvmargs' in 'gradle.properties'.
+The currently configured max heap space is '1 GiB' and the configured max metaspace is 'unknown'.
+For more information on how to set these values, please refer to https://docs.gradle.org/9.1.0/userguide/build_environment.html#sec:configuring_jvm_memory in the Gradle documentation.
+To disable this warning, set 'org.gradle.daemon.performance.disable-logging=true'.
+Daemon is stopping immediately since the JVM garbage collector is thrashing
+
+FAILURE: Build failed with an exception.
+
+* What went wrong:
+Gradle build daemon has been stopped: since the JVM garbage collector is thrashing
+
+* Try:
+> Run with --stacktrace option to get the stack trace.
+> Run with --info or --debug option to get more log output.
+> Run with --scan to generate a Build Scan (Powered by Develocity).
+> Get more help at https://help.gradle.org.
+
+> Task :runtime:linkDebugTestMingwX64
+> Task :runtime:linkDebugTestTvosSimulatorArm64
+> Task :runtime:linkDebugTestMacosX64
+> Task :runtime:linkDebugTestTvosX64
+> Task :runtime:linkDebugTestLinuxX64
+> Task :runtime:linkDebugTestWatchosSimulatorArm64
+> Task :runtime:linkDebugTestIosX64
+> Task :runtime:linkDebugTestWatchosX64
+> Task :runtime:spotlessLicenseKotlin
+> Task :compiler:shadowJar
+> Task :compiler:compileTestKotlin

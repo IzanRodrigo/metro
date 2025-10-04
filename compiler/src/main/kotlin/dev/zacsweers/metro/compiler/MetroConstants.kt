@@ -1,0 +1,25 @@
+// Copyright (C) 2025 Zac Sweers
+// SPDX-License-Identifier: Apache-2.0
+package dev.zacsweers.metro.compiler
+
+/**
+ * Constants used by the Metro compiler.
+ */
+internal object MetroConstants {
+  /**
+   * Maximum number of statements per method before splitting. Based on JVM limitations (64KB method size).
+   *
+   * Borrowed from Dagger:
+   * https://github.com/google/dagger/blob/b39cf2d0640e4b24338dd290cb1cb2e923d38cb3/dagger-compiler/main/java/dagger/internal/codegen/writing/ComponentImplementation.java#L263
+   */
+  const val STATEMENTS_PER_METHOD = 25
+
+
+  /**
+   * Default number of bindings per shard.
+   * Can be overridden via compiler options.
+   *
+   * @see MetroOption.KEYS_PER_SHARD
+   */
+  const val DEFAULT_KEYS_PER_SHARD = 1000
+}

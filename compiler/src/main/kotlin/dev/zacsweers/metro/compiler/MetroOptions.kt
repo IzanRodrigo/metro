@@ -169,6 +169,45 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
+  KEYS_PER_SHARD(
+    RawMetroOption(
+      name = "sharding.keysPerShard",
+      defaultValue = MetroConstants.DEFAULT_KEYS_PER_SHARD,
+      valueDescription = "<number>",
+      description = "Maximum number of bindings per shard before a new shard is created. " +
+        "Default is 3000, following Dagger's default threshold. Lower values create more " +
+        "shards but with smaller method sizes, while higher values create fewer shards " +
+        "but risk hitting JVM limits. Recommended range: 100-5000 depending on binding complexity.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = String::toInt,
+    )
+  ),
+  SHARD_GRAPH_EXTENSIONS(
+    RawMetroOption.boolean(
+      name = "sharding.shardGraphExtensions",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Controls whether sharding should be applied to graph extensions (subcomponents). " +
+        "When false (default), sharding is only applied to main components. Graph extensions " +
+        "are typically small and focused, so sharding them adds unnecessary overhead.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
+  FAST_INIT(
+    RawMetroOption.boolean(
+      name = "fastInit",
+      defaultValue = true,
+      valueDescription = "<true | false>",
+      description = "Enable/disable fast initialization mode (equivalent to Dagger's fastInit). " +
+        "When enabled, uses a single SwitchingProvider class with integer-based dispatch " +
+        "instead of generating N provider classes. This significantly reduces generated code size " +
+        "and compilation time. Disable this only for debugging purposes.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   PUBLIC_PROVIDER_SEVERITY(
     RawMetroOption(
       name = "public-provider-severity",
@@ -550,6 +589,9 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
+  val keysPerShard: Int = MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs(),
+  val shardGraphExtensions: Boolean = MetroOption.SHARD_GRAPH_EXTENSIONS.raw.defaultValue.expectAs(),
+  val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE
@@ -695,6 +737,15 @@ public data class MetroOptions(
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
 
+          MetroOption.KEYS_PER_SHARD ->
+            options = options.copy(keysPerShard = configuration.getAsInt(entry))
+
+          MetroOption.SHARD_GRAPH_EXTENSIONS ->
+            options = options.copy(shardGraphExtensions = configuration.getAsBoolean(entry))
+
+          MetroOption.FAST_INIT ->
+            options = options.copy(fastInit = configuration.getAsBoolean(entry))
+
           MetroOption.PUBLIC_PROVIDER_SEVERITY ->
             options =
               options.copy(
@@ -834,7 +885,6 @@ public data class MetroOptions(
       @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Boolean>
       return get(typed.key, typed.defaultValue)
     }
-
 
     private fun CompilerConfiguration.getAsInt(option: MetroOption): Int {
       @Suppress("UNCHECKED_CAST") val typed = option.raw as RawMetroOption<Int>

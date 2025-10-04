@@ -80,3 +80,9 @@ internal class MetroLoggerImpl(
     output(fullMessage)
   }
 }
+
+internal object IzanLogger : MetroLogger by MetroLoggerImpl(
+  type = MetroLogger.Type.None,
+  output = { java.io.File("/tmp/metro-debug.txt").appendText(it) },
+  tag = "IZAN",
+)

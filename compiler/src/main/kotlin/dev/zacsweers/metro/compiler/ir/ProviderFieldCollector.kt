@@ -18,8 +18,9 @@ internal class ProviderFieldCollector(private val graph: IrBindingGraph) {
         if (binding.isScoped()) return true
         if (binding is IrBinding.GraphDependency) return true
         if (binding is IrBinding.MembersInjected && !binding.isFromInjectorFunction) return true
-        // Multibindings are always created adhoc
-        if (binding is IrBinding.Multibinding) return false
+        // Multibindings need fields to ensure they're initialized (even if empty)
+        // Without this, accessing a multibinding field returns null causing NPE
+        if (binding is IrBinding.Multibinding) return true
         // Assisted types always need to be a single field to ensure use of the same provider
         if (binding is IrBinding.Assisted) return true
         // TODO what about assisted but no assisted params? These also don't become providers

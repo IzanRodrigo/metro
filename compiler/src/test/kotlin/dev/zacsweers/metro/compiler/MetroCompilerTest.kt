@@ -163,6 +163,10 @@ abstract class MetroCompilerTest {
                   customContributesToAnnotations.joinToString(":"),
                 )
               }
+              MetroOption.SHARD_GRAPH_EXTENSIONS -> {
+                // Handle SHARD_GRAPH_EXTENSIONS option if needed
+                continue
+              }
               MetroOption.CUSTOM_CONTRIBUTES_BINDING -> {
                 if (customContributesBindingAnnotations.isEmpty()) continue
                 processor.option(
@@ -261,6 +265,8 @@ abstract class MetroCompilerTest {
               MetroOption.ENABLE_GRAPH_IMPL_CLASS_AS_RETURN_TYPE -> {
                 processor.option(entry.raw.cliOption, enableGraphImplClassAsReturnType)
               }
+              MetroOption.KEYS_PER_SHARD -> processor.option(entry.raw.cliOption, "0")
+              MetroOption.FAST_INIT -> processor.option(entry.raw.cliOption, "false")
             }
           yield(option)
         }
