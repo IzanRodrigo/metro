@@ -22,6 +22,7 @@ import dev.zacsweers.metro.compiler.ir.IrContributionData
 import dev.zacsweers.metro.compiler.ir.IrGraphExtensionGenerator
 import dev.zacsweers.metro.compiler.ir.IrGraphGenerator
 import dev.zacsweers.metro.compiler.ir.IrMetroContext
+import dev.zacsweers.metro.compiler.ir.ShardedGraphGenerator
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
 import dev.zacsweers.metro.compiler.ir.ParentContext
 import dev.zacsweers.metro.compiler.ir.annotationsIn
@@ -452,21 +453,41 @@ internal class DependencyGraphTransformer(
       // TODO split this to a separate function, call from parent generation
 
       parentTracer.traceNested("Transform metro graph") { tracer ->
-        IrGraphGenerator(
-          metroContext = metroContext,
-          dependencyGraphNodesByClass = dependencyGraphNodeCache::get,
-          node = node,
-          graphClass = metroGraph,
-          bindingGraph = bindingGraph,
-          sealResult = result,
-          fieldNameAllocator = fieldNameAllocator,
-          parentTracer = tracer,
-          bindingContainerTransformer = bindingContainerTransformer,
-          membersInjectorTransformer = membersInjectorTransformer,
-          assistedFactoryTransformer = assistedFactoryTransformer,
-          graphExtensionGenerator = graphExtensionGenerator,
-        )
-          .generate()
+        // Use ShardedGraphGenerator if sharding is enabled, otherwise use regular generator
+        if (result.shardingResult != null) {
+          ShardedGraphGenerator(
+            metroContext = metroContext,
+            dependencyGraphNodesByClass = dependencyGraphNodeCache::get,
+            node = node,
+            graphClass = metroGraph,
+            bindingGraph = bindingGraph,
+            sealResult = result,
+            shardingResult = result.shardingResult,
+            fieldNameAllocator = fieldNameAllocator,
+            parentTracer = tracer,
+            bindingContainerTransformer = bindingContainerTransformer,
+            membersInjectorTransformer = membersInjectorTransformer,
+            assistedFactoryTransformer = assistedFactoryTransformer,
+            graphExtensionGenerator = graphExtensionGenerator,
+          )
+            .generate()
+        } else {
+          IrGraphGenerator(
+            metroContext = metroContext,
+            dependencyGraphNodesByClass = dependencyGraphNodeCache::get,
+            node = node,
+            graphClass = metroGraph,
+            bindingGraph = bindingGraph,
+            sealResult = result,
+            fieldNameAllocator = fieldNameAllocator,
+            parentTracer = tracer,
+            bindingContainerTransformer = bindingContainerTransformer,
+            membersInjectorTransformer = membersInjectorTransformer,
+            assistedFactoryTransformer = assistedFactoryTransformer,
+            graphExtensionGenerator = graphExtensionGenerator,
+          )
+            .generate()
+        }
       }
 
       processedMetroDependencyGraphsByClass[graphClassId] = result

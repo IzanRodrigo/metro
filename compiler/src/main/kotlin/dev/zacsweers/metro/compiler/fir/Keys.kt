@@ -116,4 +116,8 @@ internal object Keys {
   data object BindingMirrorClassDeclaration : GeneratedDeclarationKey() {
     override fun toString() = "BindingMirrorClassDeclaration"
   }
+
+  data object MetroGraphShard : GeneratedDeclarationKey() {
+    override fun toString() = "MetroGraphShard"
+  }
 }

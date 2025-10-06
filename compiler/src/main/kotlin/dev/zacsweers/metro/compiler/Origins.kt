@@ -45,4 +45,6 @@ internal object Origins {
     IrDeclarationOrigin.GeneratedByPlugin(Keys.GeneratedGraphExtension)
   val BindingMirrorClassDeclaration: IrDeclarationOrigin =
     IrDeclarationOrigin.GeneratedByPlugin(Keys.BindingMirrorClassDeclaration)
+  val MetroGraphShard: IrDeclarationOrigin =
+    IrDeclarationOrigin.GeneratedByPlugin(Keys.MetroGraphShard)
 }
