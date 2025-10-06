@@ -786,7 +786,12 @@ private constructor(
       //   .put(1, FileSystemModule_Companion_ProvideMapInt1Factory.create())
       //   .put(2, provideMapInt2Provider)
       //   .build()
-      val valueWrappedType = contextualTypeKey.wrappedType.findMapValueType()!!
+      val valueWrappedType = contextualTypeKey.wrappedType.findMapValueType()
+        ?: reportCompilerBug(
+          "Map multibinding has non-Map WrappedType. " +
+          "Binding: ${binding.typeKey}, " +
+          "WrappedType: ${contextualTypeKey.wrappedType.render { it.type.toString() }}"
+        )
 
       val mapTypeArgs = (contextualTypeKey.typeKey.type as IrSimpleType).arguments
       check(mapTypeArgs.size == 2) { "Unexpected map type args: ${mapTypeArgs.joinToString()}" }
