@@ -357,23 +357,11 @@ internal class ShardedGraphGenerator(
         }
       }
 
-      // Create constructor body (empty for now)
-      ctor.body = DeclarationIrBuilder(pluginContext, ctor.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
-        .irBlockBody {}
-
-      // Store component and dependent shards as fields (optional for now, will add in Week 3 Day 3-4)
-      // For now, just keep the class structure minimal
-
       // Generate provider fields for bindings in this shard
       generateProviderFields(this, shard, componentParam, depShardParams)
 
-      ShardClassInfo(
-        shardId = shardId,
-        irClass = this,
-        constructor = ctor,
-        componentParam = componentParam,
-        depShardParams = depShardParams,
-      )
+      // Set constructor body with proper super() call and field initialization
+      ctor.body = ctor.generateDefaultConstructorBody()
     }
 
     // Add shard class to component

@@ -453,8 +453,12 @@ internal class DependencyGraphTransformer(
       // TODO split this to a separate function, call from parent generation
 
       parentTracer.traceNested("Transform metro graph") { tracer ->
-        // Use ShardedGraphGenerator if sharding is enabled, otherwise use regular generator
-        if (result.shardingResult != null) {
+        // Use ShardedGraphGenerator if sharding is enabled, but ONLY for main graphs
+        // Graph extensions (subcomponents) should never be sharded
+        val isGraphExtension = metroGraph.origin == Origins.GeneratedGraphExtension
+        val shouldShard = result.shardingResult != null && !isGraphExtension
+
+        if (shouldShard) {
           ShardedGraphGenerator(
             metroContext = metroContext,
             dependencyGraphNodesByClass = dependencyGraphNodeCache::get,
