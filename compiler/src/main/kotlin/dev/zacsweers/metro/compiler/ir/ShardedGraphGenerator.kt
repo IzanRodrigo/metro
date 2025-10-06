@@ -6,7 +6,9 @@ import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.decapitalizeUS
+import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.graph.ShardingResult
+import dev.zacsweers.metro.compiler.ir.parameters.parameters
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.ir.transformers.AssistedFactoryTransformer
 import dev.zacsweers.metro.compiler.ir.transformers.BindingContainerTransformer
@@ -32,22 +34,28 @@ import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.defaultType
+import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.ir.util.copyTo
 import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType as utilDefaultType
+import org.jetbrains.kotlin.ir.util.parentAsClass
+import org.jetbrains.kotlin.ir.util.propertyIfAccessor
 import org.jetbrains.kotlin.ir.util.statements
 import org.jetbrains.kotlin.name.ClassId
 
@@ -169,7 +177,10 @@ internal class ShardedGraphGenerator(
         updateComponentConstructor()
       }
 
-      // TODO: Implement component interface methods (Week 4)
+      // Implement component interface methods (accessors, injectors, factories)
+      tracer.traceNested("Implement component interface methods") {
+        implementComponentInterfaceMethods()
+      }
     }
   }
 
@@ -757,5 +768,230 @@ internal class ShardedGraphGenerator(
           }
         }
       }
+  }
+
+  /**
+   * Implements component interface methods: accessors, injectors, and subcomponent factories.
+   *
+   * This mirrors the logic from IrGraphGenerator.implementOverrides() (lines 525-634)
+   * but adapts it for sharded components where providers are located in shard classes.
+   */
+  private fun implementComponentInterfaceMethods() {
+    val componentThisReceiver = graphClass.thisReceiver
+      ?: error("Component class has no this receiver")
+
+    // Implement accessor methods (lines 526-556)
+    node.accessors.forEach { (function, contextualTypeKey) ->
+      function.ir.apply {
+        val declarationToFinalize =
+          function.ir.propertyIfAccessor.expectAs<IrOverridableDeclaration<*>>()
+        if (declarationToFinalize.isFakeOverride) {
+          declarationToFinalize.finalizeFakeOverride(componentThisReceiver)
+        }
+        val irFunction = this
+        val binding = bindingGraph.requireBinding(contextualTypeKey)
+
+        body = createIrBuilder(symbol).run {
+          irExprBodySafe(
+            symbol,
+            generateAccessorDelegation(
+              binding = binding,
+              contextualTypeKey = contextualTypeKey,
+              dispatchReceiver = irFunction.dispatchReceiverParameter!!,
+            ),
+          )
+        }
+      }
+    }
+
+    // Implement inject methods (lines 558-634)
+    node.injectors.forEach { (overriddenFunction, contextKey) ->
+      val typeKey = contextKey.typeKey
+      overriddenFunction.ir.apply {
+        finalizeFakeOverride(componentThisReceiver)
+        val targetParam = regularParameters[0]
+        val binding =
+          bindingGraph.requireBinding(contextKey)
+            as IrBinding.MembersInjected
+
+        // We don't get a MembersInjector instance/provider from the graph. Instead, we call
+        // all the target inject functions directly
+        body =
+          createIrBuilder(symbol).irBlockBody {
+            // Extract the type from MembersInjector<T>
+            val wrappedType =
+              typeKey.copy(typeKey.type.expectAs<IrSimpleType>().arguments[0].typeOrFail)
+
+            for (type in
+              pluginContext
+                .referenceClass(binding.targetClassId)!!
+                .owner
+                .getAllSuperTypes(excludeSelf = false, excludeAny = true)) {
+              val clazz = type.rawType()
+              val generatedInjector =
+                membersInjectorTransformer.getOrGenerateInjector(clazz) ?: continue
+              for ((function, unmappedParams) in generatedInjector.declaredInjectFunctions) {
+                val parameters =
+                  if (typeKey.hasTypeArgs) {
+                    val remapper = function.typeRemapperFor(wrappedType.type)
+                    function.parameters(remapper)
+                  } else {
+                    unmappedParams
+                  }
+                // Record for IC
+                trackFunctionCall(this@apply, function)
+                +irInvoke(
+                  dispatchReceiver = irGetObject(function.parentAsClass.symbol),
+                  callee = function.symbol,
+                  args =
+                    buildList {
+                      add(irGet(targetParam))
+                      // Always drop the first parameter when calling inject, as the first is the
+                      // instance param
+                      for (parameter in parameters.regularParameters.drop(1)) {
+                        val paramBinding =
+                          bindingGraph.requireBinding(
+                            parameter.contextualTypeKey,
+                          )
+                        add(
+                          generateInjectionDependency(
+                            binding = paramBinding,
+                            contextualTypeKey = parameter.contextualTypeKey,
+                            dispatchReceiver = overriddenFunction.ir.dispatchReceiverParameter!!,
+                          )
+                        )
+                      }
+                    },
+                )
+              }
+            }
+          }
+      }
+    }
+
+    // Implement no-op bodies for Binds providers (lines 636-647)
+    node.bindsFunctions.forEach { function ->
+      function.ir.apply {
+        val declarationToFinalize = propertyIfAccessor.expectAs<IrOverridableDeclaration<*>>()
+        if (declarationToFinalize.isFakeOverride) {
+          declarationToFinalize.finalizeFakeOverride(componentThisReceiver)
+        }
+        body = stubExpressionBody()
+      }
+    }
+
+    // Implement bodies for contributed graphs (lines 649-700+)
+    for ((typeKey, functions) in node.graphExtensions) {
+      for (extensionAccessor in functions) {
+        val function = extensionAccessor.accessor
+        function.ir.apply {
+          val declarationToFinalize =
+            function.ir.propertyIfAccessor.expectAs<IrOverridableDeclaration<*>>()
+          if (declarationToFinalize.isFakeOverride) {
+            declarationToFinalize.finalizeFakeOverride(componentThisReceiver)
+          }
+          val irFunction = this
+
+          if (extensionAccessor.isFactory) {
+            // Handled in regular accessors
+          } else {
+            // Graph extension creator. Use regular binding code gen
+            val binding =
+              bindingGraph.findBinding(typeKey)
+                ?: IrBinding.GraphExtension(
+                  typeKey = typeKey,
+                  parent = graphClass,
+                  accessor = function.ir,
+                  extensionScopes = emptySet(),
+                  dependencies = emptyList(),
+                )
+            val contextKey = IrContextualTypeKey.from(function.ir)
+
+            body =
+              createIrBuilder(symbol).run {
+                irExprBodySafe(
+                  symbol,
+                  generateAccessorDelegation(
+                    binding = binding,
+                    contextualTypeKey = contextKey,
+                    dispatchReceiver = irFunction.dispatchReceiverParameter!!,
+                  ),
+                )
+              }
+          }
+        }
+      }
+    }
+  }
+
+  /**
+   * Generates delegation code for accessor methods.
+   * Finds the provider field in the appropriate shard and invokes it.
+   *
+   * Returns the binding expression that will be used as the accessor return value.
+   */
+  private fun IrBuilderWithScope.generateAccessorDelegation(
+    binding: IrBinding,
+    contextualTypeKey: IrContextualTypeKey,
+    dispatchReceiver: IrValueParameter,
+  ): IrExpression {
+    // Create expression generator factory with global context
+    val expressionGeneratorFactory = IrGraphExpressionGenerator.Factory(
+      context = this@ShardedGraphGenerator,
+      node = node,
+      bindingFieldContext = globalBindingFieldContext,
+      bindingGraph = bindingGraph,
+      bindingContainerTransformer = bindingContainerTransformer,
+      membersInjectorTransformer = membersInjectorTransformer,
+      assistedFactoryTransformer = assistedFactoryTransformer,
+      graphExtensionGenerator = graphExtensionGenerator,
+      parentTracer = parentTracer,
+    )
+
+    // Generate the binding code using the global context
+    // The global context contains all provider fields, so cross-shard access works
+    return typeAsProviderArgument(
+      contextualTypeKey,
+      expressionGeneratorFactory
+        .create(dispatchReceiver)
+        .generateBindingCode(binding, contextualTypeKey = contextualTypeKey),
+      isAssisted = false,
+      isGraphInstance = false,
+    )
+  }
+
+  /**
+   * Generates dependency expressions for inject method parameters.
+   * Similar to generateAccessorDelegation but returns the raw provider argument.
+   */
+  private fun IrBuilderWithScope.generateInjectionDependency(
+    binding: IrBinding,
+    contextualTypeKey: IrContextualTypeKey,
+    dispatchReceiver: IrValueParameter,
+  ): IrExpression {
+    // Create expression generator factory with global context
+    val expressionGeneratorFactory = IrGraphExpressionGenerator.Factory(
+      context = this@ShardedGraphGenerator,
+      node = node,
+      bindingFieldContext = globalBindingFieldContext,
+      bindingGraph = bindingGraph,
+      bindingContainerTransformer = bindingContainerTransformer,
+      membersInjectorTransformer = membersInjectorTransformer,
+      assistedFactoryTransformer = assistedFactoryTransformer,
+      graphExtensionGenerator = graphExtensionGenerator,
+      parentTracer = parentTracer,
+    )
+
+    return typeAsProviderArgument(
+      contextualTypeKey,
+      expressionGeneratorFactory
+        .create(dispatchReceiver)
+        .generateBindingCode(
+          binding,
+          contextualTypeKey = contextualTypeKey,
+        ),
+      isAssisted = false,
+      isGraphInstance = false,
+    )
   }
 }
