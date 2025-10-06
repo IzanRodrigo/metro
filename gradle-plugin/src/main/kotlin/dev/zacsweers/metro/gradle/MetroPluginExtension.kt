@@ -114,6 +114,51 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     objects.property(Boolean::class.javaObjectType).convention(true)
 
   /**
+   * Number of bindings per component shard. When set, enables graph sharding to partition large
+   * dependency graphs into nested shard classes to avoid the 64K method limit.
+   *
+   * Must be between 10 and 10,000 if specified. When null (default), sharding is disabled.
+   *
+   * Optionally, you can specify a `metro.keysPerShard` gradle property to configure this globally.
+   */
+  public val keysPerShard: Property<Int> =
+    objects
+      .property(Int::class.javaObjectType)
+      .convention(
+        providers.gradleProperty("metro.keysPerShard").map { it.toInt() }.orElse(null as Int?)
+      )
+
+  /**
+   * Enable/disable fast-init optimization using SwitchingProviders. When enabled, uses a
+   * centralized provider creation pattern with id-based routing instead of direct field access.
+   *
+   * Reduces memory usage by deferring initialization and enables better code sharing. Disabled by
+   * default.
+   *
+   * Optionally, you can specify a `metro.fastInit` gradle property to enable this globally.
+   */
+  public val fastInit: Property<Boolean> =
+    objects
+      .property(Boolean::class.javaObjectType)
+      .convention(providers.gradleProperty("metro.fastInit").map { it.toBoolean() }.orElse(false))
+
+  /**
+   * Enable/disable detailed sharding debug reports. When enabled, generates comprehensive reports
+   * about shard partitioning, inter-shard dependencies, and SCC analysis.
+   *
+   * Defaults to the value of [debug].
+   *
+   * Optionally, you can specify a `metro.shardingDebug` gradle property to configure this
+   * globally.
+   */
+  public val shardingDebug: Property<Boolean> =
+    objects
+      .property(Boolean::class.javaObjectType)
+      .convention(
+        providers.gradleProperty("metro.shardingDebug").map { it.toBoolean() }.orElse(debug)
+      )
+
+  /**
    * Configures the Metro compiler plugin to warn, error, or do nothing when it encounters `public`
    * provider callables. See the kdoc on `Provides` for more details.
    */
