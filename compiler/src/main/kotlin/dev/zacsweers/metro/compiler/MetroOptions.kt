@@ -522,6 +522,37 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
       valueMapper = { it.splitToSequence(':').mapToSet { ClassId.fromString(it, false) } },
     )
+  ),
+  KEYS_PER_SHARD(
+    RawMetroOption(
+      name = "keys-per-shard",
+      defaultValue = "",
+      valueDescription = "<int>",
+      description = "Number of bindings per component shard (enables sharding when set, empty disables)",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it },
+    )
+  ),
+  FAST_INIT(
+    RawMetroOption.boolean(
+      name = "fast-init",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Enable/disable fast-init optimization using SwitchingProviders",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
+  SHARDING_DEBUG(
+    RawMetroOption.boolean(
+      name = "sharding-debug",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Enable/disable detailed sharding debug reports (defaults to debug setting)",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
   );
 
   companion object {
@@ -626,7 +657,31 @@ public data class MetroOptions(
     MetroOption.ENABLE_GRAPH_IMPL_CLASS_AS_RETURN_TYPE.raw.defaultValue.expectAs(),
   val customOriginAnnotations: Set<ClassId> =
     MetroOption.CUSTOM_ORIGIN.raw.defaultValue.expectAs(),
+  val keysPerShard: Int? =
+    MetroOption.KEYS_PER_SHARD.raw.defaultValue.expectAs<String>().takeUnless(String::isBlank)?.toIntOrNull(),
+  val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
+  val shardingDebug: Boolean = MetroOption.SHARDING_DEBUG.raw.defaultValue.expectAs(),
 ) {
+  /**
+   * Validates the configuration options and returns a list of error messages.
+   * An empty list indicates all options are valid.
+   */
+  public fun validate(): List<String> {
+    val errors = mutableListOf<String>()
+
+    // Validate keysPerShard
+    if (keysPerShard != null) {
+      when {
+        keysPerShard < 10 ->
+          errors += "keys-per-shard must be at least 10 (got $keysPerShard)"
+        keysPerShard > 10_000 ->
+          errors += "keys-per-shard exceeds maximum 10,000 (got $keysPerShard)"
+      }
+    }
+
+    return errors
+  }
+
   internal companion object {
     fun load(configuration: CompilerConfiguration): MetroOptions {
       var options = MetroOptions()
@@ -786,6 +841,17 @@ public data class MetroOptions(
           }
           MetroOption.CUSTOM_ORIGIN ->
             customOriginAnnotations.addAll(configuration.getAsSet(entry))
+          MetroOption.KEYS_PER_SHARD -> {
+            options = options.copy(
+              keysPerShard = configuration.getAsString(entry).takeUnless(String::isBlank)?.toIntOrNull()
+            )
+          }
+          MetroOption.FAST_INIT -> {
+            options = options.copy(fastInit = configuration.getAsBoolean(entry))
+          }
+          MetroOption.SHARDING_DEBUG -> {
+            options = options.copy(shardingDebug = configuration.getAsBoolean(entry))
+          }
         }
       }
 

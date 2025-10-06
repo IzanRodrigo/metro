@@ -261,6 +261,16 @@ abstract class MetroCompilerTest {
               MetroOption.ENABLE_GRAPH_IMPL_CLASS_AS_RETURN_TYPE -> {
                 processor.option(entry.raw.cliOption, enableGraphImplClassAsReturnType)
               }
+              MetroOption.KEYS_PER_SHARD -> {
+                if (keysPerShard == null) continue
+                processor.option(entry.raw.cliOption, keysPerShard.toString())
+              }
+              MetroOption.FAST_INIT -> {
+                processor.option(entry.raw.cliOption, fastInit)
+              }
+              MetroOption.SHARDING_DEBUG -> {
+                processor.option(entry.raw.cliOption, shardingDebug)
+              }
             }
           yield(option)
         }
