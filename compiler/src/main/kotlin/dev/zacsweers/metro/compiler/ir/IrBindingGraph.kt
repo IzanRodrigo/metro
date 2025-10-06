@@ -257,12 +257,31 @@ internal class IrBindingGraph(
           "Found absent bindings in the binding graph: ${dumpGraph("Absent bindings", short = true)}"
         }
       }
+
+      // Filter BoundInstance bindings from sharding result
+      // BoundInstance bindings should always be in the component, never in shards
+      val filteredShardingResult = topoResult.shardingResult?.let { shardingResult ->
+        val boundInstanceKeys = realGraph.bindings.filterValues { it is IrBinding.BoundInstance }.keys
+
+        // Remove BoundInstance keys from each shard and update bindingToShard mapping
+        val filteredShards = shardingResult.shards.map { shard ->
+          shard.copy(bindings = shard.bindings.filterNot { it in boundInstanceKeys })
+        }
+
+        val filteredBindingToShard = shardingResult.bindingToShard.filterKeys { it !in boundInstanceKeys }
+
+        shardingResult.copy(
+          shards = filteredShards,
+          bindingToShard = filteredBindingToShard
+        )
+      }
+
       return BindingGraphResult(
         topoResult.sortedKeys,
         topoResult.deferredTypes,
         topoResult.reachableKeys,
         false,
-        topoResult.shardingResult
+        filteredShardingResult
       )
     }
 
