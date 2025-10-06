@@ -116,9 +116,17 @@ private constructor(
       // provider for it.
       // This is important for cases like DelegateFactory and breaking cycles.
       if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-        bindingFieldContext.providerField(binding.typeKey)?.let {
+        bindingFieldContext.providerField(binding.typeKey)?.let { fieldLocation ->
+          // Determine the receiver for the field access
+          // If the field is in a shard, access it through the shard instance field
+          val fieldReceiver = if (fieldLocation.shardField != null) {
+            irGetField(irGet(thisReceiver), fieldLocation.shardField)
+          } else {
+            irGet(thisReceiver)
+          }
+
           val providerInstance =
-            irGetField(irGet(thisReceiver), it).let {
+            irGetField(fieldReceiver, fieldLocation.field).let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
             }
           return if (accessType == AccessType.INSTANCE) {
@@ -363,7 +371,7 @@ private constructor(
             // Just get the field
             irGetField(irGet(binding.fieldAccess.receiverParameter), binding.fieldAccess.field)
           } else if (binding.getter != null) {
-            val graphInstanceField =
+            val graphInstanceFieldLocation =
               bindingFieldContext.instanceField(ownerKey)
                 ?: reportCompilerBug(
                   "No matching included type instance found for type $ownerKey while processing ${node.typeKey}. Available instance fields ${bindingFieldContext.availableInstanceKeys}"
@@ -371,9 +379,16 @@ private constructor(
 
             val getterContextKey = IrContextualTypeKey.from(binding.getter)
 
+            // Access the instance field (handling shard location if needed)
+            val fieldReceiver = if (graphInstanceFieldLocation.shardField != null) {
+              irGetField(irGet(thisReceiver), graphInstanceFieldLocation.shardField)
+            } else {
+              irGet(thisReceiver)
+            }
+
             val invokeGetter =
               irInvoke(
-                dispatchReceiver = irGetField(irGet(thisReceiver), graphInstanceField),
+                dispatchReceiver = irGetField(fieldReceiver, graphInstanceFieldLocation.field),
                 callee = binding.getter.symbol,
                 typeHint = binding.typeKey.type,
               )
@@ -504,17 +519,27 @@ private constructor(
         // TODO consolidate this logic with generateBindingCode
         if (accessType == AccessType.INSTANCE) {
           // IFF the parameter can take a direct instance, try our instance fields
-          bindingFieldContext.instanceField(typeKey)?.let { instanceField ->
-            return@mapIndexed irGetField(irGet(thisReceiver), instanceField).let {
+          bindingFieldContext.instanceField(typeKey)?.let { instanceFieldLocation ->
+            val fieldReceiver = if (instanceFieldLocation.shardField != null) {
+              irGetField(irGet(thisReceiver), instanceFieldLocation.shardField)
+            } else {
+              irGet(thisReceiver)
+            }
+            return@mapIndexed irGetField(fieldReceiver, instanceFieldLocation.field).let {
               with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
             }
           }
         }
 
         val providerInstance =
-          bindingFieldContext.providerField(typeKey)?.let { field ->
+          bindingFieldContext.providerField(typeKey)?.let { fieldLocation ->
             // If it's in provider fields, invoke that field
-            irGetField(irGet(thisReceiver), field)
+            val fieldReceiver = if (fieldLocation.shardField != null) {
+              irGetField(irGet(thisReceiver), fieldLocation.shardField)
+            } else {
+              irGet(thisReceiver)
+            }
+            irGetField(fieldReceiver, fieldLocation.field)
           }
             ?: run {
               // Generate binding code for each param

@@ -8,6 +8,7 @@ import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.decapitalizeUS
 import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.graph.ShardingResult
+import dev.zacsweers.metro.compiler.mapToSet
 import dev.zacsweers.metro.compiler.ir.parameters.parameters
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.ir.transformers.AssistedFactoryTransformer
@@ -119,6 +120,12 @@ internal class ShardedGraphGenerator(
   private val shardProviderFields = mutableMapOf<IrTypeKey, IrField>()
 
   /**
+   * Maps provider field IrTypeKeys to the shard ID that contains them.
+   * Used to associate fields with their shard instance fields.
+   */
+  private val providerFieldToShardId = mutableMapOf<IrTypeKey, Int>()
+
+  /**
    * Global binding field context shared across all shards.
    * Tracks all provider fields regardless of which shard they're in.
    */
@@ -129,6 +136,23 @@ internal class ShardedGraphGenerator(
    * Maps shard ID to the lateinit field in the component class.
    */
   private val shardFieldsInComponent = mutableMapOf<Int, IrField>()
+
+  /**
+   * Expression generator factory configured with the global binding field context.
+   * This allows the standard implementOverrides() logic to work with sharded fields.
+   */
+  private val expressionGeneratorFactory =
+    IrGraphExpressionGenerator.Factory(
+      context = this,
+      node = node,
+      bindingFieldContext = globalBindingFieldContext,
+      bindingGraph = bindingGraph,
+      bindingContainerTransformer = bindingContainerTransformer,
+      membersInjectorTransformer = membersInjectorTransformer,
+      assistedFactoryTransformer = assistedFactoryTransformer,
+      graphExtensionGenerator = graphExtensionGenerator,
+      parentTracer = parentTracer,
+    )
 
   /**
    * Information about a generated shard class.
@@ -167,9 +191,14 @@ internal class ShardedGraphGenerator(
         generateShardClasses(tracer)
       }
 
-      // Generate init methods that initialize shards
-      tracer.traceNested("Generate init methods") {
+      // Generate init methods that initialize shards and get shard instance fields
+      val shardInstanceFields = tracer.traceNested("Generate init methods") {
         generateInitMethods(shardClasses)
+      }
+
+      // Update globalBindingFieldContext to associate shard provider fields with their shard instances
+      tracer.traceNested("Update binding field context with shard locations") {
+        updateBindingFieldContextWithShardLocations(shardClasses, shardInstanceFields)
       }
 
       // Update component constructor to call init methods
@@ -178,8 +207,10 @@ internal class ShardedGraphGenerator(
       }
 
       // Implement component interface methods (accessors, injectors, factories)
-      tracer.traceNested("Implement component interface methods") {
-        implementComponentInterfaceMethods()
+      // Use the standard implementation from DependencyGraphNode, which works correctly
+      // with our globalBindingFieldContext that tracks fields across shards
+      tracer.traceNested("Implement overrides") {
+        node.implementOverrides()
       }
     }
   }
@@ -446,13 +477,13 @@ internal class ShardedGraphGenerator(
           // BoundInstance or GraphDependency binding in component (not in any shard)
           // These were added to globalBindingFieldContext by generateBoundInstanceFields()
           // Create delegation field that accesses the component's provider field
-          val componentField = globalBindingFieldContext.providerField(depKey)
-          if (componentField != null) {
+          val componentFieldLocation = globalBindingFieldContext.providerField(depKey)
+          if (componentFieldLocation != null) {
             val delegationField = createCrossShardDelegationField(
               shardClass = shardClass,
               typeKey = depKey,
               sourceReceiver = componentParam,
-              sourceField = componentField,
+              sourceField = componentFieldLocation.field,
             )
             localBindingFieldContext.putProviderField(depKey, delegationField)
           }
@@ -462,14 +493,14 @@ internal class ShardedGraphGenerator(
         else -> {
           // Cross-shard dependency - create delegation field
           val depShardParam = shardAccessContext.depShardParams[depShardId]
-          val depShardField = globalBindingFieldContext.providerField(depKey)
+          val depShardFieldLocation = globalBindingFieldContext.providerField(depKey)
 
-          if (depShardParam != null && depShardField != null) {
+          if (depShardParam != null && depShardFieldLocation != null) {
             val delegationField = createCrossShardDelegationField(
               shardClass = shardClass,
               typeKey = depKey,
               sourceReceiver = depShardParam,
-              sourceField = depShardField,
+              sourceField = depShardFieldLocation.field,
             )
             localBindingFieldContext.putProviderField(depKey, delegationField)
           }
@@ -528,6 +559,7 @@ internal class ShardedGraphGenerator(
       localBindingFieldContext.putProviderField(typeKey, providerField)
       globalBindingFieldContext.putProviderField(typeKey, providerField)
       shardProviderFields[typeKey] = providerField
+      providerFieldToShardId[typeKey] = shard.id
     }
   }
 
@@ -656,7 +688,7 @@ internal class ShardedGraphGenerator(
   /**
    * Generates init() methods that initialize each shard.
    */
-  private fun generateInitMethods(shardClasses: List<ShardClassInfo>) {
+  private fun generateInitMethods(shardClasses: List<ShardClassInfo>): List<IrField> {
     // Add shard reference fields to component
     val shardFields = shardClasses.map { shardInfo ->
       graphClass.addField {
@@ -718,6 +750,27 @@ internal class ShardedGraphGenerator(
           }
       }
     }
+
+    return shardFields
+  }
+
+  /**
+   * Updates the global binding field context to associate shard provider fields with their
+   * shard instance fields. This allows accessor methods to correctly generate code like
+   * `this.shard3.providerField` instead of `this.providerField`.
+   */
+  private fun updateBindingFieldContextWithShardLocations(
+    shardClasses: List<ShardClassInfo>,
+    shardInstanceFields: List<IrField>
+  ) {
+    // For each provider field in a shard, update its FieldLocation to include the shard instance field
+    for ((typeKey, shardId) in providerFieldToShardId) {
+      val providerField = shardProviderFields[typeKey] ?: continue
+      val shardInstanceField = shardInstanceFields[shardId]
+
+      // Re-put the field with its shard location
+      globalBindingFieldContext.putProviderField(typeKey, providerField, shardInstanceField)
+    }
   }
 
   /**
@@ -759,44 +812,59 @@ internal class ShardedGraphGenerator(
   }
 
   /**
-   * Implements component interface methods: accessors, injectors, and subcomponent factories.
+   * Implements component interface methods (accessors, injectors, factories).
+   * This is copied from IrGraphGenerator.implementOverrides() but uses our
+   * expressionGeneratorFactory which is configured with globalBindingFieldContext.
    *
-   * This mirrors the logic from IrGraphGenerator.implementOverrides() (lines 525-634)
-   * but adapts it for sharded components where providers are located in shard classes.
+   * The key difference from the non-sharded version: our expressionGeneratorFactory
+   * uses globalBindingFieldContext which knows about fields in shards, not just component.
    */
-  private fun implementComponentInterfaceMethods() {
-    val componentThisReceiver = graphClass.thisReceiver
-      ?: error("Component class has no this receiver")
+  private fun DependencyGraphNode.implementOverrides() {
+    // Collect graph extension factory accessors to skip them here (handled in graphExtensions loop)
+    val graphExtensionFactoryAccessors = graphExtensions.values.flatten()
+      .filter { it.isFactory }
+      .mapToSet { it.accessor }
 
-    // Implement accessor methods (lines 526-556)
-    node.accessors.forEach { (function, contextualTypeKey) ->
+    // Implement abstract getters for accessors
+    accessors.forEach { (function, contextualTypeKey) ->
+      // Skip graph extension factories - they're handled in the graphExtensions loop
+      if (function in graphExtensionFactoryAccessors) return@forEach
+
       function.ir.apply {
         val declarationToFinalize =
           function.ir.propertyIfAccessor.expectAs<IrOverridableDeclaration<*>>()
         if (declarationToFinalize.isFakeOverride) {
-          declarationToFinalize.finalizeFakeOverride(componentThisReceiver)
+          declarationToFinalize.finalizeFakeOverride(graphClass.thisReceiverOrFail)
         }
         val irFunction = this
         val binding = bindingGraph.requireBinding(contextualTypeKey)
-
-        body = createIrBuilder(symbol).run {
-          irExprBodySafe(
-            symbol,
-            generateAccessorDelegation(
-              binding = binding,
-              contextualTypeKey = contextualTypeKey,
-              dispatchReceiver = irFunction.dispatchReceiverParameter!!,
-            ),
-          )
-        }
+        body =
+          createIrBuilder(symbol).run {
+            if (binding is IrBinding.Multibinding) {
+              // TODO if we have multiple accessors pointing at the same type, implement
+              //  one and make the rest call that one. Not multibinding specific. Maybe
+              //  groupBy { typekey }?
+            }
+            irExprBodySafe(
+              symbol,
+              typeAsProviderArgument(
+                contextualTypeKey,
+                expressionGeneratorFactory
+                  .create(irFunction.dispatchReceiverParameter!!)
+                  .generateBindingCode(binding, contextualTypeKey = contextualTypeKey),
+                isAssisted = false,
+                isGraphInstance = false,
+              ),
+            )
+          }
       }
     }
 
-    // Implement inject methods (lines 558-634)
-    node.injectors.forEach { (overriddenFunction, contextKey) ->
+    // Implement abstract injectors
+    injectors.forEach { (overriddenFunction, contextKey) ->
       val typeKey = contextKey.typeKey
       overriddenFunction.ir.apply {
-        finalizeFakeOverride(componentThisReceiver)
+        finalizeFakeOverride(graphClass.thisReceiverOrFail)
         val targetParam = regularParameters[0]
         val binding =
           bindingGraph.requireBinding(contextKey)
@@ -842,10 +910,16 @@ internal class ShardedGraphGenerator(
                             parameter.contextualTypeKey,
                           )
                         add(
-                          generateInjectionDependency(
-                            binding = paramBinding,
-                            contextualTypeKey = parameter.contextualTypeKey,
-                            dispatchReceiver = overriddenFunction.ir.dispatchReceiverParameter!!,
+                          typeAsProviderArgument(
+                            parameter.contextualTypeKey,
+                            expressionGeneratorFactory
+                              .create(overriddenFunction.ir.dispatchReceiverParameter!!)
+                              .generateBindingCode(
+                                paramBinding,
+                                contextualTypeKey = parameter.contextualTypeKey,
+                              ),
+                            isAssisted = false,
+                            isGraphInstance = false,
                           )
                         )
                       }
@@ -857,129 +931,76 @@ internal class ShardedGraphGenerator(
       }
     }
 
-    // Implement no-op bodies for Binds providers (lines 636-647)
-    node.bindsFunctions.forEach { function ->
+    // Implement no-op bodies for Binds providers
+    bindsFunctions.forEach { function ->
       function.ir.apply {
         val declarationToFinalize = propertyIfAccessor.expectAs<IrOverridableDeclaration<*>>()
         if (declarationToFinalize.isFakeOverride) {
-          declarationToFinalize.finalizeFakeOverride(componentThisReceiver)
+          declarationToFinalize.finalizeFakeOverride(graphClass.thisReceiverOrFail)
         }
         body = stubExpressionBody()
       }
     }
 
-    // Implement bodies for contributed graphs (lines 649-700+)
-    for ((typeKey, functions) in node.graphExtensions) {
+    // Implement bodies for contributed graphs
+    for ((typeKey, functions) in graphExtensions) {
       for (extensionAccessor in functions) {
         val function = extensionAccessor.accessor
         function.ir.apply {
           val declarationToFinalize =
             function.ir.propertyIfAccessor.expectAs<IrOverridableDeclaration<*>>()
           if (declarationToFinalize.isFakeOverride) {
-            declarationToFinalize.finalizeFakeOverride(componentThisReceiver)
+            declarationToFinalize.finalizeFakeOverride(graphClass.thisReceiverOrFail)
           }
           val irFunction = this
 
           if (extensionAccessor.isFactory) {
-            // Handled in regular accessors
+            // Factory for graph extension - directly instantiate the FactoryImpl
+            // Don't use provider fields since they may be in shards
+            val contextKey = IrContextualTypeKey.from(function.ir)
+            val binding = bindingGraph.requireBinding(contextKey)
+                as IrBinding.GraphExtensionFactory
+
+            body =
+              createIrBuilder(symbol).run {
+                irExprBodySafe(
+                  symbol,
+                  expressionGeneratorFactory
+                    .create(irFunction.dispatchReceiverParameter!!)
+                    .generateBindingCode(
+                      binding = binding,
+                      contextualTypeKey = contextKey,
+                      // Force instance access to avoid provider field lookup
+                      accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+                      // Pass a dummy fieldInitKey to prevent provider field reuse
+                      fieldInitKey = binding.typeKey,
+                    ),
+                )
+              }
           } else {
             // Graph extension creator. Use regular binding code gen
             val binding =
               bindingGraph.findBinding(typeKey)
                 ?: IrBinding.GraphExtension(
                   typeKey = typeKey,
-                  parent = graphClass,
+                  parent = node.metroGraphOrFail,
                   accessor = function.ir,
                   extensionScopes = emptySet(),
                   dependencies = emptyList(),
                 )
             val contextKey = IrContextualTypeKey.from(function.ir)
-
             body =
               createIrBuilder(symbol).run {
                 irExprBodySafe(
                   symbol,
-                  generateAccessorDelegation(
-                    binding = binding,
-                    contextualTypeKey = contextKey,
-                    dispatchReceiver = irFunction.dispatchReceiverParameter!!,
-                  ),
+                  expressionGeneratorFactory
+                    .create(irFunction.dispatchReceiverParameter!!)
+                    .generateBindingCode(binding = binding, contextualTypeKey = contextKey),
                 )
               }
           }
         }
       }
     }
-  }
-
-  /**
-   * Generates delegation code for accessor methods.
-   * Finds the provider field in the appropriate shard and invokes it.
-   *
-   * Returns the binding expression that will be used as the accessor return value.
-   */
-  private fun IrBuilderWithScope.generateAccessorDelegation(
-    binding: IrBinding,
-    contextualTypeKey: IrContextualTypeKey,
-    dispatchReceiver: IrValueParameter,
-  ): IrExpression {
-    // Create expression generator factory with global context
-    val expressionGeneratorFactory = IrGraphExpressionGenerator.Factory(
-      context = this@ShardedGraphGenerator,
-      node = node,
-      bindingFieldContext = globalBindingFieldContext,
-      bindingGraph = bindingGraph,
-      bindingContainerTransformer = bindingContainerTransformer,
-      membersInjectorTransformer = membersInjectorTransformer,
-      assistedFactoryTransformer = assistedFactoryTransformer,
-      graphExtensionGenerator = graphExtensionGenerator,
-      parentTracer = parentTracer,
-    )
-
-    // Generate the binding code using the global context
-    // The global context contains all provider fields, so cross-shard access works
-    return typeAsProviderArgument(
-      contextualTypeKey,
-      expressionGeneratorFactory
-        .create(dispatchReceiver)
-        .generateBindingCode(binding, contextualTypeKey = contextualTypeKey),
-      isAssisted = false,
-      isGraphInstance = false,
-    )
-  }
-
-  /**
-   * Generates dependency expressions for inject method parameters.
-   * Similar to generateAccessorDelegation but returns the raw provider argument.
-   */
-  private fun IrBuilderWithScope.generateInjectionDependency(
-    binding: IrBinding,
-    contextualTypeKey: IrContextualTypeKey,
-    dispatchReceiver: IrValueParameter,
-  ): IrExpression {
-    // Create expression generator factory with global context
-    val expressionGeneratorFactory = IrGraphExpressionGenerator.Factory(
-      context = this@ShardedGraphGenerator,
-      node = node,
-      bindingFieldContext = globalBindingFieldContext,
-      bindingGraph = bindingGraph,
-      bindingContainerTransformer = bindingContainerTransformer,
-      membersInjectorTransformer = membersInjectorTransformer,
-      assistedFactoryTransformer = assistedFactoryTransformer,
-      graphExtensionGenerator = graphExtensionGenerator,
-      parentTracer = parentTracer,
-    )
-
-    return typeAsProviderArgument(
-      contextualTypeKey,
-      expressionGeneratorFactory
-        .create(dispatchReceiver)
-        .generateBindingCode(
-          binding,
-          contextualTypeKey = contextualTypeKey,
-        ),
-      isAssisted = false,
-      isGraphInstance = false,
-    )
   }
 }
