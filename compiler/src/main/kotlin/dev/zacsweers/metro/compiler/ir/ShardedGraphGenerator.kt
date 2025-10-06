@@ -27,8 +27,10 @@ import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.addTypeParameter
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
+import org.jetbrains.kotlin.ir.builders.irAs
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
@@ -36,8 +38,10 @@ import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irSetField
+import org.jetbrains.kotlin.ir.builders.irString
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
@@ -509,16 +513,32 @@ internal class ShardedGraphGenerator(
     }
 
     // Second pass: Generate actual provider fields for bindings owned by this shard
-    for (typeKey in shard.bindings) {
+
+    // Filter out bindings we shouldn't generate fields for
+    val bindingsToGenerate = shard.bindings.mapNotNull { typeKey ->
       val binding = bindingGraph.requireBinding(typeKey)
 
       // Skip bound instances - they're in the component, not generated in shards
       // Also skip graph dependencies that already have field access
       if (binding is IrBinding.BoundInstance ||
           (binding is IrBinding.GraphDependency && binding.fieldAccess != null)) {
-        continue
+        null
+      } else {
+        typeKey to binding
       }
+    }
 
+    // Assign IDs to bindings in topological order (dependencies first)
+    // This provides better locality in the generated when expression
+    val orderedBindingsWithIds = assignBindingIds(bindingsToGenerate.map { it.first })
+
+    // Phase 3.5: Temporarily disable fast-init to focus on core sharding
+    // TODO Phase 3.6: Re-enable and properly implement SwitchingProvider
+    val useFastInit = false // Disabled: options.fastInit && bindingsToGenerate.isNotEmpty()
+    val switchingProviderClass: IrClass? = null
+
+    // Generate provider fields
+    for ((typeKey, binding) in bindingsToGenerate) {
       // Determine field type and name
       val suffix = "Provider"
       val fieldType = symbols.metroProvider.typeWith(typeKey.type)
@@ -537,7 +557,7 @@ internal class ShardedGraphGenerator(
         origin = Origins.MetroGraphShard
       }
 
-      // Generate the provider initializer using local context (which includes delegations)
+      // Generate the provider initializer
       providerField.initializer = DeclarationIrBuilder(
         pluginContext,
         providerField.symbol,
@@ -545,13 +565,39 @@ internal class ShardedGraphGenerator(
         UNDEFINED_OFFSET
       ).run {
         irExprBody(
-          // Generate the binding expression
-          generateProviderInitializer(
-            binding = binding,
-            typeKey = typeKey,
-            shardThisReceiver = shardThisReceiver,
-            bindingFieldContext = localBindingFieldContext,
-          )
+          if (useFastInit && switchingProviderClass != null) {
+            // Fast-init mode: Phase 3.5 - SwitchingProvider is already Provider<T>
+            val bindingId = orderedBindingsWithIds.first { it.first == typeKey }.second
+
+            // Generate: $$SwitchingProvider0<T>(this, id)
+            // SwitchingProvider already implements Provider<T>, no wrapping needed!
+            val switchingProviderConstructor = switchingProviderClass.constructors.first { it.isPrimary }
+            val switchingProviderInstance = irCallConstructor(
+              switchingProviderConstructor.symbol,
+              typeArguments = listOf(typeKey.type)
+            ).apply {
+              // Use new K2 IR Parameter API: sequential argument indexing
+              // Constructor parameters: (shard: Shard0, id: Int)
+              var idx = 0
+              arguments[idx++] = irGet(shardThisReceiver) // shard param
+              arguments[idx++] = irInt(bindingId) // id param
+            }
+
+            // If scoped, wrap with DoubleCheck - otherwise use directly
+            if (binding.isScoped()) {
+              switchingProviderInstance.doubleCheck(this, symbols, typeKey)
+            } else {
+              switchingProviderInstance
+            }
+          } else {
+            // Direct mode: generate binding expression directly
+            generateProviderInitializer(
+              binding = binding,
+              typeKey = typeKey,
+              shardThisReceiver = shardThisReceiver,
+              bindingFieldContext = localBindingFieldContext,
+            )
+          }
         )
       }
 
@@ -561,6 +607,47 @@ internal class ShardedGraphGenerator(
       shardProviderFields[typeKey] = providerField
       providerFieldToShardId[typeKey] = shard.id
     }
+  }
+
+  /**
+   * Assigns sequential IDs to bindings in topological order (dependencies first).
+   *
+   * This ordering provides better code locality in the SwitchingProvider's when expression.
+   */
+  private fun assignBindingIds(typeKeys: List<IrTypeKey>): List<Pair<IrTypeKey, Int>> {
+    // Build a dependency map for the bindings
+    val dependencyMap = typeKeys.associateWith { typeKey ->
+      val binding = bindingGraph.requireBinding(typeKey)
+      binding.dependencies.map { it.typeKey }.filter { it in typeKeys }.toSet()
+    }
+
+    // Perform topological sort (dependencies first)
+    val sorted = mutableListOf<IrTypeKey>()
+    val visited = mutableSetOf<IrTypeKey>()
+    val visiting = mutableSetOf<IrTypeKey>()
+
+    fun visit(key: IrTypeKey) {
+      if (key in visited) return
+      if (key in visiting) {
+        // Cycle detected - just add it now (cycles are handled by Provider<T> wrapping)
+        return
+      }
+
+      visiting.add(key)
+      dependencyMap[key]?.forEach { dep ->
+        if (dep in typeKeys) {
+          visit(dep)
+        }
+      }
+      visiting.remove(key)
+      visited.add(key)
+      sorted.add(key)
+    }
+
+    typeKeys.forEach { visit(it) }
+
+    // Assign sequential IDs
+    return sorted.mapIndexed { index, typeKey -> typeKey to index }
   }
 
   /**
@@ -629,6 +716,21 @@ internal class ShardedGraphGenerator(
     }
 
     return delegationField
+  }
+
+  /**
+   * Phase 3.5: Stub function - not used when fast-init is disabled.
+   * TODO Phase 3.6: Implement properly when re-enabling fast-init.
+   */
+  @Suppress("UNUSED_PARAMETER")
+  private fun generateSwitchingProviderClass(
+    shardClass: IrClass,
+    shard: dev.zacsweers.metro.compiler.graph.Shard<IrTypeKey>,
+    orderedBindings: List<Pair<IrTypeKey, Int>>,
+    bindingFieldContext: BindingFieldContext,
+    shardThisReceiver: IrValueParameter,
+  ): IrClass {
+    error("SwitchingProvider generation not implemented in Phase 3.5 - fast-init is disabled")
   }
 
   /**
