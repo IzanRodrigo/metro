@@ -526,7 +526,7 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
   KEYS_PER_SHARD(
     RawMetroOption(
       name = "keys-per-shard",
-      defaultValue = "",
+      defaultValue = "1000", // TODO: Extract to constant.
       valueDescription = "<int>",
       description = "Number of bindings per component shard (enables sharding when set, empty disables)",
       required = false,
@@ -662,25 +662,6 @@ public data class MetroOptions(
   val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val shardingDebug: Boolean = MetroOption.SHARDING_DEBUG.raw.defaultValue.expectAs(),
 ) {
-  /**
-   * Validates the configuration options and returns a list of error messages.
-   * An empty list indicates all options are valid.
-   */
-  public fun validate(): List<String> {
-    val errors = mutableListOf<String>()
-
-    // Validate keysPerShard
-    if (keysPerShard != null) {
-      when {
-        keysPerShard < 10 ->
-          errors += "keys-per-shard must be at least 10 (got $keysPerShard)"
-        keysPerShard > 10_000 ->
-          errors += "keys-per-shard exceeds maximum 10,000 (got $keysPerShard)"
-      }
-    }
-
-    return errors
-  }
 
   internal companion object {
     fun load(configuration: CompilerConfiguration): MetroOptions {

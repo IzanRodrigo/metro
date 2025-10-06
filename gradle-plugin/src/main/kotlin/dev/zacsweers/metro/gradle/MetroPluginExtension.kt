@@ -114,10 +114,8 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     objects.property(Boolean::class.javaObjectType).convention(true)
 
   /**
-   * Number of bindings per component shard. When set, enables graph sharding to partition large
+   * Number of bindings per graph shard or 0 to disable sharding. When set, enables graph sharding to partition large
    * dependency graphs into nested shard classes to avoid the 64K method limit.
-   *
-   * Must be between 10 and 10,000 if specified. When null (default), sharding is disabled.
    *
    * Optionally, you can specify a `metro.keysPerShard` gradle property to configure this globally.
    */
@@ -125,7 +123,9 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     objects
       .property(Int::class.javaObjectType)
       .convention(
-        providers.gradleProperty("metro.keysPerShard").map { it.toInt() }.orElse(null as Int?)
+        providers.gradleProperty("metro.keysPerShard")
+        .map { it.toInt() }
+        .orElse(1000) // TODO: Extract to constant.
       )
 
   /**
@@ -140,7 +140,7 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val fastInit: Property<Boolean> =
     objects
       .property(Boolean::class.javaObjectType)
-      .convention(providers.gradleProperty("metro.fastInit").map { it.toBoolean() }.orElse(false))
+      .convention(providers.gradleProperty("metro.fastInit").map { it.toBoolean() }.orElse(true))
 
   /**
    * Enable/disable detailed sharding debug reports. When enabled, generates comprehensive reports

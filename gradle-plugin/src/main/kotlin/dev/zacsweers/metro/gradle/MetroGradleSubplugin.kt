@@ -75,16 +75,6 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
     val project = kotlinCompilation.target.project
     val extension = project.extensions.getByType(MetroPluginExtension::class.java)
 
-    // Validate sharding configuration
-    extension.keysPerShard.orNull?.let { keys ->
-      when {
-        keys < 10 ->
-          project.logger.error("Metro: keysPerShard must be at least 10 (got $keys)")
-        keys > 10_000 ->
-          project.logger.error("Metro: keysPerShard exceeds maximum 10,000 (got $keys)")
-      }
-    }
-
     val platformCanGenerateContributionHints =
       when (kotlinCompilation.platformType) {
         KotlinPlatformType.common,
@@ -159,9 +149,7 @@ public class MetroGradleSubplugin : KotlinCompilerPluginSupportPlugin {
         add(lazyOption("transform-providers-to-private", extension.transformProvidersToPrivate))
         add(lazyOption("shrink-unused-bindings", extension.shrinkUnusedBindings))
         add(lazyOption("chunk-field-inits", extension.chunkFieldInits))
-        extension.keysPerShard.orNull?.let { value ->
-          add(SubpluginOption("keys-per-shard", value.toString()))
-        }
+        add(lazyOption("keys-per-shard", extension.keysPerShard))
         add(lazyOption("fast-init", extension.fastInit))
         add(lazyOption("sharding-debug", extension.shardingDebug))
         add(lazyOption("public-provider-severity", extension.publicProviderSeverity))
