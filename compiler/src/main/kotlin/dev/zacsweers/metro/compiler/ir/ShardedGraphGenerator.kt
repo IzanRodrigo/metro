@@ -719,8 +719,16 @@ internal class ShardedGraphGenerator(
   }
 
   /**
-   * Phase 3.5: Stub function - not used when fast-init is disabled.
-   * TODO Phase 3.6: Implement properly when re-enabling fast-init.
+   * Phase 3.6: SwitchingProvider generation stub - not implemented yet.
+   * 
+   * Fast-init mode remains disabled. Core sharding (Phase 2) is production-ready.
+   * 
+   * TODO Phase 3.7: Implement SwitchingProvider properly after studying:
+   * - How to generate when() expressions in K2 IR
+   * - Proper stdlib function references (mapOf, Pair, etc.)
+   * - Or use simple if-else chains with proper IR builders
+   * 
+   * For now, we use direct provider generation which works excellently.
    */
   @Suppress("UNUSED_PARAMETER")
   private fun generateSwitchingProviderClass(
@@ -730,7 +738,7 @@ internal class ShardedGraphGenerator(
     bindingFieldContext: BindingFieldContext,
     shardThisReceiver: IrValueParameter,
   ): IrClass {
-    error("SwitchingProvider generation not implemented in Phase 3.5 - fast-init is disabled")
+    error("SwitchingProvider generation not implemented - fast-init is disabled")
   }
 
   /**
