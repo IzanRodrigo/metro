@@ -93,12 +93,14 @@ internal open class MutableBindingGraph<
    * @param validateBindings a callback to perform optional extra validation on bindings
    *   post-adjacency build.
    * @param keep optional set of keys to keep, even if they are unused.
+   * @param keysPerShard optional target number of bindings per shard for graph sharding.
    */
   fun seal(
     roots: Map<ContextualTypeKey, BindingStackEntry> = emptyMap(),
     keep: Map<ContextualTypeKey, BindingStackEntry> = emptyMap(),
     shrinkUnusedBindings: Boolean = true,
     tracer: Tracer = Tracer.NONE,
+    keysPerShard: Int? = null,
     onPopulated: () -> Unit = {},
     onSortedCycle: (List<TypeKey>) -> Unit = {},
     validateBindings:
@@ -169,11 +171,29 @@ internal open class MutableBindingGraph<
       // If it depends itself or something that comes later in the topo sort, it
       // must be deferred. This is how we handle cycles that are broken by deferrable
       // types like Provider/Lazy/...
-      // O(1) “does A depend on B?”
+      // O(1) "does A depend on B?"
       bindingIndices.putAll(topo.sortedKeys.withIndex().associate { it.value to it.index })
     }
 
-    return topo
+    // Compute sharding if enabled
+    val shardingResult = if (keysPerShard != null && keysPerShard > 0) {
+      tracer.traceNested("Compute graph sharding") {
+        // Filter adjacency to only include reachable keys
+        val reachableAdjacency = fullAdjacency.filterKeys { it in topo.reachableKeys }
+          .mapValues { (_, deps) -> deps.filter { it in topo.reachableKeys }.toSortedSet() }
+          .toSortedMap()
+
+        computeSharding(
+          bindings = topo.reachableKeys,
+          adjacency = reachableAdjacency,
+          keysPerShard = keysPerShard
+        )
+      }
+    } else {
+      null
+    }
+
+    return topo.copy(shardingResult = shardingResult)
   }
 
   private fun populateGraph(

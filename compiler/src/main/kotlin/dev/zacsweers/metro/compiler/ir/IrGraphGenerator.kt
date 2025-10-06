@@ -127,6 +127,32 @@ internal class IrGraphGenerator(
     with(graphClass) {
       val ctor = primaryConstructor!!
 
+      // Log sharding metrics if sharding is enabled
+      val shardingResult = sealResult.shardingResult
+      if (shardingResult != null && options.shardingDebug) {
+        parentTracer.traceNested("Graph sharding enabled") {
+          writeDiagnostic("sharding-metrics-${node.sourceGraph.name}.txt") {
+            buildString {
+              appendLine("=== Graph Sharding Metrics ===")
+              appendLine("Total Bindings: ${shardingResult.metrics.totalBindings}")
+              appendLine("Total SCCs: ${shardingResult.metrics.totalSccs}")
+              appendLine("Largest SCC: ${shardingResult.metrics.largestScc}")
+              appendLine("Total Shards: ${shardingResult.shards.size}")
+              appendLine("Shard Sizes: ${shardingResult.metrics.shardSizes.joinToString(", ")}")
+              appendLine("Average Shard Size: ${"%.2f".format(shardingResult.metrics.avgShardSize)}")
+              appendLine("Balance Factor: ${"%.2f".format(shardingResult.metrics.balanceFactor)}")
+              appendLine()
+              appendLine("=== Shard Details ===")
+              for (shard in shardingResult.shards) {
+                appendLine("Shard ${shard.id}:")
+                appendLine("  Bindings: ${shard.bindings.size}")
+                appendLine("  Dependencies: ${shard.dependencies.joinToString(", ")}")
+              }
+            }
+          }
+        }
+      }
+
       val constructorStatements =
         mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
 

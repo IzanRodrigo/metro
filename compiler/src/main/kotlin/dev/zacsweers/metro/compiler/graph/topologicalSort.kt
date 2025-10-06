@@ -120,11 +120,13 @@ internal fun <TypeKey : Comparable<TypeKey>, Binding> buildFullAdjacency(
  * @param sortedKeys Topologically sorted list of keys.
  * @param deferredTypes Vertices that sit inside breakable cycles.
  * @param reachableKeys Vertices that were deemed reachable by any input roots.
+ * @param shardingResult Optional sharding result when graph sharding is enabled.
  */
 internal data class TopoSortResult<T>(
   val sortedKeys: List<T>,
   val deferredTypes: List<T>,
   val reachableKeys: Set<T>,
+  val shardingResult: ShardingResult<T>? = null,
 )
 
 /**

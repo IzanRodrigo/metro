@@ -8,6 +8,7 @@ import dev.zacsweers.metro.compiler.exitProcessing
 import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
 import dev.zacsweers.metro.compiler.graph.MutableBindingGraph
+import dev.zacsweers.metro.compiler.graph.ShardingResult
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
@@ -194,13 +195,14 @@ internal class IrBindingGraph(
     val deferredTypes: List<IrTypeKey>,
     val reachableKeys: Set<IrTypeKey>,
     val hasErrors: Boolean,
+    val shardingResult: ShardingResult<IrTypeKey>? = null,
   )
 
   data class GraphError(val declaration: IrDeclaration?, val message: String)
 
   fun seal(parentTracer: Tracer, onError: (List<GraphError>) -> Unit): BindingGraphResult =
     context(metroContext) {
-      val (sortedKeys, deferredTypes, reachableKeys) =
+      val topoResult =
         parentTracer.traceNested("seal graph") { tracer ->
           val roots = buildMap {
             putAll(accessors)
@@ -212,6 +214,7 @@ internal class IrBindingGraph(
             keep = extraKeeps,
             shrinkUnusedBindings = metroContext.options.shrinkUnusedBindings,
             tracer = tracer,
+            keysPerShard = metroContext.options.keysPerShard,
             onPopulated = {
               writeDiagnostic("keys-populated-${parentTracer.tag}.txt") {
                 realGraph.bindings.keys.sorted().joinToString("\n")
@@ -229,18 +232,18 @@ internal class IrBindingGraph(
         }
 
       if (hasErrors) {
-        return BindingGraphResult(emptyList(), emptyList(), emptySet(), true)
+        return BindingGraphResult(emptyList(), emptyList(), emptySet(), true, null)
       }
 
       writeDiagnostic("keys-validated-${parentTracer.tag}.txt") {
-        sortedKeys.joinToString(separator = "\n")
+        topoResult.sortedKeys.joinToString(separator = "\n")
       }
 
       writeDiagnostic("keys-deferred-${parentTracer.tag}.txt") {
-        deferredTypes.joinToString(separator = "\n")
+        topoResult.deferredTypes.joinToString(separator = "\n")
       }
 
-      val unused = bindingsSnapshot().keys - reachableKeys
+      val unused = bindingsSnapshot().keys - topoResult.reachableKeys
       if (unused.isNotEmpty()) {
         // TODO option to warn or fail? What about extensions that implicitly have many unused
         writeDiagnostic("keys-unused-${parentTracer.tag}.txt") {
@@ -254,7 +257,13 @@ internal class IrBindingGraph(
           "Found absent bindings in the binding graph: ${dumpGraph("Absent bindings", short = true)}"
         }
       }
-      return BindingGraphResult(sortedKeys, deferredTypes, reachableKeys, false)
+      return BindingGraphResult(
+        topoResult.sortedKeys,
+        topoResult.deferredTypes,
+        topoResult.reachableKeys,
+        false,
+        topoResult.shardingResult
+      )
     }
 
   fun reportDuplicateBinding(
