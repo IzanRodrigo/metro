@@ -500,6 +500,7 @@ internal sealed interface IrBinding : BaseBinding<IrType, IrTypeKey, IrContextua
     /** Corresponds to @MultibindsElement.bindingId */
     val bindingId: String,
     var allowEmpty: Boolean,
+    override val contextualTypeKey: IrContextualTypeKey,
     // Reconcile this with parametersByKey?
     // TreeSet sorting for consistency
     val sourceBindings: MutableSet<IrTypeKey> = TreeSet(),
@@ -510,8 +511,6 @@ internal sealed interface IrBinding : BaseBinding<IrType, IrTypeKey, IrContextua
 
     override val nameHint: String
       get() = "${typeKey.type.rawType().name}Multibinding"
-
-    override val contextualTypeKey: IrContextualTypeKey = IrContextualTypeKey(typeKey)
 
     override val reportableDeclaration: IrDeclarationWithName? = declaration
 
@@ -603,12 +602,21 @@ internal sealed interface IrBinding : BaseBinding<IrType, IrTypeKey, IrContextua
             typeKey.multibindingId
           }
 
+        // Create the contextualTypeKey properly for map multibindings
+        // This ensures Map types get WrappedType.Map structure instead of Canonical
+        val contextualTypeKey = typeKey.type.asContextualTypeKey(
+          qualifierAnnotation = typeKey.qualifier,
+          hasDefault = false,
+          patchMutableCollections = false
+        )
+
         return Multibinding(
           typeKey,
           isSet = isSet,
           isMap = isMap,
           bindingId = bindingId,
           allowEmpty = allowEmpty,
+          contextualTypeKey = contextualTypeKey,
           declaration = declaration,
           multibindsAnnotation = multibinds,
         )
