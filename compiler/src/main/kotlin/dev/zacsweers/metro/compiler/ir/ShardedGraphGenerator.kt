@@ -1,5 +1,6 @@
 // Copyright (C) 2025 Zac Sweers
 // SPDX-License-Identifier: Apache-2.0
+@file:Suppress("DEPRECATION")
 package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.NameAllocator
@@ -18,6 +19,7 @@ import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
 import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
+import org.jetbrains.kotlin.backend.common.lower.irThrow
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.Modality
@@ -34,6 +36,8 @@ import org.jetbrains.kotlin.ir.builders.irAs
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCall
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
+import org.jetbrains.kotlin.ir.builders.irDelegatingConstructorCall
+import org.jetbrains.kotlin.ir.builders.irEquals
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
@@ -50,6 +54,10 @@ import org.jetbrains.kotlin.ir.declarations.IrParameterKind
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
+import org.jetbrains.kotlin.ir.expressions.impl.IrBranchImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrElseBranchImpl
+import org.jetbrains.kotlin.ir.expressions.impl.IrWhenImpl
 import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.types.typeOrFail
@@ -62,7 +70,12 @@ import org.jetbrains.kotlin.ir.util.defaultType as utilDefaultType
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.propertyIfAccessor
 import org.jetbrains.kotlin.ir.util.statements
+import org.jetbrains.kotlin.ir.expressions.IrGetValue
+import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.name.FqName
+import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.types.Variance
 
 /**
  * Generates sharded Metro component implementation.
@@ -532,10 +545,19 @@ internal class ShardedGraphGenerator(
     // This provides better locality in the generated when expression
     val orderedBindingsWithIds = assignBindingIds(bindingsToGenerate.map { it.first })
 
-    // Phase 3.5: Temporarily disable fast-init to focus on core sharding
-    // TODO Phase 3.6: Re-enable and properly implement SwitchingProvider
-    val useFastInit = false // Disabled: options.fastInit && bindingsToGenerate.isNotEmpty()
-    val switchingProviderClass: IrClass? = null
+    // Phase 3.7: Fast-init mode enabled with SwitchingProvider generation
+    val useFastInit = options.fastInit && bindingsToGenerate.isNotEmpty()
+    val switchingProviderClass: IrClass? = if (useFastInit) {
+      generateSwitchingProviderClass(
+        shardClass = shardClass,
+        shard = shard,
+        orderedBindings = orderedBindingsWithIds,
+        bindingFieldContext = localBindingFieldContext,
+        shardThisReceiver = shardThisReceiver,
+      )
+    } else {
+      null
+    }
 
     // Generate provider fields
     for ((typeKey, binding) in bindingsToGenerate) {
@@ -719,18 +741,41 @@ internal class ShardedGraphGenerator(
   }
 
   /**
-   * Phase 3.6: SwitchingProvider generation stub - not implemented yet.
-   * 
-   * Fast-init mode remains disabled. Core sharding (Phase 2) is production-ready.
-   * 
-   * TODO Phase 3.7: Implement SwitchingProvider properly after studying:
-   * - How to generate when() expressions in K2 IR
-   * - Proper stdlib function references (mapOf, Pair, etc.)
-   * - Or use simple if-else chains with proper IR builders
-   * 
-   * For now, we use direct provider generation which works excellently.
+   * Generates a SwitchingProvider class for fast-init mode.
+   *
+   * Creates a nested class that implements Provider<T> and uses when() expression routing
+   * to instantiate bindings based on an integer ID.
+   *
+   * Generated code structure:
+   * ```kotlin
+   * private class $$SwitchingProvider0<T>(
+   *   private val shard: Shard0,
+   *   private val id: Int
+   * ) : Provider<T> {
+   *   override fun invoke(): T {
+   *     return when (id / 100) {
+   *       0 -> invoke0()
+   *       1 -> invoke1()
+   *       else -> throw AssertionError(id)
+   *     } as T
+   *   }
+   *
+   *   private fun invoke0(): Any {
+   *     return when (id % 100) {
+   *       0 -> FooImpl(...)
+   *       1 -> BarImpl(...)
+   *       else -> throw AssertionError(id)
+   *     }
+   *   }
+   * }
+   * ```
+   *
+   * @param shardClass The shard class that will contain this SwitchingProvider
+   * @param shard The shard data structure with bindings
+   * @param orderedBindings List of (TypeKey, ID) pairs in topological order
+   * @param bindingFieldContext Context for accessing provider fields
+   * @param shardThisReceiver The this receiver parameter for the shard
    */
-  @Suppress("UNUSED_PARAMETER")
   private fun generateSwitchingProviderClass(
     shardClass: IrClass,
     shard: dev.zacsweers.metro.compiler.graph.Shard<IrTypeKey>,
@@ -738,7 +783,502 @@ internal class ShardedGraphGenerator(
     bindingFieldContext: BindingFieldContext,
     shardThisReceiver: IrValueParameter,
   ): IrClass {
-    error("SwitchingProvider generation not implemented - fast-init is disabled")
+    val shardId = shard.id
+    val className = "\$\$SwitchingProvider$shardId"
+
+    // Create the SwitchingProvider class
+    val switchingProviderClass = pluginContext.irFactory.buildClass {
+      name = Name.identifier(className)
+      visibility = DescriptorVisibilities.PRIVATE
+      modality = Modality.FINAL
+      kind = ClassKind.CLASS
+    }.apply {
+      parent = shardClass
+
+      // Add type parameter <T> with OUT variance and explicit upper bound
+      // The upper bound is critical to avoid "List is empty" errors during IR lowering
+      val typeParam = addTypeParameter {
+        name = Name.identifier("T")
+        variance = Variance.OUT_VARIANCE
+        // Set upper bound to Any? (nullable type)
+        superTypes.add(pluginContext.irBuiltIns.anyNType)
+      }
+
+      // CRITICAL: Must call createThisReceiverParameter AFTER adding type parameters
+      createThisReceiverParameter()
+
+      // Implement Provider<T> interface
+      superTypes = listOf(
+        symbols.metroProvider.typeWith(typeParam.defaultType)
+      )
+
+      // Add constructor with parameters: (shard: Shard{N}, id: Int)
+      val constructor = addConstructor {
+        isPrimary = true
+        visibility = DescriptorVisibilities.PRIVATE
+      }
+
+      // Add shard parameter
+      val shardParam = constructor.addValueParameter {
+        name = Name.identifier("shard")
+        type = shardClass.utilDefaultType
+      }
+
+      // Add id parameter
+      val idParam = constructor.addValueParameter {
+        name = Name.identifier("id")
+        type = pluginContext.irBuiltIns.intType
+      }
+
+      // Add private field for shard
+      val shardField = addField {
+        name = Name.identifier("shard")
+        type = shardClass.utilDefaultType
+        visibility = DescriptorVisibilities.PRIVATE
+        isFinal = true
+        origin = Origins.MetroGraphShard
+      }
+
+      // Add private field for id
+      val idField = addField {
+        name = Name.identifier("id")
+        type = pluginContext.irBuiltIns.intType
+        visibility = DescriptorVisibilities.PRIVATE
+        isFinal = true
+        origin = Origins.MetroGraphShard
+      }
+
+      // Generate constructor body with super() call and field initialization
+      constructor.body = DeclarationIrBuilder(pluginContext, constructor.symbol).irBlockBody {
+        // Super constructor call (required)
+        +irDelegatingConstructorCall(
+          pluginContext.irBuiltIns.anyClass.owner.constructors.single()
+        )
+
+        // Initialize shard field
+        +irSetField(
+          receiver = irGet(thisReceiver!!),
+          field = shardField,
+          value = irGet(shardParam)
+        )
+
+        // Initialize id field
+        +irSetField(
+          receiver = irGet(thisReceiver!!),
+          field = idField,
+          value = irGet(idParam)
+        )
+      }
+
+      // Generate partition methods (invoke0, invoke1, etc.)
+      val partitionMethods = generatePartitionMethods(
+        switchingProviderClass = this,
+        shardClass = shardClass,
+        orderedBindings = orderedBindings,
+        shardField = shardField,
+        idField = idField,
+        bindingFieldContext = bindingFieldContext
+      )
+
+      // Generate the main invoke() method
+      generateInvokeMethod(
+        switchingProviderClass = this,
+        typeParam = typeParam,
+        partitionMethods = partitionMethods,
+        idField = idField
+      )
+
+      // Add this class to the shard
+      shardClass.declarations.add(this)
+    }
+
+    return switchingProviderClass
+  }
+
+  /**
+   * Generates partition methods (invoke0, invoke1, etc.) for the SwitchingProvider.
+   *
+   * Each partition method handles up to 100 bindings using a when() expression that routes
+   * based on (id % 100).
+   *
+   * @param switchingProviderClass The SwitchingProvider class being generated
+   * @param orderedBindings List of (TypeKey, ID) pairs in topological order
+   * @param shardField The field holding the shard reference
+   * @param idField The field holding the binding ID
+   * @param bindingFieldContext Context for accessing provider fields
+   * @return List of generated partition methods
+   */
+  @Suppress("DEPRECATION")
+  private fun generatePartitionMethods(
+    switchingProviderClass: IrClass,
+    shardClass: IrClass,
+    orderedBindings: List<Pair<IrTypeKey, Int>>,
+    shardField: IrField,
+    idField: IrField,
+    bindingFieldContext: BindingFieldContext,
+  ): List<IrSimpleFunction> {
+    val partitionMethods = mutableListOf<IrSimpleFunction>()
+    val maxCasesPerPartition = 100
+
+    // Group bindings by partition (id / 100)
+    val partitions = orderedBindings.groupBy { (_, id) -> id / maxCasesPerPartition }
+
+    for ((partitionId, bindingsInPartition) in partitions.toSortedMap()) {
+      val methodName = "invoke$partitionId"
+
+      val partitionMethod = switchingProviderClass.addFunction(
+        name = methodName,
+        returnType = pluginContext.irBuiltIns.anyNType
+      ).apply {
+        visibility = DescriptorVisibilities.PRIVATE
+        modality = Modality.FINAL
+
+        // Set dispatch receiver
+        // Note: we can't use copyTo() here because the SwitchingProvider has type parameters
+        // and the partition method doesn't, which causes a remapping error.
+        // Instead, create a new parameter directly.
+        val methodThisReceiver = switchingProviderClass.thisReceiver!!.copyTo(
+          this,
+          type = switchingProviderClass.utilDefaultType // Use the concrete type, not parameterized
+        )
+        setDispatchReceiver(methodThisReceiver)
+
+        // Generate method body with when expression
+        body = DeclarationIrBuilder(pluginContext, symbol).irBlockBody {
+          // Create when expression: when (id % 100) { ... }
+          val whenExpr = IrWhenImpl(
+            startOffset = UNDEFINED_OFFSET,
+            endOffset = UNDEFINED_OFFSET,
+            type = pluginContext.irBuiltIns.anyNType
+          )
+
+          // Add branches for each binding in this partition
+          for ((typeKey, bindingId) in bindingsInPartition) {
+            val binding = bindingGraph.requireBinding(typeKey)
+            val caseValue = bindingId % maxCasesPerPartition
+
+            // Generate the binding instantiation code
+            // We need to generate code that accesses dependencies via shard.providerField.invoke()
+            // The expression generator will look up provider fields in bindingFieldContext
+            // and generate the appropriate invoke() calls
+
+            // Create expression generator factory for this binding
+            val expressionGeneratorFactory = IrGraphExpressionGenerator.Factory(
+              context = this@ShardedGraphGenerator,
+              node = node,
+              bindingFieldContext = bindingFieldContext,
+              bindingGraph = bindingGraph,
+              bindingContainerTransformer = bindingContainerTransformer,
+              membersInjectorTransformer = membersInjectorTransformer,
+              assistedFactoryTransformer = assistedFactoryTransformer,
+              graphExtensionGenerator = graphExtensionGenerator,
+              parentTracer = parentTracer,
+            )
+
+            // Generate the binding code using INSTANCE access type
+            // This generates the actual instantiation (not wrapped in Provider)
+            //
+            // IMPORTANT: The expression generator needs to access fields from the shard class.
+            // We pass the shard class's thisReceiver so it generates field access expressions
+            // using the shard's context. Then we transform these expressions to access fields
+            // through this.shard instead of directly.
+            val rawBindingExpression = expressionGeneratorFactory
+              .create(shardClass.thisReceiver!!)
+              .generateBindingCode(
+                binding = binding,
+                accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+                fieldInitKey = null,
+              )
+
+            // Transform the expression to replace shard's `this` with `this.shard`
+            val bindingExpression = rawBindingExpression.transform(object : IrElementTransformerVoid() {
+              override fun visitGetValue(expression: IrGetValue): IrExpression {
+                // If this is accessing the shard's thisReceiver, replace with this.shard
+                return if (expression.symbol.owner == shardClass.thisReceiver) {
+                  irGetField(
+                    receiver = irGet(methodThisReceiver),
+                    field = shardField
+                  )
+                } else {
+                  super.visitGetValue(expression)
+                }
+              }
+            }, null)
+
+            // Add branch: if (id % 100 == caseValue) return bindingExpression
+            // Calculate id % 100
+            // Find the rem function on Int
+            val remFunction = pluginContext.irBuiltIns.intClass.owner.declarations
+              .filterIsInstance<IrSimpleFunction>()
+              .single {
+                val regularParams = it.parameters.filter { p -> p.kind == IrParameterKind.Regular }
+                it.name.asString() == "rem" &&
+                regularParams.size == 1 &&
+                regularParams.first().type == pluginContext.irBuiltIns.intType
+              }
+
+            val idModExpr = irCall(remFunction).apply {
+              // With K2 parameter API, arguments includes all parameter types
+              // arguments[0] = dispatch receiver (id)
+              // arguments[1] = first regular parameter (divisor)
+              arguments[0] = irGetField(
+                receiver = irGet(methodThisReceiver),
+                field = idField
+              )
+              arguments[1] = irInt(maxCasesPerPartition)
+            }
+
+            // Create the condition: idMod == caseValue
+            val condition = irEquals(idModExpr, irInt(caseValue))
+
+            whenExpr.branches.add(
+              IrBranchImpl(
+                startOffset = UNDEFINED_OFFSET,
+                endOffset = UNDEFINED_OFFSET,
+                condition = condition,
+                result = bindingExpression
+              )
+            )
+          }
+
+          // Add else branch: throw AssertionError(id)
+          // Find AssertionError class
+          val assertionErrorClass = pluginContext.referenceClass(
+            ClassId(FqName("kotlin"), Name.identifier("AssertionError"))
+          )?.owner
+
+          val elseResult = if (assertionErrorClass != null) {
+            val assertionErrorConstructor = assertionErrorClass.constructors.first {
+              val regularParams = it.parameters.filter { p -> p.kind == IrParameterKind.Regular }
+              regularParams.size == 1 &&
+              regularParams.first().type == pluginContext.irBuiltIns.anyNType
+            }
+            irThrow(
+              irCallConstructor(
+                assertionErrorConstructor.symbol,
+                typeArguments = emptyList()
+              ).apply {
+                arguments[0] = irGetField(
+                  receiver = irGet(methodThisReceiver),
+                  field = idField
+                )
+              }
+            )
+          } else {
+            // Fallback: throw IllegalArgumentException
+            val illegalArgClass = pluginContext.referenceClass(
+              ClassId(FqName("kotlin"), Name.identifier("IllegalArgumentException"))
+            )?.owner
+            val illegalArgConstructor = illegalArgClass?.constructors?.first {
+              val regularParams = it.parameters.filter { p -> p.kind == IrParameterKind.Regular }
+              regularParams.size == 1 &&
+              regularParams.first().type == pluginContext.irBuiltIns.stringType
+            }
+            if (illegalArgConstructor != null) {
+              irThrow(
+                irCallConstructor(
+                  illegalArgConstructor.symbol,
+                  typeArguments = emptyList()
+                ).apply {
+                  arguments[0] = irString("Invalid binding ID")
+                }
+              )
+            } else {
+              // Ultimate fallback: just throw a simple error
+              irThrow(
+                irString("Invalid binding ID") as org.jetbrains.kotlin.ir.expressions.IrExpression
+              )
+            }
+          }
+
+          whenExpr.branches.add(
+            IrElseBranchImpl(
+              startOffset = UNDEFINED_OFFSET,
+              endOffset = UNDEFINED_OFFSET,
+              condition = IrConstImpl.boolean(
+                startOffset = UNDEFINED_OFFSET,
+                endOffset = UNDEFINED_OFFSET,
+                type = pluginContext.irBuiltIns.booleanType,
+                value = true
+              ),
+              result = elseResult
+            )
+          )
+
+          +irReturn(whenExpr)
+        }
+      }
+
+      partitionMethods.add(partitionMethod)
+    }
+
+    return partitionMethods
+  }
+
+  /**
+   * Generates the main invoke() method for the SwitchingProvider.
+   *
+   * Creates a when() expression that routes to partition methods based on (id / 100),
+   * then casts the result to T.
+   *
+   * @param switchingProviderClass The SwitchingProvider class being generated
+   * @param typeParam The type parameter T
+   * @param partitionMethods List of partition methods to route to
+   * @param idField The field holding the binding ID
+   */
+  @Suppress("DEPRECATION")
+  private fun generateInvokeMethod(
+    switchingProviderClass: IrClass,
+    typeParam: org.jetbrains.kotlin.ir.declarations.IrTypeParameter,
+    partitionMethods: List<IrSimpleFunction>,
+    idField: IrField,
+  ) {
+    val maxCasesPerPartition = 100
+
+    // Find the Provider.invoke() method to override
+    val providerInvokeSymbol = symbols.providerInvoke
+
+    switchingProviderClass.addFunction(
+      name = "invoke",
+      returnType = typeParam.defaultType
+    ).apply {
+      visibility = DescriptorVisibilities.PUBLIC
+      modality = Modality.OPEN  // Override methods should be OPEN, not OVERRIDE
+      overriddenSymbols = listOf(providerInvokeSymbol)
+
+      // Set dispatch receiver
+      // Note: Use concrete type for the same reason as partition methods
+      val invokeThisReceiver = switchingProviderClass.thisReceiver!!.copyTo(
+        this,
+        type = switchingProviderClass.typeWith(typeParam.defaultType) // Provider<T>
+      )
+      setDispatchReceiver(invokeThisReceiver)
+
+      // Generate method body
+      body = DeclarationIrBuilder(pluginContext, symbol).irBlockBody {
+        // Create when expression: when (id / 100) { ... }
+        val whenExpr = IrWhenImpl(
+          startOffset = UNDEFINED_OFFSET,
+          endOffset = UNDEFINED_OFFSET,
+          type = pluginContext.irBuiltIns.anyNType
+        )
+
+        // Add branches for each partition method
+        for (partitionMethod in partitionMethods) {
+          // Extract partition ID from method name (invoke0 -> 0)
+          val partitionId = partitionMethod.name.asString().removePrefix("invoke").toInt()
+
+          // Generate: if (id / 100 == partitionId) return invoke{partitionId}()
+          // Calculate id / 100
+          // Find the div function on Int
+          val divFunction = pluginContext.irBuiltIns.intClass.owner.declarations
+            .filterIsInstance<IrSimpleFunction>()
+            .single {
+              val regularParams = it.parameters.filter { p -> p.kind == IrParameterKind.Regular }
+              it.name.asString() == "div" &&
+              regularParams.size == 1 &&
+              regularParams.first().type == pluginContext.irBuiltIns.intType
+            }
+
+          val idDivExpr = irCall(divFunction).apply {
+            // With K2 parameter API, arguments includes all parameter types
+            // arguments[0] = dispatch receiver (id)
+            // arguments[1] = first regular parameter (divisor)
+            arguments[0] = irGetField(
+              receiver = irGet(invokeThisReceiver),
+              field = idField
+            )
+            arguments[1] = irInt(maxCasesPerPartition)
+          }
+
+          // Create the condition: idDiv == partitionId
+          val condition = irEquals(idDivExpr, irInt(partitionId))
+
+          // Create the result: call partition method
+          val result = irCall(partitionMethod).apply {
+            dispatchReceiver = irGet(invokeThisReceiver)
+          }
+
+          whenExpr.branches.add(
+            IrBranchImpl(
+              startOffset = UNDEFINED_OFFSET,
+              endOffset = UNDEFINED_OFFSET,
+              condition = condition,
+              result = result
+            )
+          )
+        }
+
+        // Add else branch: throw AssertionError(id)
+        // Find AssertionError class
+        val assertionErrorClass = pluginContext.referenceClass(
+          ClassId(FqName("kotlin"), Name.identifier("AssertionError"))
+        )?.owner
+
+        val elseResult = if (assertionErrorClass != null) {
+          val assertionErrorConstructor = assertionErrorClass.constructors.first {
+            val regularParams = it.parameters.filter { p -> p.kind == IrParameterKind.Regular }
+            regularParams.size == 1 &&
+            regularParams.first().type == pluginContext.irBuiltIns.anyNType
+          }
+          irThrow(
+            irCallConstructor(
+              assertionErrorConstructor.symbol,
+              typeArguments = emptyList()
+            ).apply {
+              arguments[0] = irGetField(
+                receiver = irGet(invokeThisReceiver),
+                field = idField
+              )
+            }
+          )
+        } else {
+          // Fallback: throw IllegalArgumentException
+          val illegalArgClass = pluginContext.referenceClass(
+            ClassId(FqName("kotlin"), Name.identifier("IllegalArgumentException"))
+          )?.owner
+          val illegalArgConstructor = illegalArgClass?.constructors?.first {
+            val regularParams = it.parameters.filter { p -> p.kind == IrParameterKind.Regular }
+            regularParams.size == 1 &&
+            regularParams.first().type == pluginContext.irBuiltIns.stringType
+          }
+          if (illegalArgConstructor != null) {
+            irThrow(
+              irCallConstructor(
+                illegalArgConstructor.symbol,
+                typeArguments = emptyList()
+              ).apply {
+                arguments[0] = irString("Invalid partition ID")
+              }
+            )
+          } else {
+            // Ultimate fallback: just throw a simple error
+            irThrow(
+              irString("Invalid partition ID") as org.jetbrains.kotlin.ir.expressions.IrExpression
+            )
+          }
+        }
+
+        whenExpr.branches.add(
+          IrElseBranchImpl(
+            startOffset = UNDEFINED_OFFSET,
+            endOffset = UNDEFINED_OFFSET,
+            condition = IrConstImpl.boolean(
+              startOffset = UNDEFINED_OFFSET,
+              endOffset = UNDEFINED_OFFSET,
+              type = pluginContext.irBuiltIns.booleanType,
+              value = true
+            ),
+            result = elseResult
+          )
+        )
+
+        // Cast to T and return
+        +irReturn(
+          irAs(whenExpr, typeParam.defaultType)
+        )
+      }
+    }
   }
 
   /**
