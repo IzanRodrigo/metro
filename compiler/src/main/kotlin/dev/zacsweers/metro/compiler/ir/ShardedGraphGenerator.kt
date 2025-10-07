@@ -460,6 +460,10 @@ internal class ShardedGraphGenerator(
       }.toMap()
     )
 
+    // Create a per-shard name allocator to avoid numeric suffixes across shards
+    // Each shard is a separate class scope, so field names don't collide
+    val shardFieldNameAllocator = NameAllocator()
+
     // Create a local binding field context for this shard
     // This will be populated with both local fields and delegation fields
     val localBindingFieldContext = BindingFieldContext()
@@ -501,6 +505,7 @@ internal class ShardedGraphGenerator(
               typeKey = depKey,
               sourceReceiver = componentParam,
               sourceField = componentFieldLocation.field,
+              fieldNameAllocator = shardFieldNameAllocator,
             )
             localBindingFieldContext.putProviderField(depKey, delegationField)
           }
@@ -518,6 +523,7 @@ internal class ShardedGraphGenerator(
               typeKey = depKey,
               sourceReceiver = depShardParam,
               sourceField = depShardFieldLocation.field,
+              fieldNameAllocator = shardFieldNameAllocator,
             )
             localBindingFieldContext.putProviderField(depKey, delegationField)
           }
@@ -565,8 +571,8 @@ internal class ShardedGraphGenerator(
       val suffix = "Provider"
       val fieldType = symbols.metroProvider.typeWith(typeKey.type)
 
-      // Allocate a unique field name
-      val fieldName = fieldNameAllocator.newName(
+      // Allocate a unique field name using the shard-local allocator
+      val fieldName = shardFieldNameAllocator.newName(
         binding.nameHint.decapitalizeUS().suffixIfNot(suffix)
       )
 
@@ -686,6 +692,7 @@ internal class ShardedGraphGenerator(
     typeKey: IrTypeKey,
     sourceReceiver: IrValueParameter,
     sourceField: IrField,
+    fieldNameAllocator: NameAllocator,
   ): IrField {
     val binding = bindingGraph.requireBinding(typeKey)
     val fieldName = fieldNameAllocator.newName(
