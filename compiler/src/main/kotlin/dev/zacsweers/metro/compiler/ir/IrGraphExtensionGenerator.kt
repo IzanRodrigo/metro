@@ -17,14 +17,27 @@ import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
+import org.jetbrains.kotlin.ir.builders.irExprBody
+import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.irAttribute
+import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.util.addChild
+import org.jetbrains.kotlin.ir.types.IrSimpleType
+import org.jetbrains.kotlin.ir.types.typeOrFail
+import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.builders.declarations.addField
+import org.jetbrains.kotlin.ir.types.typeWith
+import dev.zacsweers.metro.compiler.ir.thisReceiverOrFail
+import dev.zacsweers.metro.compiler.ir.irLambda
+import dev.zacsweers.metro.compiler.ir.irInvoke
 import org.jetbrains.kotlin.ir.util.addFakeOverrides
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.classIdOrFail
@@ -45,6 +58,9 @@ internal class IrGraphExtensionGenerator(
   private val contributionData: IrContributionData,
   private val parentGraph: IrClass,
 ) : IrMetroContext by context {
+    // Legacy early extension delegation logic (pre-shard). Superseded by post-shard synthesis in
+    // ShardedGraphGenerator. Left gated for temporary comparison. Disabled by default.
+    private val ENABLE_LEGACY_SHARDED_EXTENSION_DELEGATION = false
 
   /**
    * Cache for transitive closure of all included binding containers. Maps [ClassId] ->
@@ -375,10 +391,143 @@ internal class IrGraphExtensionGenerator(
         }
 
     graphImpl.addFakeOverrides(irTypeSystemContext)
+    // Re-introduced delegation (moved back from IrGraphGenerator) so that extension classes always
+    // have their local mirror provider fields ready before later graph transformation phases.
+    // Fields are recorded on the class via an irAttribute so IrGraphGenerator can register them
+    // in its BindingFieldContext when it later processes this extension graph.
+    run {
+      val parentClass = parentGraph
+      // Collect shard classes if any (main graphs only, extensions won't be sharded but parent may be)
+      val shardClasses = parentClass.declarations.filterIsInstance<IrClass>()
+        .filter { it.name.asString().startsWith("Shard") || it.name.asString().startsWith("Shard_") }
+      val outerField = graphImpl.declarations.filterIsInstance<IrField>()
+        .firstOrNull { it.type == parentClass.defaultType }
+      val added = mutableListOf<IrField>()
+      fun IrClass.captureParentInstanceExpr(irBuilder: IrBuilderWithScope): IrExpression {
+        return if (outerField != null) {
+          irBuilder.irGetField(irBuilder.irGet(graphImpl.thisReceiverOrFail), outerField)
+        } else {
+          irBuilder.irGet(parentClass.thisReceiverOrFail)
+        }
+      }
 
+      // 1. Mirror shard provider fields
+      for (shard in shardClasses) {
+        val shardInstanceField = parentClass.declarations.filterIsInstance<IrField>()
+          .firstOrNull { it.type == shard.defaultType }
+        for (f in shard.declarations.filterIsInstance<IrField>()) {
+          val simple = f.type as? IrSimpleType ?: continue
+          if (simple.classOrNull != symbols.metroProvider) continue
+          if (graphImpl.declarations.any { it is IrField && it.name == f.name }) continue
+          val underlying = simple.arguments.firstOrNull()?.typeOrFail ?: continue
+          val localField = graphImpl.addField {
+            name = f.name
+            type = symbols.metroProvider.typeWith(underlying)
+            visibility = DescriptorVisibilities.PRIVATE
+            isFinal = true
+            origin = Origins.GeneratedGraphExtension
+          }
+          localField.initializer = createIrBuilder(localField.symbol).run {
+            val providerLambda = irLambda(
+              parent = graphImpl,
+              receiverParameter = null,
+              valueParameters = emptyList(),
+              returnType = underlying,
+              suspend = false,
+            ) {
+              val parentInstance = graphImpl.captureParentInstanceExpr(this)
+              val owningShard = if (shardInstanceField != null) {
+                irGetField(parentInstance, shardInstanceField)
+              } else parentInstance
+              +irReturn(
+                irInvoke(
+                  dispatchReceiver = irGetField(owningShard, f),
+                  callee = symbols.providerInvoke,
+                  typeHint = underlying,
+                )
+              )
+            }
+            irExprBody(
+              irInvoke(
+                dispatchReceiver = null,
+                callee = symbols.metroProviderFunction,
+                typeArgs = listOf(underlying),
+                args = listOf(providerLambda),
+                typeHint = symbols.metroProvider.typeWith(underlying),
+              )
+            )
+          }
+          added += localField
+        }
+      }
+      if (!ENABLE_LEGACY_SHARDED_EXTENSION_DELEGATION) {
+        // Early delegation disabled; post-shard synthesis will handle this.
+        return graphImpl
+      }
+      // 2. Mirror direct parent provider fields
+      val shardProviderNames = shardClasses.flatMap { it.declarations.filterIsInstance<IrField>() }
+        .map { it.name }.toSet()
+      val parentProviderFields = parentClass.declarations.filterIsInstance<IrField>()
+        .filter { f ->
+          val simple = f.type as? IrSimpleType ?: return@filter false
+          simple.classOrNull == symbols.metroProvider && f.name !in shardProviderNames
+        }
+      for (f in parentProviderFields) {
+        if (graphImpl.declarations.any { it is IrField && it.name == f.name }) continue
+        val simple = f.type as? IrSimpleType ?: continue
+        val underlying = simple.arguments.firstOrNull()?.typeOrFail ?: continue
+        val localField = graphImpl.addField {
+          name = f.name
+          type = symbols.metroProvider.typeWith(underlying)
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = true
+          origin = Origins.GeneratedGraphExtension
+        }
+        localField.initializer = createIrBuilder(localField.symbol).run {
+          val providerLambda = irLambda(
+            parent = graphImpl,
+            receiverParameter = null,
+            valueParameters = emptyList(),
+            returnType = underlying,
+            suspend = false,
+          ) {
+            val parentInstance = graphImpl.captureParentInstanceExpr(this)
+            +irReturn(
+              irInvoke(
+                dispatchReceiver = irGetField(parentInstance, f),
+                callee = symbols.providerInvoke,
+                typeHint = underlying,
+              )
+            )
+          }
+          irExprBody(
+            irInvoke(
+              dispatchReceiver = null,
+              callee = symbols.metroProviderFunction,
+              typeArgs = listOf(underlying),
+              args = listOf(providerLambda),
+              typeHint = symbols.metroProvider.typeWith(underlying),
+            )
+          )
+        }
+        added += localField
+      }
+      if (added.isNotEmpty()) {
+        val existing = graphImpl.extensionDelegatedProviderFields ?: mutableListOf()
+        existing += added
+        graphImpl.extensionDelegatedProviderFields = existing
+        if (options.shardingDebug) {
+          writeDiagnostic("sharding-trace.txt") {
+            buildString {
+              appendLine("EXTENSION-DELEGATION ${graphImpl.name} synthesized=${added.size}")
+              added.forEach { fld -> appendLine("  field=${fld.name.asString()} type=${fld.type}") }
+            }
+          }
+        }
+      }
+    }
     return graphImpl
   }
-
   /**
    * This provides `ContributesBinding.rank` interop for users migrating from Dagger-Anvil to make
    * the migration to Metro more feasible.
@@ -536,4 +685,7 @@ internal class GeneratedGraphExtensionData(
 )
 
 internal var IrClass.generatedGraphExtensionData: GeneratedGraphExtensionData? by
+  irAttribute(copyByDefault = false)
+
+internal var IrClass.extensionDelegatedProviderFields: MutableList<IrField>? by
   irAttribute(copyByDefault = false)

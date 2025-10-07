@@ -59,7 +59,9 @@ import org.jetbrains.kotlin.ir.expressions.impl.IrConstImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrElseBranchImpl
 import org.jetbrains.kotlin.ir.expressions.impl.IrWhenImpl
 import org.jetbrains.kotlin.ir.types.IrSimpleType
+import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.defaultType
+import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
@@ -218,6 +220,14 @@ internal class ShardedGraphGenerator(
         updateBindingFieldContextWithShardLocations(shardClasses, shardInstanceFields)
       }
 
+      // Mirror provider fields into already-generated extension impls now that shards exist.
+      // Extensions were generated before sharding so they could not synthesize these delegation
+      // fields earlier. Doing this before implementing overrides ensures expression generation
+      // for extension code sees local provider fields, preventing NoSuchFieldError at runtime.
+      tracer.traceNested("Mirror provider fields into extensions post-sharding") {
+        synthesizeExtensionDelegations(shardClasses)
+      }
+
       // Update component constructor to call init methods
       tracer.traceNested("Update component constructor") {
         updateComponentConstructor()
@@ -228,6 +238,193 @@ internal class ShardedGraphGenerator(
       // with our globalBindingFieldContext that tracks fields across shards
       tracer.traceNested("Implement overrides") {
         node.implementOverrides()
+      }
+    }
+  }
+
+  /**
+   * Mirrors parent graph provider fields (both shard-owned and direct) into each generated
+   * extension (subcomponent) implementation class. See patch rationale in caller.
+   */
+  private fun synthesizeExtensionDelegations(shardClasses: List<ShardClassInfo>) {
+    val shardIrClasses = shardClasses.map { it.irClass }
+    val extensionImpls = graphClass.declarations.filterIsInstance<IrClass>()
+      .filter { it.origin == Origins.GeneratedGraphExtension }
+    if (extensionImpls.isEmpty()) return
+
+    val shardProviderNames = shardIrClasses.flatMap { shard ->
+      shard.declarations.filterIsInstance<IrField>()
+        .filter { (it.type as? IrSimpleType)?.classOrNull == symbols.metroProvider }
+        .map { it.name }
+    }.toSet()
+    val parentProviderFields = graphClass.declarations.filterIsInstance<IrField>()
+      .filter { f ->
+        val simple = f.type as? IrSimpleType ?: return@filter false
+        simple.classOrNull == symbols.metroProvider && f.name !in shardProviderNames
+      }
+
+  // Track provider names mirrored for potential outer graph delegation
+  val mirroredProviderByName = mutableMapOf<Name, Pair<IrField, IrField?>>()
+
+  for (extension in extensionImpls) {
+      // Use a mutable set so we can record new delegated fields as we add them. The previous
+      // implementation used an immutable snapshot which allowed duplicate field names to be
+      // generated when traversing multiple shards (same provider name appearing in >1 shard).
+      val existingNames = extension.declarations.filterIsInstance<IrField>().map { it.name }.toMutableSet()
+      val outerInstanceField = extension.declarations.filterIsInstance<IrField>()
+        .firstOrNull { it.type == graphClass.utilDefaultType }
+      val added = mutableListOf<IrField>()
+
+      fun createDelegatedField(providerField: IrField, shardInstanceField: IrField?, underlyingType: IrType) {
+        // Guard again in case multiple shards expose the same provider name. This ensures we only
+        // create one delegated field per unique provider name on the extension implementation.
+        if (providerField.name in existingNames) return
+        val providerFieldType = underlyingType.wrapInProvider(symbols.metroProvider)
+        val localField = extension.addField {
+          name = providerField.name
+          type = providerFieldType
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = true
+          origin = Origins.GeneratedGraphExtension
+        }
+        localField.initializer = DeclarationIrBuilder(pluginContext, localField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
+          .irExprBody(
+            DeclarationIrBuilder(pluginContext, localField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET).run {
+              val providerLambda = irLambda(
+                parent = extension,
+                receiverParameter = null,
+                valueParameters = emptyList(),
+                returnType = underlyingType,
+                suspend = false,
+              ) {
+                val parentInstance = if (outerInstanceField != null) {
+                  irGetField(irGet(extension.thisReceiverOrFail), outerInstanceField)
+                } else {
+                  irGet(graphClass.thisReceiverOrFail)
+                }
+                val shardOrParent = if (shardInstanceField != null) {
+                  irGetField(parentInstance, shardInstanceField)
+                } else parentInstance
+                +irReturn(
+                  irInvoke(
+                    dispatchReceiver = irGetField(shardOrParent, providerField),
+                    callee = symbols.providerInvoke,
+                    typeHint = underlyingType,
+                  )
+                )
+              }
+              irInvoke(
+                dispatchReceiver = null,
+                callee = symbols.metroProviderFunction,
+                typeArgs = listOf(underlyingType),
+                args = listOf(providerLambda),
+                typeHint = providerFieldType,
+              )
+            }
+          )
+        added += localField
+        existingNames += providerField.name
+        val key = bindingGraph.bindingsSnapshot().keys.firstOrNull { it.type == underlyingType } ?: IrTypeKey(underlyingType)
+        if (globalBindingFieldContext.providerField(key) == null) {
+          globalBindingFieldContext.putProviderField(key, localField)
+        }
+      }
+
+      // Mirror shard provider fields
+      for (shard in shardIrClasses) {
+        val shardInstanceField = graphClass.declarations.filterIsInstance<IrField>()
+          .firstOrNull { it.type == shard.utilDefaultType }
+        for (providerField in shard.declarations.filterIsInstance<IrField>()) {
+          if (providerField.name in existingNames) continue
+          val simple = providerField.type as? IrSimpleType ?: continue
+          if (simple.classOrNull != symbols.metroProvider) continue
+          val underlyingType = simple.arguments.firstOrNull()?.typeOrFail ?: continue
+          createDelegatedField(providerField, shardInstanceField, underlyingType)
+          // Record first occurrence for outer delegation synthesis
+          mirroredProviderByName.putIfAbsent(providerField.name, providerField to shardInstanceField)
+        }
+      }
+
+      // Mirror direct parent provider fields
+      for (providerField in parentProviderFields) {
+        if (providerField.name in existingNames) continue
+        val simple = providerField.type as? IrSimpleType ?: continue
+        val underlyingType = simple.arguments.firstOrNull()?.typeOrFail ?: continue
+        createDelegatedField(providerField, null, underlyingType)
+        mirroredProviderByName.putIfAbsent(providerField.name, providerField to null)
+      }
+
+      if (added.isNotEmpty()) {
+        val existingAttr = extension.extensionDelegatedProviderFields ?: mutableListOf()
+        existingAttr += added
+        extension.extensionDelegatedProviderFields = existingAttr
+        if (options.shardingDebug) {
+          writeDiagnostic("sharding-trace.txt") {
+            buildString {
+              appendLine("POST-SHARD-EXT-DEL ${extension.name} synthesized=${added.size}")
+              added.forEach { fld -> appendLine("  field=${fld.name.asString()} type=${fld.type}") }
+            }
+          }
+        }
+      } else if (options.shardingDebug) {
+        writeDiagnostic("sharding-trace.txt") { "POST-SHARD-EXT-DEL ${extension.name} synthesized=0" }
+      }
+    }
+
+    // Synthesize outer graph delegation fields for mirrored providers not already present on the
+    // component. This restores a pre-sharding invariant some synthetic accessors rely on.
+    if (mirroredProviderByName.isNotEmpty()) {
+      for ((name, pair) in mirroredProviderByName) {
+        if (graphClass.declarations.filterIsInstance<IrField>().any { it.name == name }) continue
+        val (providerField, shardInstanceField) = pair
+        val simple = providerField.type as? IrSimpleType ?: continue
+        val underlyingType = simple.arguments.firstOrNull()?.typeOrFail ?: continue
+        val providerFieldType = underlyingType.wrapInProvider(symbols.metroProvider)
+        val outerField = graphClass.addField {
+          this.name = name
+          type = providerFieldType
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = true
+          origin = Origins.MetroGraphShard // mark as shard-related delegation
+        }
+        outerField.initializer = DeclarationIrBuilder(pluginContext, outerField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
+          .irExprBody(
+            DeclarationIrBuilder(pluginContext, outerField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET).run {
+              val providerLambda = irLambda(
+                parent = graphClass,
+                receiverParameter = null,
+                valueParameters = emptyList(),
+                returnType = underlyingType,
+                suspend = false,
+              ) {
+                val parentInstance = irGet(graphClass.thisReceiverOrFail)
+                val shardOrParent = if (shardInstanceField != null) {
+                  irGetField(parentInstance, shardInstanceField)
+                } else parentInstance
+                +irReturn(
+                  irInvoke(
+                    dispatchReceiver = irGetField(shardOrParent, providerField),
+                    callee = symbols.providerInvoke,
+                    typeHint = underlyingType,
+                  )
+                )
+              }
+              irInvoke(
+                dispatchReceiver = null,
+                callee = symbols.metroProviderFunction,
+                typeArgs = listOf(underlyingType),
+                args = listOf(providerLambda),
+                typeHint = providerFieldType,
+              )
+            }
+          )
+        val key = bindingGraph.bindingsSnapshot().keys.firstOrNull { it.type == underlyingType } ?: IrTypeKey(underlyingType)
+        if (globalBindingFieldContext.providerField(key) == null) {
+          globalBindingFieldContext.putProviderField(key, outerField)
+        }
+        if (options.shardingDebug) {
+          writeDiagnostic("sharding-trace.txt") { "POST-SHARD-OUTER-DEL field=${name.asString()}" }
+        }
       }
     }
   }
