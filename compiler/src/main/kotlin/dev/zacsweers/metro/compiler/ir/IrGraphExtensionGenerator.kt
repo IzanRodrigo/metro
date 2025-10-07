@@ -58,9 +58,6 @@ internal class IrGraphExtensionGenerator(
   private val contributionData: IrContributionData,
   private val parentGraph: IrClass,
 ) : IrMetroContext by context {
-    // Legacy early extension delegation logic (pre-shard). Superseded by post-shard synthesis in
-    // ShardedGraphGenerator. Left gated for temporary comparison. Disabled by default.
-    private val ENABLE_LEGACY_SHARDED_EXTENSION_DELEGATION = false
 
   /**
    * Cache for transitive closure of all included binding containers. Maps [ClassId] ->
@@ -460,58 +457,7 @@ internal class IrGraphExtensionGenerator(
           added += localField
         }
       }
-      if (!ENABLE_LEGACY_SHARDED_EXTENSION_DELEGATION) {
-        // Early delegation disabled; post-shard synthesis will handle this.
-        return graphImpl
-      }
-      // 2. Mirror direct parent provider fields
-      val shardProviderNames = shardClasses.flatMap { it.declarations.filterIsInstance<IrField>() }
-        .map { it.name }.toSet()
-      val parentProviderFields = parentClass.declarations.filterIsInstance<IrField>()
-        .filter { f ->
-          val simple = f.type as? IrSimpleType ?: return@filter false
-          simple.classOrNull == symbols.metroProvider && f.name !in shardProviderNames
-        }
-      for (f in parentProviderFields) {
-        if (graphImpl.declarations.any { it is IrField && it.name == f.name }) continue
-        val simple = f.type as? IrSimpleType ?: continue
-        val underlying = simple.arguments.firstOrNull()?.typeOrFail ?: continue
-        val localField = graphImpl.addField {
-          name = f.name
-          type = symbols.metroProvider.typeWith(underlying)
-          visibility = DescriptorVisibilities.PRIVATE
-          isFinal = true
-          origin = Origins.GeneratedGraphExtension
-        }
-        localField.initializer = createIrBuilder(localField.symbol).run {
-          val providerLambda = irLambda(
-            parent = graphImpl,
-            receiverParameter = null,
-            valueParameters = emptyList(),
-            returnType = underlying,
-            suspend = false,
-          ) {
-            val parentInstance = graphImpl.captureParentInstanceExpr(this)
-            +irReturn(
-              irInvoke(
-                dispatchReceiver = irGetField(parentInstance, f),
-                callee = symbols.providerInvoke,
-                typeHint = underlying,
-              )
-            )
-          }
-          irExprBody(
-            irInvoke(
-              dispatchReceiver = null,
-              callee = symbols.metroProviderFunction,
-              typeArgs = listOf(underlying),
-              args = listOf(providerLambda),
-              typeHint = symbols.metroProvider.typeWith(underlying),
-            )
-          )
-        }
-        added += localField
-      }
+      // Early extension delegation removed; handled post-shard in ShardedGraphGenerator.
       if (added.isNotEmpty()) {
         val existing = graphImpl.extensionDelegatedProviderFields ?: mutableListOf()
         existing += added
