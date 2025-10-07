@@ -991,7 +991,7 @@ internal class ShardedGraphGenerator(
               )
 
             // Transform the expression to replace shard's `this` with `this.shard`
-            val bindingExpression = rawBindingExpression.transform(object : IrElementTransformerVoid() {
+            val transformedExpression = rawBindingExpression.transform(object : IrElementTransformerVoid() {
               override fun visitGetValue(expression: IrGetValue): IrExpression {
                 // If this is accessing the shard's thisReceiver, replace with this.shard
                 return if (expression.symbol.owner == shardClass.thisReceiver) {
@@ -1004,6 +1004,42 @@ internal class ShardedGraphGenerator(
                 }
               }
             }, null)
+
+            // CRITICAL FIX: The expression generator may return a Provider/Factory object
+            // instead of the actual instance for certain binding types (@Provides methods,
+            // factory classes, etc.). We need to invoke the provider to get the instance.
+            //
+            // When AccessType.INSTANCE is used with generateBindingCode(), it SHOULD invoke
+            // providers automatically if a provider field exists (see IrGraphExpressionGenerator:132-136).
+            // However, when generating code inside SwitchingProvider partition methods, we're in
+            // a context where provider fields don't exist yet (they're being initialized), so
+            // the expression generator returns factory.create() expressions instead of
+            // factory.create().invoke() expressions.
+            //
+            // Solution: Check if the binding type typically returns a provider, and if so,
+            // wrap the expression in a .invoke() call.
+            //
+            // For Alias bindings (@Binds), we need to check the aliased binding type recursively
+            // since the expression generator resolves aliases automatically.
+            fun needsInvocation(b: IrBinding): Boolean {
+              return when (b) {
+                is IrBinding.Provided -> true
+                is IrBinding.ConstructorInjected -> true
+                is IrBinding.Alias -> needsInvocation(b.aliasedBinding(bindingGraph))
+                else -> false
+              }
+            }
+
+            val bindingExpression = if (needsInvocation(binding)) {
+              // Binding returns a factory/provider that needs to be invoked
+              irInvoke(
+                dispatchReceiver = transformedExpression,
+                callee = symbols.providerInvoke
+              )
+            } else {
+              // Binding returns an instance directly (ObjectClass, BoundInstance, etc.)
+              transformedExpression
+            }
 
             // Add branch: if (id % 100 == caseValue) return bindingExpression
             // Calculate id % 100
