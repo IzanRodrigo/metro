@@ -24,6 +24,7 @@ import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
+import org.jetbrains.kotlin.ir.declarations.IrDeclarationOrigin
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.irAttribute
 import org.jetbrains.kotlin.ir.expressions.IrExpression
@@ -144,6 +145,7 @@ internal class IrGraphExtensionGenerator(
           origin = Origins.Default
         }
         .apply {
+          val extensionClass = this
           this.superTypes = listOf(factoryInterface.defaultType)
           this.typeParameters = copyTypeParametersFrom(factoryInterface)
           this.createThisReceiverParameter()
@@ -342,6 +344,29 @@ internal class IrGraphExtensionGenerator(
             contributedSupertypes
               // Deterministic sort
               .sortedBy { it.rawType().classIdOrFail.toString() }
+
+          val extensionClass = this
+          val syntheticOuterField = extensionClass.declarations
+            .filterIsInstance<IrField>()
+            .firstOrNull { it.origin == IrDeclarationOrigin.FIELD_FOR_OUTER_THIS }
+          val parentInstanceField = addField {
+            name = "parentInstance".asName()
+            type = parentGraph.defaultType
+            visibility = DescriptorVisibilities.PRIVATE
+            isFinal = true
+            origin = Origins.GeneratedGraphExtension
+          }.apply {
+            val initBuilder = createIrBuilder(symbol)
+            val parentExpr = if (syntheticOuterField != null) {
+              initBuilder.irGetField(
+                initBuilder.irGet(extensionClass.thisReceiverOrFail),
+                syntheticOuterField,
+              )
+            } else {
+              initBuilder.irGet(parentGraph.thisReceiverOrFail)
+            }
+            initializer = initBuilder.irExprBody(parentExpr)
+          }
 
           val ctor =
             addConstructor {

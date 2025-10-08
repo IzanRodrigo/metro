@@ -103,6 +103,10 @@ internal class IrGraphGenerator(
       parentTracer = parentTracer,
     )
 
+  private val extensionAccessorRewriter by lazy {
+    ExtensionAccessorRewriter(pluginContext) { fileName, text -> writeDiagnostic(fileName, text) }
+  }
+
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
     fieldsToTypeKeys[this] = typeKey
     fieldInitializers += (this to init)
@@ -538,6 +542,10 @@ internal class IrGraphGenerator(
 
       parentTracer.traceNested("Implement overrides") { node.implementOverrides() }
 
+      parentTracer.traceNested("Rewrite extension provider accessors") {
+        rewriteExtensionProviderAccessors()
+      }
+
       if (graphClass.origin != Origins.GeneratedGraphExtension) {
         parentTracer.traceNested("Generate Metro metadata") {
           // Finally, generate metadata
@@ -557,6 +565,70 @@ internal class IrGraphGenerator(
         }
       }
     }
+
+  private data class NonShardedExtensionRewriteContext(
+    val localProviders: Map<String, IrField>,
+    val parentField: IrField?,
+  )
+
+  private fun rewriteExtensionProviderAccessors() {
+    val extensionImpls = graphClass.declarations.filterIsInstance<IrClass>()
+      .filter { it.origin == Origins.GeneratedGraphExtension }
+    if (extensionImpls.isEmpty()) return
+
+    val extensionContexts = extensionImpls.associateWith { extension ->
+      val localProviders = extension.declarations.filterIsInstance<IrField>()
+        .filter { (it.type as? IrSimpleType)?.classOrNull == symbols.metroProvider }
+        .associateBy { it.name.asString() }
+      val parentField = extension.declarations.filterIsInstance<IrField>()
+        .firstOrNull { it.type == graphClass.defaultType }
+      NonShardedExtensionRewriteContext(localProviders, parentField)
+    }
+
+    val componentProvidersByName = graphClass.declarations.filterIsInstance<IrField>()
+      .filter { (it.type as? IrSimpleType)?.classOrNull == symbols.metroProvider }
+      .associateBy { it.name.asString() }
+
+    extensionAccessorRewriter.rewrite(extensionImpls) { extension, field, dispatch, builder, _, diagPrefix ->
+      if (field.parent != graphClass) return@rewrite null
+
+      val context = extensionContexts[extension] ?: return@rewrite null
+      val fieldName = field.name.asString()
+      val receiverParam = dispatch ?: extension.thisReceiverOrFail
+      val receiverExpr = builder.irGet(receiverParam)
+
+      context.localProviders[fieldName]?.let { localField ->
+        val expression = builder.irGetField(receiverExpr, localField)
+        val dispatchName = dispatch?.name?.asString() ?: "<this>"
+        return@rewrite ExtensionAccessorRewriter.Resolution(
+          expression,
+          "resolution=local dispatch=$dispatchName",
+        )
+      }
+
+      val parentField = context.parentField ?: run {
+        writeDiagnostic("extension-accessor-rewrites.txt") {
+          "$diagPrefix resolution=unmapped reason=no_parent_field"
+        }
+        return@rewrite null
+      }
+
+      val componentField = componentProvidersByName[fieldName] ?: run {
+        writeDiagnostic("extension-accessor-rewrites.txt") {
+          "$diagPrefix resolution=unmapped reason=no_component_field"
+        }
+        return@rewrite null
+      }
+
+      val parentExpr = builder.irGetField(receiverExpr, parentField)
+      val finalExpr = builder.irGetField(parentExpr, componentField)
+      val dispatchName = dispatch?.name?.asString() ?: "<this>"
+      ExtensionAccessorRewriter.Resolution(
+        finalExpr,
+        "resolution=component dispatch=$dispatchName componentField=${componentField.name.asString()}",
+      )
+    }
+  }
 
   // TODO add asProvider support?
   private fun IrClass.addSimpleInstanceField(

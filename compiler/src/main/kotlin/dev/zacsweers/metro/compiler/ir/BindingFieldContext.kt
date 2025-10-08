@@ -90,5 +90,7 @@ internal class BindingFieldContext {
   /** For diagnostics: returns all registered provider keys as strings. */
   fun dumpProviderKeys(): String = providerFields.keys.joinToString(", ") { it.toString() }
 
+  fun providerEntries(): Iterable<Map.Entry<IrTypeKey, FieldLocation>> = providerFields.entries
+
   operator fun contains(key: IrTypeKey): Boolean = instanceFields.containsKey(key) || providerFields.containsKey(key)
 }
