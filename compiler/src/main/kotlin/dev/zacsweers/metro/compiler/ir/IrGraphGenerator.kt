@@ -216,6 +216,7 @@ internal class IrGraphGenerator(
             .initFinal {
               instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
             },
+          ownerGraphClassId = graphClass.classIdOrFail,
         )
       }
 
@@ -247,8 +248,16 @@ internal class IrGraphGenerator(
                 irGet(irParam)
               }
             // Link both the graph typekey and the (possibly-impl type)
-            bindingFieldContext.putInstanceField(param.typeKey, graphDepField)
-            bindingFieldContext.putInstanceField(graphDep.typeKey, graphDepField)
+            bindingFieldContext.putInstanceField(
+              param.typeKey,
+              graphDepField,
+              ownerGraphClassId = graphClass.classIdOrFail,
+            )
+            bindingFieldContext.putInstanceField(
+              graphDep.typeKey,
+              graphDepField,
+              ownerGraphClassId = graphClass.classIdOrFail,
+            )
 
             if (graphDep.hasExtensions) {
               val depMetroGraph = graphDep.sourceGraph.metroGraphOrFail
@@ -281,7 +290,11 @@ internal class IrGraphGenerator(
             irGet(thisReceiverParameter)
           }
 
-        bindingFieldContext.putInstanceField(node.typeKey, thisGraphField)
+        bindingFieldContext.putInstanceField(
+          node.typeKey,
+          thisGraphField,
+          ownerGraphClassId = graphClass.classIdOrFail,
+        )
 
         // Expose the graph as a provider field
         // TODO this isn't always actually needed but different than the instance field above
@@ -301,6 +314,7 @@ internal class IrGraphGenerator(
               irGetField(irGet(thisReceiverParameter), thisGraphField),
             )
           },
+          ownerGraphClassId = graphClass.classIdOrFail,
         )
       }
 
@@ -336,7 +350,11 @@ internal class IrGraphGenerator(
                 )
               }
 
-          bindingFieldContext.putProviderField(deferredTypeKey, field)
+          bindingFieldContext.putProviderField(
+            deferredTypeKey,
+            field,
+            ownerGraphClassId = graphClass.classIdOrFail,
+          )
           field
         }
 
@@ -410,7 +428,11 @@ internal class IrGraphGenerator(
                 it.doubleCheck(this@withInit, symbols, binding.typeKey)
               }
           }
-          bindingFieldContext.putProviderField(key, field)
+          bindingFieldContext.putProviderField(
+            key,
+            field,
+            ownerGraphClassId = graphClass.classIdOrFail,
+          )
         }
 
       // Add statements to our constructor's deferred fields _after_ we've added all provider

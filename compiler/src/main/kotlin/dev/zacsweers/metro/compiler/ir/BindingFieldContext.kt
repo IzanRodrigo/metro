@@ -2,9 +2,10 @@
 // SPDX-License-Identifier: Apache-2.0
 package dev.zacsweers.metro.compiler.ir
 
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.types.classOrNull
-import org.jetbrains.kotlin.ir.types.IrSimpleType
+import org.jetbrains.kotlin.name.ClassId
 
 /**
  * Information about where a binding field is located.
@@ -14,7 +15,8 @@ import org.jetbrains.kotlin.ir.types.IrSimpleType
  */
 internal data class FieldLocation(
   val field: IrField,
-  val shardField: IrField? = null
+  val shardField: IrField? = null,
+  val ownerGraphClassId: ClassId? = null,
 )
 
 internal class BindingFieldContext {
@@ -32,12 +34,22 @@ internal class BindingFieldContext {
   val availableInstanceKeys: Set<IrTypeKey>
     get() = instanceFields.keys
 
-  fun putInstanceField(key: IrTypeKey, field: IrField, shardField: IrField? = null) {
-    instanceFields[key] = FieldLocation(field, shardField)
+  fun putInstanceField(
+    key: IrTypeKey,
+    field: IrField,
+    shardField: IrField? = null,
+    ownerGraphClassId: ClassId? = null,
+  ) {
+    instanceFields[key] = FieldLocation(field, shardField, ownerGraphClassId)
   }
 
-  fun putProviderField(key: IrTypeKey, field: IrField, shardField: IrField? = null) {
-    providerFields[key] = FieldLocation(field, shardField)
+  fun putProviderField(
+    key: IrTypeKey,
+    field: IrField,
+    shardField: IrField? = null,
+    ownerGraphClassId: ClassId? = null,
+  ) {
+    providerFields[key] = FieldLocation(field, shardField, ownerGraphClassId)
   }
 
   fun instanceField(key: IrTypeKey): FieldLocation? {

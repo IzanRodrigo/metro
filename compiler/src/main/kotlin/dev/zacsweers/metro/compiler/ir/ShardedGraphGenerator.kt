@@ -78,6 +78,8 @@ import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.FqName
 import org.jetbrains.kotlin.name.Name
+import org.jetbrains.kotlin.ir.util.classId
+import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.types.Variance
 
 /**
@@ -165,6 +167,13 @@ internal class ShardedGraphGenerator(
   private val shardInitMethods = mutableListOf<IrSimpleFunction>()
 
   /**
+   * Component-scope initialization methods that must execute before shard initialization (e.g.,
+   * bound instance field wiring).
+   */
+  private val componentInitMethods = mutableListOf<IrSimpleFunction>()
+  private val componentInitMethodArguments = mutableMapOf<IrSimpleFunction, List<IrValueParameter>>()
+
+  /**
    * Max number of shard init method calls per partition wrapper. Mirrors the non-sharded
    * `IrGraphGenerator`'s `STATEMENTS_PER_METHOD` (25) which itself is borrowed from Dagger's
    * long-standing heuristic for keeping method bytecode size well below limits while balancing
@@ -172,6 +181,9 @@ internal class ShardedGraphGenerator(
    */
   // Use shared heuristic constant for parity with non-sharded generator.
   private val SHARD_INIT_CALLS_PER_WRAPPER = MetroConstants.MAX_INIT_STATEMENTS_PER_METHOD
+
+  /** Chunk size for component-level bound instance initialization helper methods. */
+  private val COMPONENT_INIT_CALLS_PER_METHOD = 200
 
   /**
    * Expression generator factory configured with the global binding field context.
@@ -190,6 +202,11 @@ internal class ShardedGraphGenerator(
       parentTracer = parentTracer,
     )
 
+  /** Global binding ordering information shared across shard generation steps. */
+  private val bindingPlannerResult = GlobalBindingPlanner(bindingGraph, sealResult).plan()
+
+  private val graphClassId: ClassId = graphClass.classIdOrFail
+
   /**
    * Information about a generated shard class.
    */
@@ -200,6 +217,26 @@ internal class ShardedGraphGenerator(
     val componentParam: IrValueParameter,
     val depShardParams: List<IrValueParameter>,
   )
+
+  /**
+   * Describes a field that must be initialized after construction.
+   *
+   * [buildInitializer] is invoked within the appropriate IR builder so the expression can be
+   * created with the correct parent and captures. The parameter supplies the dispatch receiver
+   * (`this`) for the enclosing class along with an optional mapping of constructor parameters to
+   * copied parameters in helper methods.
+   */
+  private data class FieldInitialization(
+    val field: IrField,
+    val requiredParams: List<IrValueParameter> = emptyList(),
+    val buildInitializer: IrBuilderWithScope.(IrValueParameter, Map<IrValueParameter, IrValueParameter>) -> IrExpression,
+  )
+
+  /**
+   * Component-level field initialization metadata used to wire @BindsInstance parameters without
+   * bloating the constructor body.
+   */
+  private val componentInitializations = mutableListOf<FieldInitialization>()
 
   /**
    * Context for accessing fields from within a shard.
@@ -217,9 +254,16 @@ internal class ShardedGraphGenerator(
    */
   fun generate() {
     parentTracer.traceNested("Generate sharded component") { tracer ->
+      componentInitMethods.clear()
+      componentInitMethodArguments.clear()
+      componentInitializations.clear()
+      val componentCtor = graphClass.constructors.first { it.isPrimary }
+      val componentThisReceiver = graphClass.thisReceiver
+        ?: error("Component class has no this receiver")
+
       // First, handle BoundInstance fields in the component (not shards)
       tracer.traceNested("Generate BoundInstance fields") {
-        generateBoundInstanceFields()
+        generateBoundInstanceFields(componentCtor, componentThisReceiver)
       }
 
       // Generate each shard class with provider fields
@@ -243,6 +287,10 @@ internal class ShardedGraphGenerator(
       // for extension code sees local provider fields, preventing NoSuchFieldError at runtime.
       tracer.traceNested("Mirror provider fields into extensions post-sharding") {
         synthesizeExtensionDelegations(shardClasses)
+      }
+
+      tracer.traceNested("Finalize component init methods") {
+        finalizeComponentInitializations(componentCtor, componentThisReceiver)
       }
 
       // Update component constructor to call init methods
@@ -278,11 +326,7 @@ internal class ShardedGraphGenerator(
 
     // Metrics (A): aggregate counters
     var totalDelegatedFields = 0
-    var totalOuterDelegations = 0
     var totalExtensionsWithDelegations = 0
-
-    // Track provider names mirrored for potential outer graph delegation
-    val mirroredProviderByName = mutableMapOf<Name, Pair<IrField, IrField?>>()
 
     // Optional (C): capture a structured delegation map for later metrics/debug dump.
     // Built if either full sharding debug is on OR the lightweight delegation map dump flag is set.
@@ -346,7 +390,11 @@ internal class ShardedGraphGenerator(
         existingNames += providerField.name
         val key = bindingGraph.bindingsSnapshot().keys.firstOrNull { it.type == underlyingType } ?: IrTypeKey(underlyingType)
         if (globalBindingFieldContext.providerField(key) == null) {
-          globalBindingFieldContext.putProviderField(key, localField)
+          globalBindingFieldContext.putProviderField(
+            key,
+            localField,
+            ownerGraphClassId = graphClassId,
+          )
         }
         delegationMapForDebug?.getOrPut(extension.name.asString()) { mutableListOf() }
           ?.add(providerField.name.asString())
@@ -362,7 +410,6 @@ internal class ShardedGraphGenerator(
           if (simple.classOrNull != symbols.metroProvider) continue
           val underlyingType = simple.arguments.firstOrNull()?.typeOrFail ?: continue
           createDelegatedField(providerField, shardInstanceField, underlyingType)
-          mirroredProviderByName.putIfAbsent(providerField.name, providerField to shardInstanceField)
         }
       }
 
@@ -372,7 +419,6 @@ internal class ShardedGraphGenerator(
         val simple = providerField.type as? IrSimpleType ?: continue
         val underlyingType = simple.arguments.firstOrNull()?.typeOrFail ?: continue
         createDelegatedField(providerField, null, underlyingType)
-        mirroredProviderByName.putIfAbsent(providerField.name, providerField to null)
       }
 
       if (added.isNotEmpty()) {
@@ -394,70 +440,12 @@ internal class ShardedGraphGenerator(
       }
     }
 
-    // Synthesize outer graph delegation fields for mirrored providers not already present on the
-    // component. This restores a pre-sharding invariant some synthetic accessors rely on.
-    if (mirroredProviderByName.isNotEmpty()) {
-      for ((name, pair) in mirroredProviderByName) {
-        if (graphClass.declarations.filterIsInstance<IrField>().any { it.name == name }) continue
-        val (providerField, shardInstanceField) = pair
-        val simple = providerField.type as? IrSimpleType ?: continue
-        val underlyingType = simple.arguments.firstOrNull()?.typeOrFail ?: continue
-        val providerFieldType = underlyingType.wrapInProvider(symbols.metroProvider)
-        val outerField = graphClass.addField {
-          this.name = name
-          type = providerFieldType
-          visibility = DescriptorVisibilities.PRIVATE
-          isFinal = true
-          origin = Origins.MetroGraphShard // mark as shard-related delegation
-        }
-        outerField.initializer = DeclarationIrBuilder(pluginContext, outerField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
-          .irExprBody(
-            DeclarationIrBuilder(pluginContext, outerField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET).run {
-              val providerLambda = irLambda(
-                parent = graphClass,
-                receiverParameter = null,
-                valueParameters = emptyList(),
-                returnType = underlyingType,
-                suspend = false,
-              ) {
-                val parentInstance = irGet(graphClass.thisReceiverOrFail)
-                val shardOrParent = if (shardInstanceField != null) {
-                  irGetField(parentInstance, shardInstanceField)
-                } else parentInstance
-                +irReturn(
-                  irInvoke(
-                    dispatchReceiver = irGetField(shardOrParent, providerField),
-                    callee = symbols.providerInvoke,
-                    typeHint = underlyingType,
-                  )
-                )
-              }
-              irInvoke(
-                dispatchReceiver = null,
-                callee = symbols.metroProviderFunction,
-                typeArgs = listOf(underlyingType),
-                args = listOf(providerLambda),
-                typeHint = providerFieldType,
-              )
-            }
-          )
-        val key = bindingGraph.bindingsSnapshot().keys.firstOrNull { it.type == underlyingType } ?: IrTypeKey(underlyingType)
-        if (globalBindingFieldContext.providerField(key) == null) {
-          globalBindingFieldContext.putProviderField(key, outerField)
-        }
-        totalOuterDelegations++
-        if (options.shardingDebug) {
-          writeDiagnostic("sharding-trace.txt") { "POST-SHARD-OUTER-DEL field=${name.asString()}" }
-        }
-      }
-    }
-
   // (C) Delegation map & metrics dump. Triggers only when shardingDebug is enabled.
   val dumpDelegation = options.shardingDebug
     if (dumpDelegation) {
       writeDiagnostic("sharding-trace.txt") {
         buildString {
-          appendLine("POST-SHARD-EXT-DEL-METRICS totalFields=$totalDelegatedFields totalOuter=$totalOuterDelegations extensionsWithDelegations=$totalExtensionsWithDelegations extensions=${extensionImpls.size}")
+          appendLine("POST-SHARD-EXT-DEL-METRICS totalFields=$totalDelegatedFields extensionsWithDelegations=$totalExtensionsWithDelegations extensions=${extensionImpls.size}")
           delegationMapForDebug?.forEach { (ext, fields) ->
             appendLine("  EXT ${ext} -> ${fields.size} fields")
             fields.sorted().forEach { f -> appendLine("    - $f") }
@@ -467,13 +455,13 @@ internal class ShardedGraphGenerator(
     }
   }
 
-  private fun generateBoundInstanceFields() {
+  private fun generateBoundInstanceFields(
+    componentCtor: IrConstructor,
+    componentThisReceiver: IrValueParameter,
+  ) {
     // EARLY DIAGNOSTIC MARKER: If this line does not appear in sharding-trace.txt, then the
     // running compiler plugin is NOT the patched composite copy. Unique token below for grep.
     writeDiagnostic("sharding-trace.txt") { "BOUND-INSTANCE-FIELDS-FIRST-LINE token=8f9d3b1 originClass=${this::class.qualifiedName}" }
-    val componentCtor = graphClass.constructors.first { it.isPrimary }
-    val componentThisReceiver = graphClass.thisReceiver
-      ?: error("Component class has no this receiver")
 
     // Force log regardless of shardingDebug to debug missing Application bound instance
     writeDiagnostic("sharding-trace.txt") {
@@ -486,64 +474,64 @@ internal class ShardedGraphGenerator(
     // Removed prior platform-specific guard (android.app.Application). Bound instance handling
     // must remain generic. Any missing provider will be caught by the generic fallback below.
 
-    // Process @BindsInstance constructor parameters
-    // Modified: always register provider (and instance) fields even if not yet marked reachable,
-    // to avoid transient reachability ordering issues in sharded fast-init. We still record a
-    // diagnostic when skipping instance exposure due to reachability.
+    // Process @BindsInstance constructor parameters.
     node.creator?.let { creator ->
       for ((i, param) in creator.parameters.regularParameters.withIndex()) {
         val isBindsInstance = param.isBindsInstance
         val irParam = componentCtor.regularParameters[i]
-  val isGraphDependency = node.includedGraphNodes.containsKey(param.typeKey)
+        val isGraphDependency = node.includedGraphNodes.containsKey(param.typeKey)
         val isBindingContainer = creator.bindingContainersParameterIndices.isSet(i)
 
-        // Only generate for explicit @BindsInstance params or binding containers.
         if (isBindsInstance || isBindingContainer) {
           val reachable = param.typeKey in sealResult.reachableKeys
+          val baseName = param.name.asString()
+            .removePrefix("$$")
+            .decapitalizeUS()
+            .suffixIfNot("Instance")
 
-          // Construct stable base name
-            val baseName = param.name.asString()
-              .removePrefix("$$")
-              .decapitalizeUS()
-              .suffixIfNot("Instance")
+          val instanceField = graphClass.addField {
+            name = fieldNameAllocator.newName(baseName).asName()
+            type = param.typeKey.type
+            visibility = DescriptorVisibilities.PRIVATE
+            isFinal = false
+            origin = Origins.MetroGraphShard
+          }
+          componentInitializations += FieldInitialization(
+            field = instanceField,
+            requiredParams = listOf(irParam),
+          ) { _, paramMap ->
+            irGet(paramMap.getValue(irParam))
+          }
+          if (reachable) {
+            globalBindingFieldContext.putInstanceField(
+              param.typeKey,
+              instanceField,
+              ownerGraphClassId = graphClassId,
+            )
+          }
 
-          // Instance field (only if reachable to avoid unused clutter)
-          val instanceField = if (reachable) {
-            val f = graphClass.addField {
-              name = fieldNameAllocator.newName(baseName).asName()
-              type = param.typeKey.type
-              visibility = DescriptorVisibilities.PRIVATE
-              isFinal = true
-              origin = Origins.MetroGraphShard
-            }
-            f.initializer = DeclarationIrBuilder(
-              pluginContext,
-              f.symbol,
-              UNDEFINED_OFFSET,
-              UNDEFINED_OFFSET
-            ).run { irExprBody(irGet(irParam)) }
-            globalBindingFieldContext.putInstanceField(param.typeKey, f)
-            f
-          } else null
-
-          // Provider field (always) – ensures later lookups for BoundInstance fallback succeed
           val providerFieldName = fieldNameAllocator.newName(baseName + "Provider")
           val providerField = graphClass.addField {
             name = providerFieldName.asName()
             type = symbols.metroProvider.typeWith(param.typeKey.type)
-            visibility = DescriptorVisibilities.INTERNAL // internal for shard access
-            isFinal = true
+            visibility = DescriptorVisibilities.INTERNAL
+            isFinal = false
             origin = Origins.MetroGraphShard
           }
-          providerField.initializer = DeclarationIrBuilder(
-            pluginContext,
-            providerField.symbol,
-            UNDEFINED_OFFSET,
-            UNDEFINED_OFFSET
-          ).run {
-            irExprBody(instanceFactory(param.typeKey.type, irGet(irParam)))
+          componentInitializations += FieldInitialization(
+            field = providerField,
+            requiredParams = emptyList(),
+          ) { receiver, _ ->
+            instanceFactory(
+              param.typeKey.type,
+              irGetField(irGet(receiver), instanceField)
+            )
           }
-          globalBindingFieldContext.putProviderField(param.typeKey, providerField)
+          globalBindingFieldContext.putProviderField(
+            param.typeKey,
+            providerField,
+            ownerGraphClassId = graphClassId,
+          )
 
           if (options.shardingDebug) {
             writeDiagnostic("sharding-trace.txt") {
@@ -555,7 +543,6 @@ internal class ShardedGraphGenerator(
             }
           }
         } else if (options.shardingDebug) {
-          // Graph dependency param – handled separately when generating dependency graph fields
           writeDiagnostic("sharding-trace.txt") {
             "BOUND-INSTANCE-SKIP graphDepParam=${param.name.asString()} type=${param.typeKey.type}"
           }
@@ -563,65 +550,91 @@ internal class ShardedGraphGenerator(
       }
     }
 
-    // Direct component constructor parameters are not auto-promoted unless annotated with
-    // @BindsInstance (handled above) or represented as graph dependencies elsewhere.
-    // Fallback: scan binding graph for BoundInstance entries that still have no provider field
-    // synthesized (e.g., missed in loops above due to annotation nuances). This ensures code
-    // generation never encounters a BoundInstance without a provider/instance source.
+    // Fallback: ensure every BoundInstance binding has a provider (and optional instance) field.
     run {
       val ctorParamsByType = componentCtor.regularParameters.associateBy { IrTypeKey(it.type) }
       for ((typeKey, binding) in bindingGraph.bindingsSnapshot()) {
-        if (binding is IrBinding.BoundInstance && binding.classReceiverParameter == null && binding.providerFieldAccess == null) {
-          if (globalBindingFieldContext.providerField(typeKey) != null) continue
-          // Try exact key first, then fallback to classifier match (handles flexible vs non-null types)
-          val irParam = ctorParamsByType[typeKey] ?: componentCtor.regularParameters.firstOrNull { p ->
-            val pClassifier = (p.type as? IrSimpleType)?.classOrNull
-            val targetClassifier = (typeKey.type as? IrSimpleType)?.classOrNull
-            pClassifier == targetClassifier
-          } ?: continue
-          val baseName = irParam.name.asString().removePrefix("$$").decapitalizeUS().suffixIfNot("Instance")
-          val reachable = typeKey in sealResult.reachableKeys
-          val instanceField = if (reachable && globalBindingFieldContext.instanceField(typeKey) == null) {
-            val f = graphClass.addField {
-              name = fieldNameAllocator.newName(baseName).asName()
-              type = irParam.type
-              visibility = DescriptorVisibilities.PRIVATE
-              isFinal = true
-              origin = Origins.MetroGraphShard
-            }
-            f.initializer = DeclarationIrBuilder(pluginContext, f.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET).run { irExprBody(irGet(irParam)) }
-            globalBindingFieldContext.putInstanceField(typeKey, f)
-            f
-          } else null
-          val providerField = graphClass.addField {
-            name = fieldNameAllocator.newName(baseName + "Provider").asName()
-            type = symbols.metroProvider.typeWith(irParam.type)
-            visibility = DescriptorVisibilities.INTERNAL
-            isFinal = true
-            origin = Origins.MetroGraphShard
+        if (binding !is IrBinding.BoundInstance) continue
+        if (binding.classReceiverParameter != null || binding.providerFieldAccess != null) continue
+        if (globalBindingFieldContext.providerField(typeKey) != null) continue
+
+        val irParam = ctorParamsByType[typeKey] ?: componentCtor.regularParameters.firstOrNull { p ->
+          val pClassifier = (p.type as? IrSimpleType)?.classOrNull
+          val targetClassifier = (typeKey.type as? IrSimpleType)?.classOrNull
+          pClassifier == targetClassifier
+        } ?: continue
+
+        val baseName = irParam.name.asString().removePrefix("$$").decapitalizeUS().suffixIfNot("Instance")
+
+        val existingLocation = globalBindingFieldContext.instanceField(typeKey)
+        val instanceField = existingLocation?.field ?: graphClass.addField {
+          name = fieldNameAllocator.newName(baseName).asName()
+          type = irParam.type
+          visibility = DescriptorVisibilities.PRIVATE
+          isFinal = false
+          origin = Origins.MetroGraphShard
+        }.also { field ->
+          componentInitializations += FieldInitialization(
+            field = field,
+            requiredParams = listOf(irParam),
+          ) { _, paramMap ->
+            irGet(paramMap.getValue(irParam))
           }
-          providerField.initializer = DeclarationIrBuilder(pluginContext, providerField.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET).run { irExprBody(instanceFactory(irParam.type, irGet(irParam))) }
-          globalBindingFieldContext.putProviderField(typeKey, providerField)
-          if (options.shardingDebug) {
-            writeDiagnostic("sharding-trace.txt") { "BOUND-INSTANCE-FALLBACK param=${irParam.name.asString()} type=${irParam.type} reachable=$reachable instanceField=${instanceField?.name?.asString()} providerField=${providerField.name.asString()}" }
+          globalBindingFieldContext.putInstanceField(
+            typeKey,
+            field,
+            ownerGraphClassId = graphClassId,
+          )
+        }
+
+        val providerField = graphClass.addField {
+          name = fieldNameAllocator.newName(baseName + "Provider").asName()
+          type = symbols.metroProvider.typeWith(irParam.type)
+          visibility = DescriptorVisibilities.INTERNAL
+          isFinal = false
+          origin = Origins.MetroGraphShard
+        }
+        componentInitializations += FieldInitialization(
+          field = providerField,
+          requiredParams = emptyList(),
+        ) { receiver, _ ->
+          instanceFactory(
+            irParam.type,
+            irGetField(irGet(receiver), instanceField)
+          )
+        }
+        globalBindingFieldContext.putProviderField(typeKey, providerField)
+
+        if (options.shardingDebug) {
+          val reachable = typeKey in sealResult.reachableKeys
+          writeDiagnostic("sharding-trace.txt") {
+            "BOUND-INSTANCE-FALLBACK param=${irParam.name.asString()} type=${irParam.type} reachable=$reachable providerField=${providerField.name.asString()}"
           }
         }
       }
     }
-    // Generic defensive duplication: if a BoundInstance key has no provider but a classifier-
-    // compatible provider exists (flex vs non-flex, nullability), mirror it under the binding key.
+
+    // Generic defensive duplication: mirror classifier-compatible providers when necessary.
     run {
       for ((bk, b) in bindingGraph.bindingsSnapshot()) {
         if (b !is IrBinding.BoundInstance) continue
         if (globalBindingFieldContext.providerField(bk) != null) continue
         val loose = globalBindingFieldContext.providerFieldLoose(bk) ?: continue
         val (matchedKey, loc) = loose
-        globalBindingFieldContext.putProviderField(bk, loc.field, loc.shardField)
-        if (options.shardingDebug) writeDiagnostic("sharding-trace.txt") {
-          "BOUND-INSTANCE-DUPLICATE addedKey=${bk.type} fromKey=${matchedKey.type}"
+        globalBindingFieldContext.putProviderField(
+          bk,
+          loc.field,
+          loc.shardField,
+          loc.ownerGraphClassId,
+        )
+        if (options.shardingDebug) {
+          writeDiagnostic("sharding-trace.txt") {
+            "BOUND-INSTANCE-DUPLICATE addedKey=${bk.type} fromKey=${matchedKey.type}"
+          }
         }
       }
     }
+
     // Component self reference (unchanged except for diagnostic)
     val compReachable = node.typeKey in sealResult.reachableKeys
     if (compReachable) {
@@ -629,43 +642,110 @@ internal class ShardedGraphGenerator(
         name = fieldNameAllocator.newName("thisGraphInstance").asName()
         type = node.typeKey.type
         visibility = DescriptorVisibilities.PRIVATE
-        isFinal = true
+        isFinal = false
         origin = Origins.MetroGraphShard
       }
-      thisGraphInstanceField.initializer = DeclarationIrBuilder(
-        pluginContext,
-        thisGraphInstanceField.symbol,
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET
-      ).run { irExprBody(irGet(componentThisReceiver)) }
+      componentInitializations += FieldInitialization(
+        field = thisGraphInstanceField
+      ) { receiver, _ ->
+        irGet(receiver)
+      }
 
       val componentProviderField = graphClass.addField {
         name = fieldNameAllocator.newName("thisGraphInstanceProvider").asName()
         type = symbols.metroProvider.typeWith(node.typeKey.type)
         visibility = DescriptorVisibilities.INTERNAL
-        isFinal = true
+        isFinal = false
         origin = Origins.MetroGraphShard
       }
-      componentProviderField.initializer = DeclarationIrBuilder(
-        pluginContext,
-        componentProviderField.symbol,
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET
-      ).run {
-        irExprBody(
-          instanceFactory(
-            node.typeKey.type,
-            irGetField(irGet(componentThisReceiver), thisGraphInstanceField)
-          )
+      componentInitializations += FieldInitialization(
+        field = componentProviderField
+      ) { receiver, _ ->
+        instanceFactory(
+          node.typeKey.type,
+          irGetField(irGet(receiver), thisGraphInstanceField)
         )
       }
-      globalBindingFieldContext.putProviderField(node.typeKey, componentProviderField)
+      globalBindingFieldContext.putProviderField(
+        node.typeKey,
+        componentProviderField,
+        ownerGraphClassId = graphClassId,
+      )
+
       if (options.shardingDebug) {
-        writeDiagnostic("sharding-trace.txt") { "BOUND-INSTANCE thisGraph type=${node.typeKey.type} instanceField=${thisGraphInstanceField.name.asString()} providerField=${componentProviderField.name.asString()}" }
+        writeDiagnostic("sharding-trace.txt") {
+          "BOUND-INSTANCE thisGraph type=${node.typeKey.type} instanceField=${thisGraphInstanceField.name.asString()} providerField=${componentProviderField.name.asString()}"
+        }
       }
     } else if (options.shardingDebug) {
-      writeDiagnostic("sharding-trace.txt") { "BOUND-INSTANCE thisGraph SKIPPED (unreachable) type=${node.typeKey.type}" }
+      writeDiagnostic("sharding-trace.txt") {
+        "BOUND-INSTANCE thisGraph SKIPPED (unreachable) type=${node.typeKey.type}"
+      }
     }
+
+  }
+
+  private fun finalizeComponentInitializations(
+    componentCtor: IrConstructor,
+    componentThisReceiver: IrValueParameter,
+  ) {
+    if (componentInitializations.isEmpty()) return
+
+    val constructorParams = componentCtor.regularParameters
+    val chunks = componentInitializations.chunked(COMPONENT_INIT_CALLS_PER_METHOD)
+    chunks.forEachIndexed { index, chunk ->
+      val methodName = when {
+        chunks.size == 1 -> "initBoundInstances"
+        index == 0 -> "initBoundInstances"
+        else -> "initBoundInstances${index + 1}"
+      }
+
+      val requiredParams = constructorParams.filter { ctorParam ->
+        chunk.any { initialization -> ctorParam in initialization.requiredParams }
+      }
+
+      val initFunction = graphClass.addFunction {
+        name = methodName.asName()
+        visibility = DescriptorVisibilities.PRIVATE
+        returnType = irBuiltIns.unitType
+        origin = Origins.MetroGraphShard
+      }.apply {
+        val localReceiver = componentThisReceiver.copyTo(this)
+        setDispatchReceiver(localReceiver)
+
+        val paramMapping = requiredParams.associateWith { ctorParam ->
+          addValueParameter {
+            name = ctorParam.name
+            type = ctorParam.type
+            origin = Origins.MetroGraphShard
+          }
+        }
+
+        body = DeclarationIrBuilder(pluginContext, symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
+          .irBlockBody {
+            chunk.forEach { initialization ->
+              val effectiveMapping = initialization.requiredParams.associateWith { requiredParam ->
+                paramMapping.getValue(requiredParam)
+              }
+              val initValue = initialization.buildInitializer(
+                this,
+                localReceiver,
+                effectiveMapping
+              )
+              +irSetField(
+                receiver = irGet(localReceiver),
+                field = initialization.field,
+                value = initValue
+              )
+            }
+          }
+      }
+
+      componentInitMethods += initFunction
+      componentInitMethodArguments[initFunction] = requiredParams
+    }
+
+    componentInitializations.clear()
   }
 
   /**
@@ -732,10 +812,19 @@ internal class ShardedGraphGenerator(
       }
 
       // Generate provider fields for bindings in this shard
-      generateProviderFields(this, shard, componentParam, depShardParams)
+      val fieldInitializations = generateProviderFields(this, shard, componentParam, depShardParams)
 
       // Set constructor body with proper super() call and field initialization
-      ctor.body = ctor.generateDefaultConstructorBody()
+      val shardThis = this.thisReceiver ?: error("Shard class has no this receiver")
+      ctor.body = ctor.generateDefaultConstructorBody {
+        fieldInitializations.forEach { initialization ->
+          +irSetField(
+            receiver = irGet(shardThis),
+            field = initialization.field,
+            value = initialization.buildInitializer(this, shardThis, emptyMap())
+          )
+        }
+      }
     }
 
     // Add shard class to component
@@ -770,7 +859,7 @@ internal class ShardedGraphGenerator(
     shard: dev.zacsweers.metro.compiler.graph.Shard<IrTypeKey>,
     componentParam: IrValueParameter,
     depShardParams: List<IrValueParameter>,
-  ) {
+  ): List<FieldInitialization> {
     // Create shard access context for cross-shard field resolution
     val shardThisReceiver = shardClass.thisReceiver
       ?: error("Shard class has no this receiver")
@@ -793,6 +882,7 @@ internal class ShardedGraphGenerator(
     // Create a local binding field context for this shard
     // This will be populated with both local fields and delegation fields
     val localBindingFieldContext = BindingFieldContext()
+    val fieldInitializations = mutableListOf<FieldInitialization>()
 
     // First pass: Create delegation fields for dependencies from other shards or component
     // This ensures all dependencies are available locally when generating binding code
@@ -854,7 +944,8 @@ internal class ShardedGraphGenerator(
               sourceField = targetFieldLocation.field,
               fieldNameAllocator = shardFieldNameAllocator,
             )
-            localBindingFieldContext.putProviderField(effectiveTypeKey, delegationField)
+            fieldInitializations += delegationField
+            localBindingFieldContext.putProviderField(effectiveTypeKey, delegationField.field)
           }
           // If still null, it might be a GraphDependency with fieldAccess which is handled
           // directly by IrGraphExpressionGenerator
@@ -872,7 +963,8 @@ internal class ShardedGraphGenerator(
               sourceField = depShardFieldLocation.field,
               fieldNameAllocator = shardFieldNameAllocator,
             )
-            localBindingFieldContext.putProviderField(depKey, delegationField)
+            fieldInitializations += delegationField
+            localBindingFieldContext.putProviderField(depKey, delegationField.field)
           }
         }
       }
@@ -890,8 +982,9 @@ internal class ShardedGraphGenerator(
     }
 
     // Fast-init support: assign stable IDs and synthesize a SwitchingProvider class once
-  val orderedBindingsWithIds = if (options.fastInit) assignBindingIds(bindingsToGenerate.map { it.first }) else emptyList()
-  val switchingProviderClass = if (options.fastInit && orderedBindingsWithIds.isNotEmpty()) {
+    val orderedBindingsWithIds = if (options.fastInit) assignBindingIds(bindingsToGenerate.map { it.first }) else emptyList()
+    val bindingIdMap = if (orderedBindingsWithIds.isNotEmpty()) orderedBindingsWithIds.toMap() else emptyMap()
+    val switchingProviderClass = if (options.fastInit && orderedBindingsWithIds.isNotEmpty()) {
       generateSwitchingProviderClass(
         shardClass = shardClass,
         shard = shard,
@@ -917,60 +1010,52 @@ internal class ShardedGraphGenerator(
         name = fieldName.asName()
         type = fieldType
         visibility = DescriptorVisibilities.INTERNAL // Must be internal for cross-shard access
-        isFinal = true
+        isFinal = false
         origin = Origins.MetroGraphShard
       }
 
-      // Generate the provider initializer
-      providerField.initializer = DeclarationIrBuilder(
-        pluginContext,
-        providerField.symbol,
-        UNDEFINED_OFFSET,
-        UNDEFINED_OFFSET
-      ).run {
-        irExprBody(
-          if (options.fastInit && switchingProviderClass != null) {
-            // Fast-init mode: Phase 3.5 - SwitchingProvider is already Provider<T>
-            val bindingId = orderedBindingsWithIds.first { it.first == typeKey }.second
+      fieldInitializations += FieldInitialization(field = providerField) { shardReceiver, _ ->
+        if (options.fastInit && switchingProviderClass != null) {
+          val bindingId = bindingIdMap[typeKey]
+            ?: error("Missing binding ID for $typeKey in shard ${shard.id}")
 
-            // Generate: $$SwitchingProvider0<T>(this, id)
-            // SwitchingProvider already implements Provider<T>, no wrapping needed!
-            val switchingProviderConstructor = switchingProviderClass.constructors.first { it.isPrimary }
-            val switchingProviderInstance = irCallConstructor(
-              switchingProviderConstructor.symbol,
-              typeArguments = listOf(typeKey.type)
-            ).apply {
-              // Use new K2 IR Parameter API: sequential argument indexing
-              // Constructor parameters: (shard: Shard0, id: Int)
-              var idx = 0
-              arguments[idx++] = irGet(shardThisReceiver) // shard param
-              arguments[idx++] = irInt(bindingId) // id param
-            }
-
-            // If scoped, wrap with DoubleCheck - otherwise use directly
-            if (binding.isScoped()) {
-              switchingProviderInstance.doubleCheck(this, symbols, typeKey)
-            } else {
-              switchingProviderInstance
-            }
-          } else {
-            // Direct mode: generate binding expression directly
-            generateProviderInitializer(
-              binding = binding,
-              typeKey = typeKey,
-              shardThisReceiver = shardThisReceiver,
-              bindingFieldContext = localBindingFieldContext,
-            )
+          val switchingProviderConstructor = switchingProviderClass.constructors.first { it.isPrimary }
+          val switchingProviderInstance = irCallConstructor(
+            switchingProviderConstructor.symbol,
+            typeArguments = listOf(typeKey.type)
+          ).apply {
+            var idx = 0
+            arguments[idx++] = irGet(shardReceiver)
+            arguments[idx++] = irInt(bindingId)
           }
-        )
+
+          if (binding.isScoped()) {
+            switchingProviderInstance.doubleCheck(this, symbols, typeKey)
+          } else {
+            switchingProviderInstance
+          }
+        } else {
+          generateProviderInitializer(
+            binding = binding,
+            typeKey = typeKey,
+            shardThisReceiver = shardReceiver,
+            bindingFieldContext = localBindingFieldContext,
+          )
+        }
       }
 
       // Track the field in both local and global contexts
       localBindingFieldContext.putProviderField(typeKey, providerField)
-      globalBindingFieldContext.putProviderField(typeKey, providerField)
+      globalBindingFieldContext.putProviderField(
+        typeKey,
+        providerField,
+        ownerGraphClassId = shardClass.classId ?: graphClassId,
+      )
       shardProviderFields[typeKey] = providerField
       providerFieldToShardId[typeKey] = shard.id
     }
+
+    return fieldInitializations
   }
 
   /**
@@ -1029,7 +1114,7 @@ internal class ShardedGraphGenerator(
     sourceReceiver: IrValueParameter,
     sourceField: IrField,
     fieldNameAllocator: NameAllocator,
-  ): IrField {
+  ): FieldInitialization {
     val binding = bindingGraph.requireBinding(typeKey)
     val fieldName = fieldNameAllocator.newName(
       binding.nameHint.decapitalizeUS().suffixIfNot("Provider")
@@ -1039,48 +1124,37 @@ internal class ShardedGraphGenerator(
       name = fieldName.asName()
       type = symbols.metroProvider.typeWith(typeKey.type)
       visibility = DescriptorVisibilities.PRIVATE // Delegation fields are private
-      isFinal = true
+      isFinal = false
       origin = Origins.MetroGraphShard
     }
 
-    // Generate initializer: Companion.provider { sourceReceiver.sourceField.invoke() }
-    delegationField.initializer = DeclarationIrBuilder(
-      pluginContext,
-      delegationField.symbol,
-      UNDEFINED_OFFSET,
-      UNDEFINED_OFFSET
-    ).run {
-      irExprBody(
-        // Companion.provider { sourceReceiver.sourceField.invoke() }
-        irInvoke(
-          dispatchReceiver = null, // Static call
-          callee = symbols.metroProviderFunction,
-          typeArgs = listOf(typeKey.type),
-          args = listOf(
-            // Lambda: { sourceReceiver.sourceField.invoke() }
-            irLambda(
-              parent = shardClass,
-              receiverParameter = null,
-              emptyList(),
-              typeKey.type,
-              suspend = false,
-            ) {
-              +irReturn(
-                irInvoke(
-                  dispatchReceiver = irGetField(
-                    receiver = irGet(sourceReceiver),
-                    field = sourceField
-                  ),
-                  callee = symbols.providerInvoke
-                )
+    return FieldInitialization(delegationField) { _, _ ->
+      irInvoke(
+        dispatchReceiver = null,
+        callee = symbols.metroProviderFunction,
+        typeArgs = listOf(typeKey.type),
+        args = listOf(
+          irLambda(
+            parent = shardClass,
+            receiverParameter = null,
+            valueParameters = emptyList(),
+            returnType = typeKey.type,
+            suspend = false,
+          ) {
+            +irReturn(
+              irInvoke(
+                dispatchReceiver = irGetField(
+                  receiver = irGet(sourceReceiver),
+                  field = sourceField
+                ),
+                callee = symbols.providerInvoke
               )
-            }
-          )
-        )
+            )
+          }
+        ),
+        typeHint = symbols.metroProvider.typeWith(typeKey.type)
       )
     }
-
-    return delegationField
   }
 
   /**
@@ -1801,7 +1875,18 @@ internal class ShardedGraphGenerator(
       val shardInstanceField = shardInstanceFields[shardId]
 
       // Re-put the field with its shard location
-      globalBindingFieldContext.putProviderField(typeKey, providerField, shardInstanceField)
+      val owningShardClassId = shardClasses
+        .firstOrNull { it.shardId == shardId }
+        ?.irClass
+        ?.classId
+        ?: graphClassId
+
+      globalBindingFieldContext.putProviderField(
+        typeKey,
+        providerField,
+        shardInstanceField,
+        ownerGraphClassId = owningShardClassId,
+      )
     }
   }
 
@@ -1814,44 +1899,51 @@ internal class ShardedGraphGenerator(
     // Use the component's thisReceiver, not the constructor's dispatchReceiver
     val thisReceiver = graphClass.thisReceiver
       ?: error("Component class has no this receiver")
-    // Prefer stored ordered init methods, fallback to reflective scan + numeric sort if empty
-    val initMethods: List<IrSimpleFunction> = if (shardInitMethods.isNotEmpty()) {
-      shardInitMethods
-    } else {
-      graphClass.declarations
-        .filterIsInstance<IrSimpleFunction>()
-        .filter {
-          it.name.asString().startsWith("init") &&
-          it.parameters.filter { p -> p.kind == IrParameterKind.Regular }.isEmpty() &&
-          it.origin == Origins.MetroGraphShard
-        }
-        .sortedBy { fn ->
-          val n = fn.name.asString()
-          when (n) {
-            "init" -> 1
-            else -> n.removePrefix("init").toIntOrNull() ?: Int.MAX_VALUE
+    val componentMethods = componentInitMethods.toList()
+    val shardMethods = when {
+      shardInitMethods.isNotEmpty() -> shardInitMethods.toList()
+      componentMethods.isEmpty() && shardInitMethods.isEmpty() -> {
+        graphClass.declarations
+          .filterIsInstance<IrSimpleFunction>()
+          .filter {
+            it.name.asString().startsWith("init") &&
+              it.parameters.filter { p -> p.kind == IrParameterKind.Regular }.isEmpty() &&
+              it.origin == Origins.MetroGraphShard
           }
-        }
+          .sortedBy { fn ->
+            val n = fn.name.asString()
+            when (n) {
+              "init" -> 1
+              else -> n.removePrefix("init").toIntOrNull() ?: Int.MAX_VALUE
+            }
+          }
+      }
+      else -> emptyList()
     }
 
     if (options.shardingDebug) {
       writeDiagnostic("sharding-trace.txt") {
-        (if (shardInitMethods.isNotEmpty()) "INIT-ORDER-STORED " else "INIT-ORDER-FALLBACK ") +
-          initMethods.joinToString { it.name.asString() }
+        val label = if (componentMethods.isNotEmpty() || shardMethods.isNotEmpty()) {
+          "INIT-ORDER-STORED "
+        } else {
+          "INIT-ORDER-FALLBACK "
+        }
+        label + (componentMethods + shardMethods).joinToString { it.name.asString() }
       }
     }
 
-    // If there are many shard init methods, partition their invocation into wrapper functions
-    // to avoid MethodTooLarge in the component constructor. This mirrors the non-sharded
-    // IrGraphGenerator strategy but applied to invocation site only (shard init methods remain
-    // individually small). Threshold chosen conservatively; can be surfaced as an option later.
-  val maxCallsPerWrapper = SHARD_INIT_CALLS_PER_WRAPPER
-  val needsPartition = initMethods.size > maxCallsPerWrapper
+    val componentCallTargets: List<Pair<IrSimpleFunction, List<IrValueParameter>>> =
+      componentMethods.map { method ->
+        method to componentInitMethodArguments[method].orEmpty()
+      }
+
+    val maxCallsPerWrapper = SHARD_INIT_CALLS_PER_WRAPPER
+    val needsPartition = shardMethods.size > maxCallsPerWrapper
 
     val wrapperFunctions: List<IrSimpleFunction> = if (needsPartition) {
-      initMethods.chunked(maxCallsPerWrapper).mapIndexed { index, chunk ->
+      shardMethods.chunked(maxCallsPerWrapper).mapIndexed { index, chunk ->
         graphClass.addFunction {
-          name = Name.identifier("initShardGroup${index}")
+          name = Name.identifier("initShardGroup$index")
           visibility = DescriptorVisibilities.PRIVATE
           returnType = irBuiltIns.unitType
           origin = Origins.MetroGraphShard
@@ -1871,7 +1963,8 @@ internal class ShardedGraphGenerator(
 
     if (options.shardingDebug && needsPartition) {
       writeDiagnostic("sharding-trace.txt") {
-        "INIT-PARTITION wrapperCount=${wrapperFunctions.size} totalInitCalls=${initMethods.size} maxPerWrapper=${maxCallsPerWrapper}" }
+        "INIT-PARTITION wrapperCount=${wrapperFunctions.size} totalInitCalls=${shardMethods.size} maxPerWrapper=$maxCallsPerWrapper"
+      }
     }
 
     ctor.body = DeclarationIrBuilder(pluginContext, ctor.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
@@ -1880,18 +1973,30 @@ internal class ShardedGraphGenerator(
         if (originalBody != null) {
           originalBody.statements.forEach { +it }
         }
+
+        // Component init methods (if any) run before shard initializers.
+        componentCallTargets.forEach { (method, ctorParams) ->
+          +irCall(method.symbol).apply {
+            dispatchReceiver = irGet(thisReceiver)
+            val methodParams = method.parameters.filter { it.kind == IrParameterKind.Regular }
+            ctorParams.forEachIndexed { index, ctorParam ->
+              val methodParam = methodParams[index]
+              arguments[methodParam.indexInParameters] = irGet(ctorParam)
+            }
+          }
+        }
+
         if (needsPartition) {
           for (wf in wrapperFunctions) {
             +irCall(wf.symbol).apply { dispatchReceiver = irGet(thisReceiver) }
           }
         } else {
-          for (initMethod in initMethods) {
+          for (initMethod in shardMethods) {
             +irCall(initMethod.symbol).apply { dispatchReceiver = irGet(thisReceiver) }
           }
         }
       }
   }
-
   /**
    * Implements component interface methods (accessors, injectors, factories).
    * This is copied from IrGraphGenerator.implementOverrides() but uses our
