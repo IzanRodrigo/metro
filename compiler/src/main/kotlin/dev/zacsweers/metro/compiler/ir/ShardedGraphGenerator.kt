@@ -165,6 +165,15 @@ internal class ShardedGraphGenerator(
   private val shardInitMethods = mutableListOf<IrSimpleFunction>()
 
   /**
+   * Max number of shard init method calls per partition wrapper. Mirrors the non-sharded
+   * `IrGraphGenerator`'s `STATEMENTS_PER_METHOD` (25) which itself is borrowed from Dagger's
+   * long-standing heuristic for keeping method bytecode size well below limits while balancing
+   * dex/mapping overhead. Keeping these aligned simplifies reasoning and tuning.
+   */
+  // Use shared heuristic constant for parity with non-sharded generator.
+  private val SHARD_INIT_CALLS_PER_WRAPPER = MetroConstants.MAX_INIT_STATEMENTS_PER_METHOD
+
+  /**
    * Expression generator factory configured with the global binding field context.
    * This allows the standard implementOverrides() logic to work with sharded fields.
    */
@@ -1836,8 +1845,8 @@ internal class ShardedGraphGenerator(
     // to avoid MethodTooLarge in the component constructor. This mirrors the non-sharded
     // IrGraphGenerator strategy but applied to invocation site only (shard init methods remain
     // individually small). Threshold chosen conservatively; can be surfaced as an option later.
-    val maxCallsPerWrapper = 60
-    val needsPartition = initMethods.size > maxCallsPerWrapper
+  val maxCallsPerWrapper = SHARD_INIT_CALLS_PER_WRAPPER
+  val needsPartition = initMethods.size > maxCallsPerWrapper
 
     val wrapperFunctions: List<IrSimpleFunction> = if (needsPartition) {
       initMethods.chunked(maxCallsPerWrapper).mapIndexed { index, chunk ->
