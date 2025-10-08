@@ -1832,19 +1832,52 @@ internal class ShardedGraphGenerator(
       }
     }
 
+    // If there are many shard init methods, partition their invocation into wrapper functions
+    // to avoid MethodTooLarge in the component constructor. This mirrors the non-sharded
+    // IrGraphGenerator strategy but applied to invocation site only (shard init methods remain
+    // individually small). Threshold chosen conservatively; can be surfaced as an option later.
+    val maxCallsPerWrapper = 60
+    val needsPartition = initMethods.size > maxCallsPerWrapper
+
+    val wrapperFunctions: List<IrSimpleFunction> = if (needsPartition) {
+      initMethods.chunked(maxCallsPerWrapper).mapIndexed { index, chunk ->
+        graphClass.addFunction {
+          name = Name.identifier("initShardGroup${index}")
+          visibility = DescriptorVisibilities.PRIVATE
+          returnType = irBuiltIns.unitType
+          origin = Origins.MetroGraphShard
+        }.apply {
+          val componentThisReceiver = graphClass.thisReceiver ?: error("Component class has no this receiver")
+          val localReceiver = componentThisReceiver.copyTo(this)
+          setDispatchReceiver(localReceiver)
+          body = DeclarationIrBuilder(pluginContext, symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
+            .irBlockBody {
+              for (m in chunk) {
+                +irCall(m.symbol).apply { dispatchReceiver = irGet(localReceiver) }
+              }
+            }
+        }
+      }
+    } else emptyList()
+
+    if (options.shardingDebug && needsPartition) {
+      writeDiagnostic("sharding-trace.txt") {
+        "INIT-PARTITION wrapperCount=${wrapperFunctions.size} totalInitCalls=${initMethods.size} maxPerWrapper=${maxCallsPerWrapper}" }
+    }
+
     ctor.body = DeclarationIrBuilder(pluginContext, ctor.symbol, UNDEFINED_OFFSET, UNDEFINED_OFFSET)
       .irBlockBody {
         // Add original constructor body statements first
         if (originalBody != null) {
           originalBody.statements.forEach { +it }
         }
-
-        // Call all init methods in order
-        for (initMethod in initMethods) {
-          +irCall(
-            callee = initMethod.symbol
-          ).apply {
-            dispatchReceiver = irGet(thisReceiver)
+        if (needsPartition) {
+          for (wf in wrapperFunctions) {
+            +irCall(wf.symbol).apply { dispatchReceiver = irGet(thisReceiver) }
+          }
+        } else {
+          for (initMethod in initMethods) {
+            +irCall(initMethod.symbol).apply { dispatchReceiver = irGet(thisReceiver) }
           }
         }
       }
