@@ -535,15 +535,21 @@ internal class DependencyGraphTransformer(
           // Don't fill in the stacktrace here as it's not relevant to the issue
           setStackTrace(emptyArray())
         }
+    } finally {
+      writeDiagnostic({
+        "graph-dumpKotlin-${node.sourceGraph.kotlinFqName.asString().replace(".", "-")}.kt"
+      }) {
+        metroGraph.dumpKotlinLike()
+      }
     }
 
-    metroGraph.dumpToMetroLog()
+    // metroGraph.dumpToMetroLog()
 
-    writeDiagnostic({
-      "graph-dumpKotlin-${node.sourceGraph.kotlinFqName.asString().replace(".", "-")}.kt"
-    }) {
-      metroGraph.dumpKotlinLike()
-    }
+    // writeDiagnostic({
+    //   "graph-dumpKotlin-${node.sourceGraph.kotlinFqName.asString().replace(".", "-")}.kt"
+    // }) {
+    //   metroGraph.dumpKotlinLike()
+    // }
 
     // If we get here we've definitely stored a result
     return processedMetroDependencyGraphsByClass.getValue(graphClassId)

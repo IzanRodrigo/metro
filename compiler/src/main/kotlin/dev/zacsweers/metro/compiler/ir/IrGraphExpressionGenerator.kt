@@ -139,7 +139,6 @@ private constructor(
 
       return when (binding) {
         is IrBinding.ConstructorInjected -> {
-          // Example_Factory.create(...)
           binding.classFactory.invokeCreateExpression(binding.typeKey) { createFunction, parameters ->
             generateBindingArguments(
               targetParams = parameters,
@@ -155,7 +154,6 @@ private constructor(
         }
 
         is IrBinding.Alias -> {
-          // For binds functions, just use the backing type
           val aliasedBinding = binding.aliasedBinding(bindingGraph)
           check(aliasedBinding != binding) { "Aliased binding aliases itself" }
           return generateBindingCode(
@@ -171,8 +169,6 @@ private constructor(
               ?: reportCompilerBug(
                 "No factory found for Provided binding ${binding.typeKey}. This is likely a bug in the Metro compiler, please report it to the issue tracker."
               )
-
-          // Invoke its factory's create() function
           providerFactory.invokeCreateExpression(binding.typeKey) { createFunction, params ->
             generateBindingArguments(
               targetParams = params,
@@ -184,13 +180,9 @@ private constructor(
         }
 
         is IrBinding.Assisted -> {
-          // Example9_Factory_Impl.create(example9Provider);
           val factoryImpl = assistedFactoryTransformer.getOrGenerateImplClass(binding.type)
-
-          val targetBinding =
-            bindingGraph.requireBinding(binding.target.typeKey)
+          val targetBinding = bindingGraph.requireBinding(binding.target.typeKey)
           val delegateFactoryProvider = generateBindingCode(targetBinding, accessType = accessType)
-
           with(factoryImpl) { invokeCreate(delegateFactoryProvider) }
         }
 
@@ -202,9 +194,7 @@ private constructor(
           val injectedClass = referenceClass(binding.targetClassId)!!.owner
           val injectedType = injectedClass.defaultType
           val injectorClass = membersInjectorTransformer.getOrGenerateInjector(injectedClass)?.ir
-
           if (injectorClass == null) {
-            // Return a noop
             val noopInjector =
               irInvoke(
                 dispatchReceiver = irGetObject(symbols.metroMembersInjectors),
@@ -228,14 +218,11 @@ private constructor(
               )
             instanceFactory(
                 injectedType,
-                // InjectableClass_MembersInjector.create(stringValueProvider,
-                // exampleComponentProvider)
                 irInvoke(
                   dispatchReceiver =
                     if (injectorCreatorClass.isObject) {
                       irGetObject(injectorCreatorClass.symbol)
                     } else {
-                      // It's static from java, dagger interop
                       check(createFunction.owner.isStatic)
                       null
                     },
@@ -248,78 +235,104 @@ private constructor(
         }
 
         is IrBinding.Absent -> {
-          // Should never happen, this should be checked before function/constructor injections.
           reportCompilerBug("Unable to generate code for unexpected Absent binding: $binding")
         }
 
         is IrBinding.BoundInstance -> {
           if (binding.classReceiverParameter != null) {
             when (accessType) {
-              AccessType.INSTANCE -> {
-                // Get it directly
-                irGet(binding.classReceiverParameter)
+              AccessType.INSTANCE -> irGet(binding.classReceiverParameter)
+              AccessType.PROVIDER ->
+                irGetField(irGet(binding.classReceiverParameter), binding.providerFieldAccess!!.field)
+            }
+          } else {
+            val instanceLocation = bindingFieldContext.instanceField(binding.typeKey)
+            val providerLocation = bindingFieldContext.providerField(binding.typeKey)
+            // Fallback loose lookup (classifier + arity) if exact key missing
+            val looseProviderLocation =
+              if (providerLocation == null) bindingFieldContext.providerFieldLoose(binding.typeKey) else null
+            when {
+              providerLocation != null -> {
+                val fieldReceiver = if (providerLocation.shardField != null) {
+                  irGetField(irGet(thisReceiver), providerLocation.shardField)
+                } else irGet(thisReceiver)
+                val providerExpr = irGetField(fieldReceiver, providerLocation.field)
+                if (accessType == AccessType.INSTANCE) {
+                  irInvoke(providerExpr, callee = symbols.providerInvoke)
+                } else providerExpr
               }
-              AccessType.PROVIDER -> {
-                // We need the provider
-                irGetField(
-                  irGet(binding.classReceiverParameter),
-                  binding.providerFieldAccess!!.field,
+              looseProviderLocation != null -> {
+                val (matchedKey, location) = looseProviderLocation
+                if (options.shardingDebug) {
+                  writeDiagnostic("sharding-trace.txt") {
+                    "BOUND-INSTANCE-LOOSE-MATCH requested=${binding.typeKey} matched=$matchedKey accessType=$accessType"
+                  }
+                }
+                val fieldReceiver = if (location.shardField != null) {
+                  irGetField(irGet(thisReceiver), location.shardField)
+                } else irGet(thisReceiver)
+                val providerExpr = irGetField(fieldReceiver, location.field)
+                if (accessType == AccessType.INSTANCE) {
+                  irInvoke(providerExpr, callee = symbols.providerInvoke)
+                } else providerExpr
+              }
+              instanceLocation != null -> {
+                val fieldReceiver = if (instanceLocation.shardField != null) {
+                  irGetField(irGet(thisReceiver), instanceLocation.shardField)
+                } else irGet(thisReceiver)
+                val instanceExpr = irGetField(fieldReceiver, instanceLocation.field)
+                if (accessType == AccessType.INSTANCE) instanceExpr
+                else instanceFactory(binding.typeKey.type, instanceExpr)
+              }
+              else -> {
+                // Defensive synthesis: create a temporary provider lambda referencing the graph's
+                // constructor parameter if still available (late fallback). We can't reliably
+                // reconstruct the original IrValueParameter here, so emit a diagnostic and throw.
+                if (options.shardingDebug) {
+                  writeDiagnostic("sharding-trace.txt") {
+                    buildString {
+                      appendLine("BOUND-INSTANCE-MISS type=${binding.typeKey.type} accessType=$accessType contextual=${contextualTypeKey.typeKey}")
+                      appendLine("  providerKeys=${bindingFieldContext.dumpProviderKeys()}")
+                      appendLine("  requestedKey=${binding.typeKey}")
+                    }
+                  }
+                }
+                reportCompilerBug(
+                  "Unable to generate code for unexpected BoundInstance binding (no receiver/fields, synthesis failed): $binding"
                 )
               }
             }
-          } else {
-            // Should never happen, this should get handled in the provider/instance fields logic
-            // above.
-            reportCompilerBug(
-              "Unable to generate code for unexpected BoundInstance binding: $binding"
-            )
           }
         }
 
         is IrBinding.GraphExtension -> {
-          // Generate graph extension instance
           val extensionImpl =
             graphExtensionGenerator.getOrBuildGraphExtensionImpl(
               binding.typeKey,
               node.sourceGraph,
-              // The reportableDeclaration should be the accessor function
               metroFunctionOf(binding.reportableDeclaration as IrSimpleFunction),
               parentTracer,
             )
-
           if (options.enableGraphImplClassAsReturnType) {
-            // This is probably not the right spot to change the return type, but the IrClass
-            // implementation is not exposed otherwise.
             binding.accessor.returnType = extensionImpl.defaultType
           }
-
           val ctor = extensionImpl.primaryConstructor!!
           val instanceExpression =
             irCallConstructor(ctor.symbol, node.sourceGraph.typeParameters.map { it.defaultType })
               .apply {
-                // If this function has parameters, they're factory instance params and need to be
-                // passed on
                 val functionParams = binding.accessor.regularParameters
-
-                // First param (dispatch receiver) is always the parent graph
                 arguments[0] = irGet(thisReceiver)
                 for (i in 0 until functionParams.size) {
                   arguments[i + 1] = irGet(functionParams[i])
                 }
               }
           when (accessType) {
-            AccessType.INSTANCE -> {
-              // Already not a provider
-              instanceExpression
-            }
-            AccessType.PROVIDER -> {
-              instanceFactory(binding.typeKey.type, instanceExpression)
-            }
+            AccessType.INSTANCE -> instanceExpression
+            AccessType.PROVIDER -> instanceFactory(binding.typeKey.type, instanceExpression)
           }
         }
 
         is IrBinding.GraphExtensionFactory -> {
-          // Get the pre-generated extension implementation that should contain the factory
           val extensionImpl =
             graphExtensionGenerator.getOrBuildGraphExtensionImpl(
               binding.extensionTypeKey,
@@ -327,14 +340,11 @@ private constructor(
               metroFunctionOf(binding.reportableDeclaration as IrSimpleFunction),
               parentTracer,
             )
-
-          // Get the factory implementation that was generated alongside the extension
           val factoryImpl =
             extensionImpl.generatedGraphExtensionData?.factoryImpl
               ?: reportCompilerBug(
                 "Expected factory implementation to be generated for graph extension factory binding"
               )
-
           val constructor = factoryImpl.primaryConstructor!!
           val parameters = constructor.parameters()
           val factoryInstance =
@@ -343,7 +353,6 @@ private constructor(
                 binding.accessor.typeParameters.map { it.defaultType },
               )
               .apply {
-                // Pass the parent graph instance
                 arguments[0] =
                   generateBindingCode(
                     bindingGraph.requireBinding(
@@ -352,23 +361,15 @@ private constructor(
                     accessType = AccessType.INSTANCE,
                   )
               }
-
           when (accessType) {
-            AccessType.INSTANCE -> {
-              // Factories are not providers, return directly
-              factoryInstance
-            }
-            AccessType.PROVIDER -> {
-              // Wrap in an instance factory
-              instanceFactory(binding.typeKey.type, factoryInstance)
-            }
+            AccessType.INSTANCE -> factoryInstance
+            AccessType.PROVIDER -> instanceFactory(binding.typeKey.type, factoryInstance)
           }
         }
 
         is IrBinding.GraphDependency -> {
           val ownerKey = binding.ownerKey
           if (binding.fieldAccess != null) {
-            // Just get the field
             irGetField(irGet(binding.fieldAccess.receiverParameter), binding.fieldAccess.field)
           } else if (binding.getter != null) {
             val graphInstanceFieldLocation =
@@ -376,25 +377,19 @@ private constructor(
                 ?: reportCompilerBug(
                   "No matching included type instance found for type $ownerKey while processing ${node.typeKey}. Available instance fields ${bindingFieldContext.availableInstanceKeys}"
                 )
-
             val getterContextKey = IrContextualTypeKey.from(binding.getter)
-
-            // Access the instance field (handling shard location if needed)
             val fieldReceiver = if (graphInstanceFieldLocation.shardField != null) {
               irGetField(irGet(thisReceiver), graphInstanceFieldLocation.shardField)
             } else {
               irGet(thisReceiver)
             }
-
             val invokeGetter =
               irInvoke(
                 dispatchReceiver = irGetField(fieldReceiver, graphInstanceFieldLocation.field),
                 callee = binding.getter.symbol,
                 typeHint = binding.typeKey.type,
               )
-
             if (getterContextKey.isWrappedInProvider) {
-              // It's already a provider
               invokeGetter
             } else {
               val lambda =

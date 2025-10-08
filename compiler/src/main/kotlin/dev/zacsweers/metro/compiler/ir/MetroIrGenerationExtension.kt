@@ -44,6 +44,8 @@ public class MetroIrGenerationExtension(
   context(context: IrMetroContext)
   private fun generateInner(moduleFragment: IrModuleFragment) {
     try {
+      // EARLY PLUGIN MARKER: confirms composite metro plugin jar in use.
+  writeDiagnostic("sharding-trace.txt") { "PLUGIN-GENERATE-INNER module=${moduleFragment.name.asString()} token=irgen-5d2c91" }
       tracer(moduleFragment.name.asString().removePrefix("<").removeSuffix(">"), "Metro compiler")
         .trace { tracer ->
           // Create contribution data container

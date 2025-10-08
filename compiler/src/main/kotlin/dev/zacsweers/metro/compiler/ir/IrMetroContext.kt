@@ -257,7 +257,16 @@ internal fun writeDiagnostic(fileName: String, text: () -> String) {
 
 context(context: IrMetroContext)
 internal fun writeDiagnostic(fileName: () -> String, text: () -> String) {
-  context.reportsDir?.resolve(fileName())?.apply { deleteIfExists() }?.writeText(text())
+  val name = fileName()
+  val target = context.reportsDir?.resolve(name) ?: return
+  if (name == "sharding-trace.txt") {
+    // Append mode for sharding trace so multiple diagnostics accumulate instead of
+    // overwriting each other (previous behavior caused only the last event to remain).
+    target.parent?.toFile()?.mkdirs()
+    target.toFile().appendText(text() + "\n")
+  } else {
+    target.apply { deleteIfExists() }.writeText(text())
+  }
 }
 
 context(context: IrMetroContext)

@@ -3,6 +3,8 @@
 package dev.zacsweers.metro.compiler.ir
 
 import org.jetbrains.kotlin.ir.declarations.IrField
+import org.jetbrains.kotlin.ir.types.classOrNull
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 
 /**
  * Information about where a binding field is located.
@@ -45,6 +47,36 @@ internal class BindingFieldContext {
   fun providerField(key: IrTypeKey): FieldLocation? {
     return providerFields[key]
   }
+
+  /**
+   * Attempt a "loose" lookup for a provider field by comparing raw classifier + arity, ignoring
+   * nullability and platform type flexibility. This is a defensive fallback specifically for
+   * BoundInstance lookups where type normalization mismatches may occur between the binding graph
+   * (which may record a not-null Kotlin type) and IR constructor parameters (which can surface
+   * as platform/flexible types).
+   */
+  fun providerFieldLoose(target: IrTypeKey): Pair<IrTypeKey, FieldLocation>? {
+    val targetClassifier = target.type.classOrNull
+  val targetArgs = (target.type as? IrSimpleType)?.arguments?.size ?: 0
+    var match: Pair<IrTypeKey, FieldLocation>? = null
+    for ((k, v) in providerFields) {
+      val kClassifier = k.type.classOrNull
+      if (kClassifier == targetClassifier) {
+  val kArgs = (k.type as? IrSimpleType)?.arguments?.size ?: 0
+        if (kArgs == targetArgs) {
+          if (match != null && match.first != k) {
+            // Ambiguous – bail out
+            return null
+          }
+          match = k to v
+        }
+      }
+    }
+    return match
+  }
+
+  /** For diagnostics: returns all registered provider keys as strings. */
+  fun dumpProviderKeys(): String = providerFields.keys.joinToString(", ") { it.toString() }
 
   operator fun contains(key: IrTypeKey): Boolean = instanceFields.containsKey(key) || providerFields.containsKey(key)
 }
