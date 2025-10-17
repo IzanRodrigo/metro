@@ -116,6 +116,17 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     objects.property(Int::class.javaObjectType).convention(25)
 
   /**
+   * Maximum number of binding keys per graph shard when sharding is enabled. Default is 400,
+   * must be > 0.
+   *
+   * This controls how Metro partitions large dependency graphs into multiple "shards" to avoid
+   * JVM method size limits. Lower values create more shards with smaller methods. Dagger uses 900
+   * by default.
+   */
+  public val keysPerGraphShard: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(400)
+
+  /**
    * Controls the behavior of optional dependencies on a per-compilation basis. Default is
    * [OptionalDependencyBehavior.DEFAULT] mode.
    */

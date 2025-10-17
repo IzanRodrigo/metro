@@ -556,6 +556,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     }
 
     @Test
+    @TestMetadata("ShardingPlanDiagnostics.kt")
+    public void testShardingPlanDiagnostics() {
+      runTest("compiler-tests/src/test/data/box/dependencygraph/ShardingPlanDiagnostics.kt");
+    }
+
+    @Test
     @TestMetadata("StaticGraphCompanions.kt")
     public void testStaticGraphCompanions() {
       runTest("compiler-tests/src/test/data/box/dependencygraph/StaticGraphCompanions.kt");

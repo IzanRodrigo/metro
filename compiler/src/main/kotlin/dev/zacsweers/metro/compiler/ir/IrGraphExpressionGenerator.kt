@@ -47,7 +47,7 @@ private constructor(
   context: IrMetroContext,
   private val node: DependencyGraphNode,
   private val thisReceiver: IrValueParameter,
-  private val bindingFieldContext: BindingFieldContext,
+  private val fieldAccess: BindingFieldAccess,
   private val bindingGraph: IrBindingGraph,
   private val bindingContainerTransformer: BindingContainerTransformer,
   private val membersInjectorTransformer: MembersInjectorTransformer,
@@ -68,11 +68,13 @@ private constructor(
     private val parentTracer: Tracer,
   ) {
     fun create(thisReceiver: IrValueParameter): IrGraphExpressionGenerator {
+      // Wrap BindingFieldContext with the abstraction layer
+      val fieldAccess: BindingFieldAccess = DefaultBindingFieldAccess(bindingFieldContext)
       return IrGraphExpressionGenerator(
         context = context,
         node = node,
         thisReceiver = thisReceiver,
-        bindingFieldContext = bindingFieldContext,
+        fieldAccess = fieldAccess,
         bindingGraph = bindingGraph,
         bindingContainerTransformer = bindingContainerTransformer,
         membersInjectorTransformer = membersInjectorTransformer,
@@ -115,20 +117,17 @@ private constructor(
       // provider for it.
       // This is important for cases like DelegateFactory and breaking cycles.
       if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-        if (bindingFieldContext.hasKey(binding.typeKey)) {
-          bindingFieldContext.providerField(binding.typeKey)?.let {
+        if (fieldAccess.hasField(binding.typeKey)) {
+          fieldAccess.getProviderExpression(binding.typeKey, thisReceiver)?.let { expression ->
             val providerInstance =
-              irGetField(irGet(thisReceiver), it).let {
-                with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
-              }
+              with(metroProviderSymbols) { transformMetroProvider(expression, contextualTypeKey) }
             return if (accessType == AccessType.INSTANCE) {
               irInvoke(providerInstance, callee = metroSymbols.providerInvoke)
             } else {
               providerInstance
             }
           }
-          bindingFieldContext.instanceField(binding.typeKey)?.let {
-            val instance = irGetField(irGet(thisReceiver), it)
+          fieldAccess.getInstanceExpression(binding.typeKey, thisReceiver)?.let { instance ->
             return if (accessType == AccessType.INSTANCE) {
               instance
             } else {
@@ -417,17 +416,17 @@ private constructor(
             // Just get the field
             irGetField(irGet(binding.fieldAccess.receiverParameter), binding.fieldAccess.field)
           } else if (binding.getter != null) {
-            val graphInstanceField =
-              bindingFieldContext.instanceField(ownerKey)
+            val graphInstance =
+              fieldAccess.getInstanceExpression(ownerKey, thisReceiver)
                 ?: reportCompilerBug(
-                  "No matching included type instance found for type $ownerKey while processing ${node.typeKey}. Available instance fields ${bindingFieldContext.availableInstanceKeys}"
+                  "No matching included type instance found for type $ownerKey while processing ${node.typeKey}."
                 )
 
             val getterContextKey = IrContextualTypeKey.from(binding.getter)
 
             val invokeGetter =
               irInvoke(
-                dispatchReceiver = irGetField(irGet(thisReceiver), graphInstanceField),
+                dispatchReceiver = graphInstance,
                 callee = binding.getter.symbol,
                 typeHint = binding.typeKey.type,
               )
@@ -560,18 +559,15 @@ private constructor(
         // TODO consolidate this logic with generateBindingCode
         if (accessType == AccessType.INSTANCE) {
           // IFF the parameter can take a direct instance, try our instance fields
-          bindingFieldContext.instanceField(typeKey)?.let { instanceField ->
-            return@mapIndexed irGetField(irGet(thisReceiver), instanceField).let {
-              with(metroProviderSymbols) { transformMetroProvider(it, contextualTypeKey) }
+          fieldAccess.getInstanceExpression(typeKey, thisReceiver)?.let { instance ->
+            return@mapIndexed with(metroProviderSymbols) {
+              transformMetroProvider(instance, contextualTypeKey)
             }
           }
         }
 
         val providerInstance =
-          bindingFieldContext.providerField(typeKey)?.let { field ->
-            // If it's in provider fields, invoke that field
-            irGetField(irGet(thisReceiver), field)
-          }
+          fieldAccess.getProviderExpression(typeKey, thisReceiver)
             ?: run {
               // Generate binding code for each param
               val paramBinding = bindingGraph.requireBinding(contextualTypeKey)

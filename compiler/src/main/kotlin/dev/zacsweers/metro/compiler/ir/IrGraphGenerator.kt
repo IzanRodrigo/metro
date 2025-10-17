@@ -5,8 +5,10 @@ package dev.zacsweers.metro.compiler.ir
 import dev.zacsweers.metro.compiler.METRO_VERSION
 import dev.zacsweers.metro.compiler.NameAllocator
 import dev.zacsweers.metro.compiler.Origins
+import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.decapitalizeUS
 import dev.zacsweers.metro.compiler.expectAs
+import dev.zacsweers.metro.compiler.ir.generateDefaultConstructorBody
 import dev.zacsweers.metro.compiler.ir.parameters.parameters
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.ir.transformers.AssistedFactoryTransformer
@@ -19,12 +21,21 @@ import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
+import dev.zacsweers.metro.compiler.graph.computeStronglyConnectedComponents
+import java.util.SortedMap
+import java.util.SortedSet
+import java.util.TreeMap
+import java.util.TreeSet
+import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.DescriptorVisibility
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
+import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
+import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
+import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irExprBody
@@ -33,8 +44,10 @@ import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
+import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.IrType
@@ -49,11 +62,21 @@ import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.ir.util.propertyIfAccessor
 import org.jetbrains.kotlin.ir.util.statements
+import org.jetbrains.kotlin.ir.util.defaultType
+import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.name.ClassId
 import org.jetbrains.kotlin.name.Name
+import kotlin.collections.ArrayDeque
+
+internal typealias BasicFieldInitializer =
+  IrBuilderWithScope.(thisReceiver: IrValueParameter, key: IrTypeKey) -> IrExpression
 
 internal typealias FieldInitializer =
-  IrBuilderWithScope.(thisReceiver: IrValueParameter, key: IrTypeKey) -> IrExpression
+  IrBuilderWithScope.(
+    componentReceiver: IrValueParameter,
+    ownerReceiver: IrValueParameter,
+    key: IrTypeKey,
+  ) -> IrExpression
 
 internal class IrGraphGenerator(
   metroContext: IrMetroContext,
@@ -73,13 +96,35 @@ internal class IrGraphGenerator(
 
   private val bindingFieldContext = BindingFieldContext()
 
+  private sealed interface FieldOwner {
+    data object Root : FieldOwner
+    data class Shard(val index: Int) : FieldOwner
+  }
+
+  private data class FieldBinding(
+    val field: IrField,
+    val typeKey: IrTypeKey,
+    var owner: FieldOwner = FieldOwner.Root,
+    val initializer: FieldInitializer,
+  )
+
+  private data class ShardInfo(
+    val index: Int,
+    val shardClass: IrClass,
+    val instanceField: IrField,
+    val initializeFunction: IrSimpleFunction,
+    val bindings: List<FieldBinding>,
+    val instantiateStatement: IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement,
+    val initializeStatement: IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement,
+  )
+
   /**
    * To avoid `MethodTooLargeException`, we split field initializations up over multiple constructor
    * inits.
    *
    * @see <a href="https://github.com/ZacSweers/metro/issues/645">#645</a>
    */
-  private val fieldInitializers = mutableListOf<Pair<IrField, FieldInitializer>>()
+  private val fieldBindings = mutableListOf<FieldBinding>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
@@ -93,10 +138,117 @@ internal class IrGraphGenerator(
       graphExtensionGenerator = graphExtensionGenerator,
       parentTracer = parentTracer,
     )
+  private fun partitionFieldInitializers(): List<List<FieldBinding>> {
+    if (fieldBindings.isEmpty()) {
+      return emptyList()
+    }
+    val keyOrder = sealResult.sortedKeys.withIndex().associate { (index, key) -> key to index }
+    val orderedBindings =
+      fieldBindings
+        .withIndex()
+        .sortedWith(
+          compareBy(
+            { indexed ->
+              keyOrder[fieldsToTypeKeys.getValue(indexed.value.field)] ?: Int.MAX_VALUE
+            },
+            { indexed -> indexed.index },
+          )
+        )
+        .map { it.value }
+
+    if (orderedBindings.isEmpty()) {
+      return listOf(emptyList())
+    }
+
+    val options = metroContext.options
+    if (!options.enableComponentSharding) {
+      return listOf(orderedBindings)
+    }
+
+    val maxBindingsPerShard = options.keysPerGraphShard
+    if (maxBindingsPerShard <= 0 || orderedBindings.size <= maxBindingsPerShard) {
+      return listOf(orderedBindings)
+    }
+
+    val bindingByKey = orderedBindings.associateBy { it.typeKey }
+    val adjacency: SortedMap<IrTypeKey, SortedSet<IrTypeKey>> = TreeMap()
+    for (binding in orderedBindings) {
+      adjacency[binding.typeKey] = TreeSet()
+    }
+    for (binding in orderedBindings) {
+      val dependencies =
+        bindingGraph.requireBinding(binding.typeKey).dependencies
+          .map { it.typeKey }
+          .filter { it in bindingByKey }
+      adjacency.getValue(binding.typeKey).addAll(dependencies)
+    }
+    val (components, componentOf) = adjacency.computeStronglyConnectedComponents()
+    // componentOf should contain every key; if not, fall back to unique ids
+    val componentIdForKey: (IrTypeKey) -> Int = { key ->
+      componentOf[key] ?: components.size + keyOrder.getOrElse(key) { key.hashCode() }
+    }
+
+    val componentsInOrder = mutableListOf<List<FieldBinding>>()
+    var index = 0
+    while (index < orderedBindings.size) {
+      val startBinding = orderedBindings[index]
+      val componentId = componentIdForKey(startBinding.typeKey)
+      val group = mutableListOf<FieldBinding>()
+      while (index < orderedBindings.size) {
+        val currentBinding = orderedBindings[index]
+        if (componentIdForKey(currentBinding.typeKey) != componentId) {
+          break
+        }
+        group += currentBinding
+        index++
+      }
+      if (group.isNotEmpty()) {
+        componentsInOrder += group
+      }
+    }
+
+    val shards = mutableListOf<MutableList<FieldBinding>>()
+    var currentShard = mutableListOf<FieldBinding>()
+    var currentSize = 0
+    for (componentBindings in componentsInOrder) {
+      if (currentShard.isNotEmpty() && currentSize + componentBindings.size > maxBindingsPerShard) {
+        shards += currentShard
+        currentShard = mutableListOf()
+        currentSize = 0
+      }
+      currentShard.addAll(componentBindings)
+      currentSize += componentBindings.size
+    }
+    if (currentShard.isNotEmpty()) {
+      shards += currentShard
+    }
+
+    return if (shards.size <= 1) {
+      listOf(orderedBindings)
+    } else {
+      shards.map { it.toList() }
+    }
+  }
+
+  private fun registerFieldInitializer(
+    field: IrField,
+    typeKey: IrTypeKey,
+    init: FieldInitializer,
+  ) {
+    fieldsToTypeKeys[field] = typeKey
+    fieldBindings += FieldBinding(field, typeKey, FieldOwner.Root, init)
+  }
+
+  fun IrField.withInit(typeKey: IrTypeKey, init: BasicFieldInitializer): IrField = apply {
+    registerFieldInitializer(
+      field = this,
+      typeKey = typeKey,
+      init = { componentReceiver, _, key -> init(componentReceiver, key) },
+    )
+  }
 
   fun IrField.withInit(typeKey: IrTypeKey, init: FieldInitializer): IrField = apply {
-    fieldsToTypeKeys[this] = typeKey
-    fieldInitializers += (this to init)
+    registerFieldInitializer(this, typeKey, init)
   }
 
   fun IrField.initFinal(body: IrBuilderWithScope.() -> IrExpression): IrField = apply {
@@ -427,62 +579,112 @@ internal class IrGraphGenerator(
         }
       }
 
-      if (
-        options.chunkFieldInits &&
-          fieldInitializers.size + initStatements.size > options.statementsPerInitFun
-      ) {
-        // Larger graph, split statements
-        // Chunk our constructor statements and split across multiple init functions
-        val chunks =
-          buildList<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement> {
-              // Add field initializers first
-              for ((field, init) in fieldInitializers) {
-                add { thisReceiver ->
-                  irSetField(
-                    irGet(thisReceiver),
-                    field,
-                    init(thisReceiver, fieldsToTypeKeys.getValue(field)),
-                  )
-                }
-              }
-              for (statement in initStatements) {
-                add { thisReceiver -> statement(thisReceiver) }
-              }
+      val shardGroups = partitionFieldInitializers()
+      if (shardGroups.size > 1) {
+        val shardInstantiationStatements =
+          mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
+        val shardInitializationStatements =
+          mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
+        var shardInfos =
+          shardGroups.mapIndexed { index, bindings ->
+            createShard(index, bindings).also { info ->
+              shardInstantiationStatements += info.instantiateStatement
+              shardInitializationStatements += info.initializeStatement
             }
-            .chunked(options.statementsPerInitFun)
+          }
 
-        val initAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
-        val initFunctionsToCall =
-          chunks.map { statementsChunk ->
-            val initName = initAllocator.newName("init")
-            addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
-              .apply {
-                val localReceiver = thisReceiverParameter.copyTo(this)
-                setDispatchReceiver(localReceiver)
-                buildBlockBody {
-                  for (statement in statementsChunk) {
-                    +statement(localReceiver)
-                  }
-                }
-              }
+        val shardOrder = computeShardInitializationOrder(shardInfos)
+        if (shardOrder.size == shardInfos.size && shardOrder != shardInfos.indices.toList()) {
+          shardInfos =
+            shardOrder.mapIndexed { newIndex, originalIndex ->
+              val info = shardInfos[originalIndex]
+              info.bindings.forEach { it.owner = FieldOwner.Shard(newIndex) }
+              info.copy(index = newIndex)
+            }
+          // Reorder statements to match initialization order
+          val orderedInstantiation =
+            shardOrder.map { shardInstantiationStatements[it] }
+          shardInstantiationStatements.clear()
+          shardInstantiationStatements += orderedInstantiation
+
+          val orderedInitialization =
+            shardOrder.map { shardInitializationStatements[it] }
+          shardInitializationStatements.clear()
+          shardInitializationStatements += orderedInitialization
+        } else {
+          shardInfos =
+            shardInfos.mapIndexed { index, info ->
+              info.bindings.forEach { it.owner = FieldOwner.Shard(index) }
+              if (info.index != index) info.copy(index = index) else info
+            }
+        }
+
+        val shardSummaries =
+          shardInfos.map { info ->
+            val deferredCount =
+              if (info.index == shardInfos.lastIndex) initStatements.size else 0
+            ShardSummary(
+              index = info.index,
+              className = info.shardClass.name.asString(),
+              initFunctionName = info.initializeFunction.name.asString(),
+              fieldCount = info.bindings.size,
+              deferredStatementCount = deferredCount,
+              totalStatements = info.bindings.size + deferredCount,
+              keyStrings = info.bindings.map { it.typeKey.toString() },
+            )
           }
-        constructorStatements += buildList {
-          for (initFunction in initFunctionsToCall) {
-            add { dispatchReceiver ->
-              irInvoke(dispatchReceiver = irGet(dispatchReceiver), callee = initFunction.symbol)
+
+        writeDiagnostic("sharding-plan-${parentTracer.tag}.txt") {
+          buildString {
+            appendLine("Shard count: ${shardInfos.size}")
+            appendLine("Init function count: ${shardInfos.size}")
+            appendLine("Total field initializers: ${fieldBindings.size}")
+            appendLine("Total deferred statements: ${initStatements.size}")
+            appendLine("Keys per shard limit: ${metroContext.options.keysPerGraphShard}")
+            appendLine(
+              "Initialization order: ${
+                shardInfos.joinToString(" -> ") { "Shard ${it.index + 1}" }
+              }"
+            )
+            appendLine()
+            shardSummaries.forEach { summary ->
+              appendLine(
+                "Shard ${summary.index + 1} (${summary.className}.${summary.initFunctionName})"
+              )
+              appendLine("  fieldCount: ${summary.fieldCount}")
+              appendLine("  deferredStatementCount: ${summary.deferredStatementCount}")
+              appendLine("  totalStatements: ${summary.totalStatements}")
+              if (summary.keyStrings.isNotEmpty()) {
+                appendLine("  keys:")
+                summary.keyStrings.forEach { key ->
+                  appendLine("    - $key")
+                }
+              } else {
+                appendLine("  keys: (none)")
+              }
             }
           }
         }
+
+        constructorStatements.addAll(shardInstantiationStatements)
+        constructorStatements.addAll(shardInitializationStatements)
+        constructorStatements.addAll(initStatements)
       } else {
-        // Small graph, just do it in the constructor
-        // Assign those initializers directly to their fields and mark them as final
-        for ((field, init) in fieldInitializers) {
-          field.initFinal {
-            val typeKey = fieldsToTypeKeys.getValue(field)
-            init(thisReceiverParameter, typeKey)
+        // Small graph or single shard: inline initializations
+        // Handle empty case (e.g., subcomponents with no field bindings)
+        if (shardGroups.isNotEmpty()) {
+          for (binding in shardGroups.single()) {
+            binding.field.initFinal {
+              binding.initializer.invoke(
+                this,
+                thisReceiverParameter,
+                thisReceiverParameter,
+                binding.typeKey,
+              )
+            }
           }
         }
-        constructorStatements += initStatements
+        constructorStatements.addAll(initStatements)
       }
 
       // Add extra constructor statements
@@ -702,5 +904,165 @@ internal class IrGraphGenerator(
         }
       }
     }
+  }
+
+  private data class ShardSummary(
+    val index: Int,
+    val className: String,
+    val initFunctionName: String,
+    val fieldCount: Int,
+    val deferredStatementCount: Int,
+    val totalStatements: Int,
+    val keyStrings: List<String>,
+  )
+
+  private fun createShard(
+    index: Int,
+    bindings: List<FieldBinding>,
+  ): ShardInfo {
+    val shardName = "Shard${index + 1}"
+    val shardClass =
+      pluginContext.irFactory
+        .buildClass {
+          name = fieldNameAllocator.newName(shardName).asName()
+          kind = ClassKind.CLASS
+          visibility = DescriptorVisibilities.PRIVATE
+          origin = Origins.Default
+        }
+        .apply {
+          superTypes = listOf(irBuiltIns.anyType)
+          createThisReceiverParameter()
+          graphClass.addChild(this)
+        }
+
+    val shardConstructor =
+      shardClass
+        .addConstructor {
+          visibility = DescriptorVisibilities.PUBLIC
+          isPrimary = true
+          returnType = shardClass.defaultType
+        }
+        .apply { body = generateDefaultConstructorBody() }
+
+    val shardInstanceField =
+      graphClass.addField(
+        fieldNameAllocator.newName("${shardName.decapitalizeUS()}Instance"),
+        shardClass.defaultType,
+        DescriptorVisibilities.PRIVATE,
+      )
+
+    bindings.forEach { binding ->
+      moveFieldToShard(binding.field, shardClass)
+      binding.owner = FieldOwner.Shard(index)
+      bindingFieldContext.updateProviderFieldOwner(
+        binding.field,
+        BindingFieldContext.Owner.Shard(shardInstanceField),
+      )
+      bindingFieldContext.updateInstanceFieldOwner(
+        binding.field,
+        BindingFieldContext.Owner.Shard(shardInstanceField),
+      )
+    }
+
+    val initializeFunction =
+      shardClass
+        .addFunction("initialize", irBuiltIns.unitType, visibility = DescriptorVisibilities.PUBLIC)
+        .apply {
+          val shardReceiver = dispatchReceiverParameter!!
+          val componentParameter = addValueParameter("component", graphClass.defaultType)
+          buildBlockBody {
+            bindings.forEach { binding ->
+              val value =
+                binding.initializer.invoke(
+                  this,
+                  componentParameter,
+                  shardReceiver,
+                  binding.typeKey,
+                )
+              +irSetField(irGet(shardReceiver), binding.field, value)
+            }
+          }
+        }
+
+    val instantiateStatement:
+      IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement = { dispatchReceiver ->
+        irSetField(
+          irGet(dispatchReceiver),
+          shardInstanceField,
+          irCallConstructor(shardConstructor.symbol, emptyList()),
+        )
+      }
+    val initializeStatement:
+      IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement = { dispatchReceiver ->
+        irInvoke(
+          dispatchReceiver = irGetField(irGet(dispatchReceiver), shardInstanceField),
+          callee = initializeFunction.symbol,
+          args = listOf(irGet(dispatchReceiver)),
+        )
+      }
+
+    return ShardInfo(
+      index = index,
+      shardClass = shardClass,
+      instanceField = shardInstanceField,
+      initializeFunction = initializeFunction,
+      bindings = bindings,
+      instantiateStatement = instantiateStatement,
+      initializeStatement = initializeStatement,
+    )
+  }
+
+  private fun computeShardInitializationOrder(shardInfos: List<ShardInfo>): List<Int> {
+    if (shardInfos.size <= 1) return shardInfos.indices.toList()
+
+    val keyToShard = mutableMapOf<IrTypeKey, Int>()
+    shardInfos.forEachIndexed { shardIndex, info ->
+      info.bindings.forEach { keyToShard[it.typeKey] = shardIndex }
+    }
+
+    val edges = MutableList(shardInfos.size) { mutableSetOf<Int>() }
+    shardInfos.forEachIndexed { shardIndex, info ->
+      info.bindings.forEach { binding ->
+        val dependencies = bindingGraph.requireBinding(binding.typeKey).dependencies
+        for (dependency in dependencies) {
+          val dependencyShard = keyToShard[dependency.typeKey]
+          if (dependencyShard != null && dependencyShard != shardIndex) {
+            // dependencyShard must be initialized before shardIndex
+            edges[dependencyShard].add(shardIndex)
+          }
+        }
+      }
+    }
+
+    val indegree = IntArray(shardInfos.size)
+    edges.forEach { outgoing ->
+      outgoing.forEach { indegree[it]++ }
+    }
+
+    val queue = ArrayDeque<Int>()
+    indegree.forEachIndexed { index, value ->
+      if (value == 0) queue.addLast(index)
+    }
+
+    val order = mutableListOf<Int>()
+    while (queue.isNotEmpty()) {
+      val shard = queue.removeFirst()
+      order += shard
+      for (dependent in edges[shard]) {
+        indegree[dependent]--
+        if (indegree[dependent] == 0) {
+          queue.addLast(dependent)
+        }
+      }
+    }
+
+    return if (order.size == shardInfos.size) order else shardInfos.indices.toList()
+  }
+
+  private fun moveFieldToShard(field: IrField, shardClass: IrClass) {
+    val parent = field.parentAsClass
+    parent.declarations.remove(field)
+    shardClass.addChild(field)
+    field.parent = shardClass
   }
 }

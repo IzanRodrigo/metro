@@ -9,6 +9,7 @@ import dev.zacsweers.metro.compiler.interop.configureAnvilAnnotations
 import dev.zacsweers.metro.compiler.interop.configureDaggerAnnotations
 import dev.zacsweers.metro.compiler.interop.configureDaggerInterop
 import dev.zacsweers.metro.compiler.ir.MetroIrGenerationExtension
+import java.nio.file.Paths
 import org.jetbrains.kotlin.backend.common.extensions.IrGenerationExtension
 import org.jetbrains.kotlin.compiler.plugin.CompilerPluginRegistrar
 import org.jetbrains.kotlin.compiler.plugin.ExperimentalCompilerApi
@@ -68,6 +69,12 @@ class MetroExtensionRegistrarConfigurator(testServices: TestServices) :
         chunkFieldInits =
           module.directives.singleOrZeroValue(MetroDirectives.CHUNK_FIELD_INITS)
             ?: optionDefaults.chunkFieldInits,
+        enableComponentSharding =
+          module.directives.singleOrZeroValue(MetroDirectives.COMPONENT_SHARDING)
+            ?: optionDefaults.enableComponentSharding,
+        keysPerComponentShard =
+          module.directives.singleOrZeroValue(MetroDirectives.KEYS_PER_GRAPH_SHARD)
+            ?: optionDefaults.keysPerComponentShard,
         enableFullBindingGraphValidation =
           MetroDirectives.ENABLE_FULL_BINDING_GRAPH_VALIDATION in module.directives,
         enableGraphImplClassAsReturnType =
@@ -222,16 +229,25 @@ class MetroExtensionRegistrarConfigurator(testServices: TestServices) :
           },
         // TODO other dagger annotations/types not yet implemented
       )
-    val classIds = ClassIds.fromOptions(options)
+    val reportsDestination =
+      options.reportsDestination
+        ?: Paths.get("")
+          .toAbsolutePath()
+          .resolve("build/test-metro-reports")
+          .resolve(module.name)
+
+    val configuredOptions = options.copy(reportsDestination = reportsDestination)
+
+    val classIds = ClassIds.fromOptions(configuredOptions)
     val compatContext = CompatContext.getInstance()
     FirExtensionRegistrarAdapter.registerExtension(
-      MetroFirExtensionRegistrar(classIds, options, compatContext)
+      MetroFirExtensionRegistrar(classIds, configuredOptions, compatContext)
     )
     IrGenerationExtension.registerExtension(
       MetroIrGenerationExtension(
         messageCollector = configuration.messageCollector,
         classIds = classIds,
-        options = options,
+        options = configuredOptions,
         // TODO ever support this in tests?
         lookupTracker = null,
         expectActualTracker = ExpectActualTracker.DoNothing,
