@@ -49,6 +49,8 @@ internal object Origins {
     IrDeclarationOrigin.GeneratedByPlugin(Keys.GeneratedDynamicGraph)
   val DynamicContainerParam: IrDeclarationOrigin =
     IrDeclarationOrigin.GeneratedByPlugin(Keys.DynamicContainerParam)
+  val ParentComponentParameter: IrDeclarationOrigin =
+    IrDeclarationOrigin.GeneratedByPlugin(Keys.ParentComponentParameter)
 }
 
 internal val IrDeclarationOrigin.isGeneratedGraph: Boolean

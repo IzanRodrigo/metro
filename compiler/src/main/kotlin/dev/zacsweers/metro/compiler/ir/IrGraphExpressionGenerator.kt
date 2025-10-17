@@ -23,6 +23,7 @@ import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.parent
+import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
@@ -361,16 +362,48 @@ private constructor(
           }
 
           val ctor = extensionImpl.primaryConstructor!!
+          val extensionData = extensionImpl.generatedGraphExtensionData
+
           irCallConstructor(ctor.symbol, node.sourceGraph.typeParameters.map { it.defaultType })
             .apply {
               // If this function has parameters, they're factory instance params and need to be
               // passed on
               val functionParams = binding.accessor.regularParameters
 
-              // First param (dispatch receiver) is always the parent graph
-              arguments[0] = irGet(thisReceiver)
+              var argIndex = 0
+
+              // Pass all ancestor arguments
+              // Extension expects ancestors in order: parent, intermediates..., root
+              if (extensionData?.ancestors?.isNotEmpty() == true) {
+                val currentExtensionData = node.sourceGraph.generatedGraphExtensionData
+
+                for (requiredAncestor in extensionData.ancestors) {
+                  // Find how to access this ancestor from the current component
+                  val ancestorValue = if (requiredAncestor.componentClass == node.sourceGraph.metroGraphOrFail) {
+                    // The required ancestor is THIS component - pass thisReceiver
+                    irGet(thisReceiver)
+                  } else {
+                    // Look for this ancestor in our own ancestors list
+                    val ourAncestor = currentExtensionData?.ancestors?.find {
+                      it.componentClass == requiredAncestor.componentClass
+                    }
+
+                    if (ourAncestor != null) {
+                      // We have this ancestor - pass our field
+                      irGetField(irGet(thisReceiver), ourAncestor.field)
+                    } else {
+                      // We don't have it - this is the root and we ARE the root
+                      irGet(thisReceiver)
+                    }
+                  }
+
+                  arguments[argIndex++] = ancestorValue
+                }
+              }
+
+              // Pass creator function parameters
               for (i in 0 until functionParams.size) {
-                arguments[i + 1] = irGet(functionParams[i])
+                arguments[argIndex++] = irGet(functionParams[i])
               }
             }
             .transformAccessIfNeeded(accessType, AccessType.INSTANCE, binding.typeKey.type)
@@ -413,8 +446,44 @@ private constructor(
         is IrBinding.GraphDependency -> {
           val ownerKey = binding.ownerKey
           if (binding.fieldAccess != null) {
-            // Get the parent receiver
-            val parentReceiver = irGet(binding.fieldAccess.receiverParameter)
+            // Get the correct ancestor receiver based on which component owns the field
+            // For graph extensions with multiple ancestors (Dagger's approach):
+            // - Find which ancestor owns this field by matching parentKey
+            // - Access that ancestor's field directly
+            val extensionData = node.sourceGraph.generatedGraphExtensionData
+
+            val parentReceiver = if (extensionData?.ancestors?.isNotEmpty() == true) {
+              // This is a graph extension - find the correct ancestor that owns the field
+              // The field owner is stored in binding.fieldAccess.parentKey (node's typeKey)
+              val fieldOwnerTypeKey = binding.fieldAccess.parentKey
+
+              // Find matching ancestor by comparing SOURCE type keys
+              // CRITICAL: parentKey is the node's typeKey (source interface), not the metroGraph class
+              // So we must match against ancestor.sourceTypeKey, not IrTypeKey(ancestor.componentClass)!
+              val owningAncestor = extensionData.ancestors.find { ancestor ->
+                ancestor.sourceTypeKey == fieldOwnerTypeKey
+              }
+
+              if (owningAncestor != null) {
+                // Access the correct ancestor directly
+                irGetField(irGet(thisReceiver), owningAncestor.field)
+              } else {
+                // Could not find ancestor in our list
+                // NEVER use binding.fieldAccess.receiverParameter - it references parent's <this>
+                // which has wrong type in child's constructor context!
+                // Fallback: use rootGraph (last ancestor) or parent (first ancestor)
+                extensionData.rootGraphField?.let {
+                  irGetField(irGet(thisReceiver), it)
+                } ?: extensionData.parentField?.let {
+                  irGetField(irGet(thisReceiver), it)
+                } ?: reportCompilerBug(
+                  "No ancestor field available for accessing ${fieldOwnerTypeKey} from ${node.sourceGraph.kotlinFqName}"
+                )
+              }
+            } else {
+              // Regular component - direct access to parent's this receiver
+              irGet(binding.fieldAccess.receiverParameter)
+            }
 
             // Check if field is in a shard - lazy lookup from parent's BindingFieldContext
             val actualReceiver = if (

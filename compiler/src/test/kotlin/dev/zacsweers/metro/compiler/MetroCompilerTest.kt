@@ -113,7 +113,7 @@ abstract class MetroCompilerTest {
               MetroOption.ENABLE_COMPONENT_SHARDING ->
                 processor.option(entry.raw.cliOption, enableComponentSharding)
               MetroOption.KEYS_PER_GRAPH_SHARD ->
-                processor.option(entry.raw.cliOption, keysPerComponentShard)
+                processor.option(entry.raw.cliOption, keysPerGraphShard)
               MetroOption.STATEMENTS_PER_INIT_FUN ->
                 processor.option(entry.raw.cliOption, statementsPerInitFun)
               MetroOption.PUBLIC_PROVIDER_SEVERITY ->

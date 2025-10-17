@@ -7,19 +7,24 @@ import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.asName
 import dev.zacsweers.metro.compiler.capitalizeUS
+import dev.zacsweers.metro.compiler.decapitalizeUS
+import dev.zacsweers.metro.compiler.isGeneratedGraph
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
+import org.jetbrains.kotlin.ir.builders.declarations.addField
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
+import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.irAttribute
 import org.jetbrains.kotlin.ir.util.addChild
@@ -40,6 +45,7 @@ internal class IrGraphExtensionGenerator(
   private val contributionMerger: IrContributionMerger,
   private val bindingContainerResolver: IrBindingContainerResolver,
   private val parentGraph: IrClass,
+  private val dependencyGraphNodesByClass: (ClassId) -> DependencyGraphNode?,
 ) : IrMetroContext by context {
 
   private val nameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
@@ -192,10 +198,17 @@ internal class IrGraphExtensionGenerator(
               .asName()
           origin = Origins.GeneratedGraphExtension
           kind = ClassKind.CLASS
-          isInner = true
+          // Explicitly set isInner = false to make this a nested class, not an inner class
+          // This prevents Kotlin from generating synthetic accessors for parent fields
+          isInner = false
         }
         .apply {
+          // Create this receiver for the extension itself (not outer class receiver)
           createThisReceiverParameter()
+
+          // Capture the class's thisReceiver for use in constructor body
+          // Nested classes don't have dispatchReceiverParameter, only thisReceiver
+          val classThisReceiver = thisReceiver!!
 
           // Add a @DependencyGraph(...) annotation
           // TODO dedupe with dynamic graph gen
@@ -235,6 +248,63 @@ internal class IrGraphExtensionGenerator(
           // Add only non-binding-container contributions as supertypes
           contributions?.let { superTypes += it.supertypes }
 
+          // Collect all ancestors from parent up to root
+          // This matches Dagger's approach of storing direct references to all ancestor components
+          val ancestorsList = mutableListOf<AncestorInfo>()
+
+          // Add immediate parent
+          var currentAncestor: IrClass? = parentGraph
+          var ancestorDepth = 0
+
+          while (currentAncestor != null) {
+            val fieldName = when {
+              ancestorDepth == 0 -> "parent"  // Immediate parent
+              currentAncestor.origin == Origins.MetroGraphDeclaration -> "rootGraph"  // Root component
+              else -> "${currentAncestor.name.asString().decapitalizeUS().removeSuffix("Impl")}Instance"
+            }
+
+            val ancestorField = addField(
+              fieldName.asName(),
+              currentAncestor.defaultType,
+              DescriptorVisibilities.PRIVATE,
+            )
+
+            // Look up the dependency graph node to get the SOURCE typeKey
+            // This is critical for matching - parentKey uses node.typeKey (source interface)
+            // not IrTypeKey(metroGraph class)
+            val ancestorNode = dependencyGraphNodesByClass(currentAncestor.classIdOrFail)
+            val sourceTypeKey = ancestorNode?.typeKey ?: IrTypeKey(currentAncestor)
+
+            ancestorsList.add(AncestorInfo(
+              componentClass = currentAncestor,
+              sourceTypeKey = sourceTypeKey,
+              field = ancestorField,
+              name = fieldName
+            ))
+
+            // Move to next ancestor
+            if (currentAncestor.origin == Origins.MetroGraphDeclaration) {
+              // Reached root, stop
+              break
+            } else if (currentAncestor.origin == Origins.GeneratedGraphExtension) {
+              // Get this ancestor's parent from its generatedGraphExtensionData
+              val ancestorParentField = currentAncestor.generatedGraphExtensionData?.parentField
+              currentAncestor = ancestorParentField?.type?.let {
+                (it as? org.jetbrains.kotlin.ir.types.IrSimpleType)?.classifier?.owner as? IrClass
+              }
+            } else {
+              // Unknown origin, stop
+              break
+            }
+
+            ancestorDepth++
+          }
+
+          // For backwards compatibility, keep references to parent and rootGraph
+          val parentField = ancestorsList.firstOrNull()?.field
+          val rootGraphField = ancestorsList.lastOrNull()?.field
+          val rootGraph = ancestorsList.lastOrNull()?.componentClass ?: parentGraph
+
           val ctor =
             addConstructor {
                 isPrimary = true
@@ -242,11 +312,18 @@ internal class IrGraphExtensionGenerator(
                 // This will be finalized in IrGraphGenerator
                 isFakeOverride = true
               }
+
               .apply {
-                // TODO generics?
-                setDispatchReceiver(
-                  parentGraph.thisReceiverOrFail.copyTo(this, type = parentGraph.defaultType)
-                )
+                // Add constructor parameters for all ancestors
+                // Store parameters in same order as ancestorsList for assignment
+                val ancestorParams = ancestorsList.map { ancestor ->
+                  addValueParameter(
+                    ancestor.name,
+                    ancestor.componentClass.defaultType,
+                    origin = Origins.ParentComponentParameter,
+                  )
+                }
+
                 // Copy over any creator params
                 creatorFunction?.let {
                   for (param in it.regularParameters) {
@@ -256,7 +333,17 @@ internal class IrGraphExtensionGenerator(
                   }
                 }
 
-                body = this.generateDefaultConstructorBody()
+                // Generate constructor body with assignment of all ancestor parameters to fields
+                body = this.generateDefaultConstructorBody {
+                  // Assign each ancestor parameter to its corresponding field
+                  for ((ancestor, param) in ancestorsList.zip(ancestorParams)) {
+                    +irSetField(
+                      receiver = irGet(classThisReceiver),
+                      field = ancestor.field,
+                      value = irGet(param)
+                    )
+                  }
+                }
               }
 
           // Must be added to the parent before we generate a factory impl
@@ -276,7 +363,14 @@ internal class IrGraphExtensionGenerator(
             }
 
           generatedGraphExtensionData =
-            GeneratedGraphExtensionData(typeKey = typeKey, factoryImpl = factoryImpl)
+            GeneratedGraphExtensionData(
+              typeKey = typeKey,
+              factoryImpl = factoryImpl,
+              parentField = parentField,
+              rootGraphField = rootGraphField,
+              rootGraphClass = rootGraph,  // Store the actual root class
+              ancestors = ancestorsList,  // Store all ancestors for expression generation
+            )
         }
 
     graphImpl.addFakeOverrides(irTypeSystemContext)
@@ -285,9 +379,28 @@ internal class IrGraphExtensionGenerator(
   }
 }
 
+/**
+ * Information about an ancestor component.
+ *
+ * @param componentClass The generated metro graph implementation class (e.g., $$MetroGraph)
+ * @param sourceTypeKey The source component's typeKey (e.g., IrTypeKey(ApplicationComponent))
+ * @param field The field in the current component that stores reference to this ancestor
+ * @param name The field name (e.g., "parent", "rootGraph", "activityComponentInstance")
+ */
+internal data class AncestorInfo(
+  val componentClass: IrClass,
+  val sourceTypeKey: IrTypeKey,  // Source component typeKey for matching
+  val field: IrField,
+  val name: String,
+)
+
 internal class GeneratedGraphExtensionData(
   val typeKey: IrTypeKey,
   val factoryImpl: IrClass? = null,
+  val parentField: IrField? = null, // Field storing the immediate parent component reference
+  val rootGraphField: IrField? = null, // Field storing the root graph reference (for shard access)
+  val rootGraphClass: IrClass? = null, // The actual root graph class (for determining root in nested extensions)
+  val ancestors: List<AncestorInfo> = emptyList(), // All ancestors from parent to root
 )
 
 internal var IrClass.generatedGraphExtensionData: GeneratedGraphExtensionData? by

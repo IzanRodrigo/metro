@@ -288,6 +288,7 @@ internal class DependencyGraphTransformer(
         contributionMerger,
         bindingContainerResolver,
         node.sourceGraph.metroGraphOrFail,
+        dependencyGraphNodeCache::get,
       )
 
     val fieldNameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
@@ -522,6 +523,29 @@ internal class DependencyGraphTransformer(
             bindingFieldContext = currentBindingFieldContext,
           )
           .generate()
+
+        // Fix child component field access after parent sharding completes
+        // Child expressions were generated before parent sharding, so they access fields incorrectly
+        // This post-processes child IR to fix: parent.field → rootGraph.shardNInstance.field
+        if (node.graphExtensions.isNotEmpty() && metroContext.options.enableComponentSharding) {
+          tracer.traceNested("Fix child shard field access") {
+            // Recursively apply the fixer to all nested graph extension classes
+            // Each component gets its own fixer instance that knows about its rootGraphField
+            fun fixNestedGraphExtensions(parentClass: IrClass) {
+              for (childClass in parentClass.nestedClasses) {
+                if (childClass.origin == Origins.GeneratedGraphExtension) {
+                  val builder = metroContext.createIrBuilder(childClass.symbol)
+                  val fixer = ShardFieldAccessFixer(metroGraph, builder, childClass)
+                  childClass.transform(fixer, null)
+                  // Recursively fix nested children
+                  fixNestedGraphExtensions(childClass)
+                }
+              }
+            }
+
+            fixNestedGraphExtensions(metroGraph)
+          }
+        }
       }
 
       processedMetroDependencyGraphsByClass[graphClassId] = result

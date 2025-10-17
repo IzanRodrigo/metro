@@ -71,6 +71,11 @@ internal class BindingFieldContext {
 
   fun providerFieldEntry(key: IrTypeKey): FieldEntry? = providerFields[key]
 
+  // Find provider field entry by field reference (fallback when key lookup fails)
+  // This is needed when keys don't match exactly (e.g., qualified vs unqualified)
+  fun providerFieldEntryByField(field: IrField): FieldEntry? =
+    providerFields.values.find { it.field == field }
+
   context(scope: IrBuilderWithScope)
   fun providerExpression(
     componentReceiver: IrValueParameter,

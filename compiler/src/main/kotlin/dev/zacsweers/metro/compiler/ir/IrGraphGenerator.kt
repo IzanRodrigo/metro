@@ -286,6 +286,19 @@ internal class IrGraphGenerator(
 
       val thisReceiverParameter = thisReceiverOrFail
 
+      // Check if this is a graph extension (child component)
+      // Child components need deferred initialization because field initializers run before
+      // the parent field is assigned in the constructor
+      val isGraphExtension = graphClass.origin == Origins.GeneratedGraphExtension
+
+      // Graph extension fields must be INTERNAL so nested grandchildren can access them
+      // without Kotlin generating synthetic accessors with wrong receiver types
+      val fieldVisibility = if (isGraphExtension) {
+        DescriptorVisibilities.INTERNAL
+      } else {
+        DescriptorVisibilities.PRIVATE
+      }
+
       fun addBoundInstanceField(
         typeKey: IrTypeKey,
         name: Name,
@@ -308,23 +321,69 @@ internal class IrGraphGenerator(
                   .suffixIfNot("Provider")
               },
               { metroSymbols.metroProvider.typeWith(typeKey.type) },
+              visibility = fieldVisibility,
             )
-            .initFinal {
-              instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
+            .let { field ->
+              if (isGraphExtension) {
+                // Child component: use deferred initialization in constructor
+                // to avoid NPE when accessing parent fields before parent is assigned
+                field.withInit(typeKey) { componentReceiver, key ->
+                  instanceFactory(key.type, initializer(componentReceiver, key))
+                }
+              } else {
+                // Root component: use inline field initializer
+                field.initFinal {
+                  instanceFactory(typeKey.type, initializer(thisReceiverParameter, typeKey))
+                }
+              }
             },
         )
       }
 
       node.creator?.let { creator ->
+        // For graph extensions, constructor has ancestor parameters first, then creator params
+        // Calculate offset to skip ancestor parameters when mapping creator params to constructor params
+        val ancestorCount = graphClass.generatedGraphExtensionData?.ancestors?.size ?: 0
+
+        // Verify we have enough constructor parameters for all creator params + ancestors
+        val expectedParamCount = ancestorCount + creator.parameters.regularParameters.size
+        if (ctor.regularParameters.size < expectedParamCount) {
+          // Constructor has fewer parameters than expected
+          // This can happen if some creator params were filtered out
+          // We need to match by origin instead of index
+        }
+
         for ((i, param) in creator.parameters.regularParameters.withIndex()) {
           val isBindsInstance = param.isBindsInstance
 
           // TODO if we copy the annotations over in FIR we can skip this creator lookup all
           //  together
-          val irParam = ctor.regularParameters[i]
+
+          // Find the matching IR parameter by origin, not by index
+          // This is safer than index-based matching when ancestors are involved
+          val irParam = ctor.regularParameters.find { irP ->
+            // Match by name and type if origins don't match
+            irP.name == param.name && irP.type == param.type
+          } ?: run {
+            // Fallback to index-based if we can't find by name
+            val paramIndex = i + ancestorCount
+            if (paramIndex < ctor.regularParameters.size) {
+              ctor.regularParameters[paramIndex]
+            } else {
+              // Parameter doesn't exist in constructor, skip it
+              return@run null
+            }
+          } ?: continue  // Skip if we can't find the parameter
 
           val isDynamic = irParam.origin == Origins.DynamicContainerParam
+          val isParentComponent = irParam.origin == Origins.ParentComponentParameter
           val isBindingContainer = creator.bindingContainersParameterIndices.isSet(i)
+
+          // Skip parent component parameters - they're handled differently for nested graph extensions
+          if (isParentComponent) {
+            continue
+          }
+
           if (isBindsInstance || isBindingContainer || isDynamic) {
 
             if (!isDynamic && param.typeKey in node.dynamicTypeKeys) {
@@ -361,15 +420,25 @@ internal class IrGraphGenerator(
                 param.typeKey,
                 { graphDepField.name.asString() + "Provider" },
                 { metroSymbols.metroProvider.typeWith(param.typeKey.type) },
+                visibility = fieldVisibility,
               )
 
             bindingFieldContext.putProviderField(
               param.typeKey,
-              providerWrapperField.initFinal {
-                instanceFactory(
-                  param.typeKey.type,
-                  irGetField(irGet(thisReceiverParameter), graphDepField),
-                )
+              if (isGraphExtension) {
+                providerWrapperField.withInit(param.typeKey) { componentReceiver, key ->
+                  instanceFactory(
+                    key.type,
+                    irGetField(irGet(componentReceiver), graphDepField),
+                  )
+                }
+              } else {
+                providerWrapperField.initFinal {
+                  instanceFactory(
+                    param.typeKey.type,
+                    irGetField(irGet(thisReceiverParameter), graphDepField),
+                  )
+                }
               },
             )
             // Link both the graph typekey and the (possibly-impl type)
@@ -421,15 +490,25 @@ internal class IrGraphGenerator(
             node.typeKey,
             { "thisGraphInstanceProvider" },
             { metroSymbols.metroProvider.typeWith(node.typeKey.type) },
+            visibility = fieldVisibility,
           )
 
         bindingFieldContext.putProviderField(
           node.typeKey,
-          field.initFinal {
-            instanceFactory(
-              node.typeKey.type,
-              irGetField(irGet(thisReceiverParameter), thisGraphField),
-            )
+          if (isGraphExtension) {
+            field.withInit(node.typeKey) { componentReceiver, key ->
+              instanceFactory(
+                key.type,
+                irGetField(irGet(componentReceiver), thisGraphField),
+              )
+            }
+          } else {
+            field.initFinal {
+              instanceFactory(
+                node.typeKey.type,
+                irGetField(irGet(thisReceiverParameter), thisGraphField),
+              )
+            }
           },
         )
       }
@@ -458,6 +537,7 @@ internal class IrGraphGenerator(
                 binding.typeKey,
                 { binding.nameHint.decapitalizeUS() + "Provider" },
                 { deferredTypeKey.type.wrapInProvider(metroSymbols.metroProvider) },
+                visibility = fieldVisibility,
               )
               .withInit(binding.typeKey) { _, _ ->
                 irInvoke(
@@ -521,6 +601,7 @@ internal class IrGraphGenerator(
               binding.typeKey,
               { binding.nameHint.decapitalizeUS().suffixIfNot(suffix) },
               { fieldType },
+              visibility = fieldVisibility,
             )
 
           val accessType =
@@ -688,13 +769,30 @@ internal class IrGraphGenerator(
         // Handle empty case (e.g., subcomponents with no field bindings)
         if (shardGroups.isNotEmpty()) {
           for (binding in shardGroups.single()) {
-            binding.field.initFinal {
-              binding.initializer.invoke(
-                this,
-                thisReceiverParameter,
-                thisReceiverParameter,
-                binding.typeKey,
-              )
+            if (isGraphExtension) {
+              // Child component: defer initialization to avoid NPE accessing parent before it's assigned
+              constructorStatements.add { thisReceiver ->
+                irSetField(
+                  irGet(thisReceiver),
+                  binding.field,
+                  binding.initializer.invoke(
+                    this,
+                    thisReceiver,
+                    thisReceiver,
+                    binding.typeKey,
+                  )
+                )
+              }
+            } else {
+              // Root component: use inline field initializer
+              binding.field.initFinal {
+                binding.initializer.invoke(
+                  this,
+                  thisReceiverParameter,
+                  thisReceiverParameter,
+                  binding.typeKey,
+                )
+              }
             }
           }
         }
@@ -940,7 +1038,9 @@ internal class IrGraphGenerator(
         .buildClass {
           name = fieldNameAllocator.newName(shardName).asName()
           kind = ClassKind.CLASS
-          visibility = DescriptorVisibilities.PRIVATE
+          // Make shard class INTERNAL so nested child components can access it
+          // This prevents Kotlin from generating synthetic accessors on the wrong class
+          visibility = DescriptorVisibilities.INTERNAL
           origin = Origins.Default
         }
         .apply {
@@ -958,11 +1058,13 @@ internal class IrGraphGenerator(
         }
         .apply { body = generateDefaultConstructorBody() }
 
+    // Shard instance field must be INTERNAL so nested graph extensions (subcomponents) can access it
+    // This allows child components to access parent fields that are located in shards
     val shardInstanceField =
       graphClass.addField(
         fieldNameAllocator.newName("${shardName.decapitalizeUS()}Instance"),
         shardClass.defaultType,
-        DescriptorVisibilities.PRIVATE,
+        DescriptorVisibilities.INTERNAL,
       )
 
     bindings.forEach { binding ->
@@ -1127,5 +1229,9 @@ internal class IrGraphGenerator(
     parent.declarations.remove(field)
     shardClass.addChild(field)
     field.parent = shardClass
+    // Change field visibility to PUBLIC so no synthetic accessors are needed
+    // Nested child components can access parent.shard3Instance.defaultProvider3 directly
+    // without Kotlin generating access$get... methods
+    field.visibility = DescriptorVisibilities.PUBLIC
   }
 }

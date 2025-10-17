@@ -281,6 +281,8 @@ internal class DependencyGraphNodeCache(
             includedGraphNodes[parameter.typeKey] = node
           } else if (parameter.ir.origin == Origins.DynamicContainerParam) {
             // Do nothing, it'll be checked separately in IrGraphGen
+          } else if (parameter.ir.origin == Origins.ParentComponentParameter) {
+            // Parent component parameter for nested graph extensions - no processing needed
           } else {
             reportCompilerBug("Unexpected parameter type for graph: $parameter")
           }

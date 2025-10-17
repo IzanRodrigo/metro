@@ -124,4 +124,8 @@ internal object Keys {
   data object DynamicContainerParam : GeneratedDeclarationKey() {
     override fun toString() = "DynamicContainerParam"
   }
+
+  data object ParentComponentParameter : GeneratedDeclarationKey() {
+    override fun toString() = "ParentComponentParameter"
+  }
 }
