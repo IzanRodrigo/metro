@@ -25,11 +25,14 @@ internal class ParentContext(
     val parentKey: IrTypeKey,
     val field: IrField,
     val receiverParameter: IrValueParameter,
+    val parentBindingFieldContext: BindingFieldContext? = null, // Parent's context for lazy shard lookup
+    val fieldTypeKey: IrTypeKey? = null, // Type key for looking up shard ownership
   )
 
   private data class Level(
     val node: DependencyGraphNode,
     val fieldNameAllocator: NameAllocator,
+    val bindingFieldContext: BindingFieldContext? = null, // Parent's binding field context for shard lookup
     val deltaProvided: MutableSet<IrTypeKey> = mutableSetOf(),
     val usedKeys: MutableSet<IrTypeKey> = mutableSetOf(),
     val fields: MutableMap<IrTypeKey, IrField> = mutableMapOf(),
@@ -71,7 +74,14 @@ internal class ParentContext(
 
       // Only mark in the provider level - inner classes can access parent fields directly
       providerLevel.usedKeys.add(key)
-      return FieldAccess(providerLevel.node.typeKey, field, providerLevel.node.metroGraphOrFail.thisReceiverOrFail)
+
+      return FieldAccess(
+        providerLevel.node.typeKey,
+        field,
+        providerLevel.node.metroGraphOrFail.thisReceiverOrFail,
+        providerLevel.bindingFieldContext,
+        key
+      )
     }
 
     // Not found but is scoped. Treat as constructor-injected with matching scope.
@@ -88,7 +98,14 @@ internal class ParentContext(
 
           // Only mark in the level that owns the scope
           level.usedKeys.add(key)
-          return FieldAccess(level.node.typeKey, field, level.node.metroGraphOrFail.thisReceiverOrFail)
+
+          return FieldAccess(
+            level.node.typeKey,
+            field,
+            level.node.metroGraphOrFail.thisReceiverOrFail,
+            level.bindingFieldContext,
+            key
+          )
         }
       }
     }
@@ -96,9 +113,13 @@ internal class ParentContext(
     return null
   }
 
-  fun pushParentGraph(node: DependencyGraphNode, fieldNameAllocator: NameAllocator) {
+  fun pushParentGraph(
+    node: DependencyGraphNode,
+    fieldNameAllocator: NameAllocator,
+    bindingFieldContext: BindingFieldContext? = null,
+  ) {
     val idx = levels.size
-    val level = Level(node, fieldNameAllocator)
+    val level = Level(node, fieldNameAllocator, bindingFieldContext)
     levels.addLast(level)
     parentScopes.addAll(node.scopes)
 
@@ -191,7 +212,13 @@ internal class ParentContext(
     keyIntroStack[key]?.lastOrNull()?.let { providerIdx ->
       val level = levels[providerIdx]
       level.fields[key]?.let { field ->
-        return FieldAccess(level.node.typeKey, field, level.node.metroGraphOrFail.thisReceiverOrFail)
+        return FieldAccess(
+          level.node.typeKey,
+          field,
+          level.node.metroGraphOrFail.thisReceiverOrFail,
+          level.bindingFieldContext,
+          key
+        )
       }
     }
     return null

@@ -413,8 +413,34 @@ private constructor(
         is IrBinding.GraphDependency -> {
           val ownerKey = binding.ownerKey
           if (binding.fieldAccess != null) {
-            // Just get the field
-            irGetField(irGet(binding.fieldAccess.receiverParameter), binding.fieldAccess.field)
+            // Get the parent receiver
+            val parentReceiver = irGet(binding.fieldAccess.receiverParameter)
+
+            // Check if field is in a shard - lazy lookup from parent's BindingFieldContext
+            val actualReceiver = if (
+              binding.fieldAccess.parentBindingFieldContext != null &&
+              binding.fieldAccess.fieldTypeKey != null
+            ) {
+              val fieldEntry = binding.fieldAccess.parentBindingFieldContext.providerFieldEntry(
+                binding.fieldAccess.fieldTypeKey
+              )
+              when (val owner = fieldEntry?.owner) {
+                is BindingFieldContext.Owner.Shard -> {
+                  // Field is in parent's shard, access through shard instance
+                  irGetField(parentReceiver, owner.instanceField)
+                }
+                else -> {
+                  // Field is in parent's root
+                  parentReceiver
+                }
+              }
+            } else {
+              // No binding context, field must be in root
+              parentReceiver
+            }
+
+            // Access the field from the actual receiver (root or shard)
+            irGetField(actualReceiver, binding.fieldAccess.field)
           } else if (binding.getter != null) {
             val graphInstance =
               fieldAccess.getInstanceExpression(ownerKey, thisReceiver)

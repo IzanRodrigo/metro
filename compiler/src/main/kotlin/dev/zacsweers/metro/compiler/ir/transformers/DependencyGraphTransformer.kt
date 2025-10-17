@@ -11,6 +11,7 @@ import dev.zacsweers.metro.compiler.exitProcessing
 import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.expectAsOrNull
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
+import dev.zacsweers.metro.compiler.ir.BindingFieldContext
 import dev.zacsweers.metro.compiler.ir.BindingGraphGenerator
 import dev.zacsweers.metro.compiler.ir.DependencyGraphNode
 import dev.zacsweers.metro.compiler.ir.DependencyGraphNodeCache
@@ -291,6 +292,9 @@ internal class DependencyGraphTransformer(
 
     val fieldNameAllocator = NameAllocator(mode = NameAllocator.Mode.COUNT)
 
+    // Create binding field context early so graph extensions can reference it
+    val currentBindingFieldContext = BindingFieldContext()
+
     // Before validating/sealing the parent graph, analyze contributed child graphs to
     // determine any parent-scoped static bindings that are required by children and
     // add synthetic roots for them so they are materialized in the parent.
@@ -350,7 +354,7 @@ internal class DependencyGraphTransformer(
 
       // Transform the contributed graphs
       // Push the parent graph for all contributed graph processing
-      localParentContext.pushParentGraph(node, fieldNameAllocator)
+      localParentContext.pushParentGraph(node, fieldNameAllocator, currentBindingFieldContext)
 
       // Second pass on graph extensions to actually process them and create GraphExtension bindings
       for ((contributedGraphKey, accessors) in node.graphExtensions) {
@@ -515,6 +519,7 @@ internal class DependencyGraphTransformer(
             membersInjectorTransformer = membersInjectorTransformer,
             assistedFactoryTransformer = assistedFactoryTransformer,
             graphExtensionGenerator = graphExtensionGenerator,
+            bindingFieldContext = currentBindingFieldContext,
           )
           .generate()
       }

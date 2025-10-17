@@ -92,9 +92,9 @@ internal class IrGraphGenerator(
   private val membersInjectorTransformer: MembersInjectorTransformer,
   assistedFactoryTransformer: AssistedFactoryTransformer,
   graphExtensionGenerator: IrGraphExtensionGenerator,
+  // Optional pre-created binding field context for use by graph extensions
+  private val bindingFieldContext: BindingFieldContext = BindingFieldContext(),
 ) : IrMetroContext by metroContext {
-
-  private val bindingFieldContext = BindingFieldContext()
 
   private sealed interface FieldOwner {
     data object Root : FieldOwner
