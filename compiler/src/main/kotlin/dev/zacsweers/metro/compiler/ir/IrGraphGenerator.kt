@@ -593,7 +593,8 @@ internal class IrGraphGenerator(
             }
           }
 
-        val shardOrder = computeShardInitializationOrder(shardInfos)
+        val shardOrderResult = computeShardInitializationOrder(shardInfos)
+        val shardOrder = shardOrderResult.order
         if (shardOrder.size == shardInfos.size && shardOrder != shardInfos.indices.toList()) {
           shardInfos =
             shardOrder.mapIndexed { newIndex, originalIndex ->
@@ -646,7 +647,20 @@ internal class IrGraphGenerator(
                 shardInfos.joinToString(" -> ") { "Shard ${it.index + 1}" }
               }"
             )
+            appendLine("Topological sort: ${if (shardOrderResult.sortSucceeded) "SUCCESS" else "FAILED (using fallback order)"}")
+            appendLine("Cross-shard dependencies: ${shardOrderResult.crossShardDependencies.size}")
             appendLine()
+            if (shardOrderResult.crossShardDependencies.isNotEmpty()) {
+              appendLine("Cross-shard dependency details:")
+              shardOrderResult.crossShardDependencies
+                .sortedWith(compareBy({ it.fromShard }, { it.toShard }))
+                .forEach { dep ->
+                  appendLine("  Shard ${dep.fromShard + 1} depends on Shard ${dep.toShard + 1}:")
+                  appendLine("    ${dep.dependentKey}")
+                  appendLine("      -> requires: ${dep.dependencyKey}")
+                }
+              appendLine()
+            }
             shardSummaries.forEach { summary ->
               appendLine(
                 "Shard ${summary.index + 1} (${summary.className}.${summary.initFunctionName})"
@@ -1012,8 +1026,27 @@ internal class IrGraphGenerator(
     )
   }
 
-  private fun computeShardInitializationOrder(shardInfos: List<ShardInfo>): List<Int> {
-    if (shardInfos.size <= 1) return shardInfos.indices.toList()
+  private data class ShardOrderResult(
+    val order: List<Int>,
+    val crossShardDependencies: List<CrossShardDependency>,
+    val sortSucceeded: Boolean,
+  )
+
+  private data class CrossShardDependency(
+    val fromShard: Int,
+    val toShard: Int,
+    val dependentKey: String,
+    val dependencyKey: String,
+  )
+
+  private fun computeShardInitializationOrder(shardInfos: List<ShardInfo>): ShardOrderResult {
+    if (shardInfos.size <= 1) {
+      return ShardOrderResult(
+        order = shardInfos.indices.toList(),
+        crossShardDependencies = emptyList(),
+        sortSucceeded = true,
+      )
+    }
 
     val keyToShard = mutableMapOf<IrTypeKey, Int>()
     shardInfos.forEachIndexed { shardIndex, info ->
@@ -1021,14 +1054,39 @@ internal class IrGraphGenerator(
     }
 
     val edges = MutableList(shardInfos.size) { mutableSetOf<Int>() }
+    val crossShardDeps = mutableListOf<CrossShardDependency>()
+
+    // Helper function to resolve the actual implementation key through alias chains
+    fun resolveActualKey(key: IrTypeKey): IrTypeKey {
+      var current = bindingGraph.findBinding(key) ?: return key
+      // Follow alias chain to find the actual implementation
+      while (current is IrBinding.Alias) {
+        current = bindingGraph.findBinding(current.aliasedType) ?: return current.aliasedType
+      }
+      return current.typeKey
+    }
+
     shardInfos.forEachIndexed { shardIndex, info ->
       info.bindings.forEach { binding ->
         val dependencies = bindingGraph.requireBinding(binding.typeKey).dependencies
         for (dependency in dependencies) {
-          val dependencyShard = keyToShard[dependency.typeKey]
+          // Resolve the actual binding that will be used for this dependency
+          // This handles cases where the dependency type is an interface/abstract class
+          // and the actual implementation is in a different shard, following alias chains
+          val resolvedKey = resolveActualKey(dependency.typeKey)
+
+          val dependencyShard = keyToShard[resolvedKey]
           if (dependencyShard != null && dependencyShard != shardIndex) {
             // dependencyShard must be initialized before shardIndex
             edges[dependencyShard].add(shardIndex)
+            crossShardDeps.add(
+              CrossShardDependency(
+                fromShard = shardIndex,
+                toShard = dependencyShard,
+                dependentKey = binding.typeKey.toString(),
+                dependencyKey = resolvedKey.toString(),
+              )
+            )
           }
         }
       }
@@ -1056,7 +1114,12 @@ internal class IrGraphGenerator(
       }
     }
 
-    return if (order.size == shardInfos.size) order else shardInfos.indices.toList()
+    val sortSucceeded = order.size == shardInfos.size
+    return ShardOrderResult(
+      order = if (sortSucceeded) order else shardInfos.indices.toList(),
+      crossShardDependencies = crossShardDeps,
+      sortSucceeded = sortSucceeded,
+    )
   }
 
   private fun moveFieldToShard(field: IrField, shardClass: IrClass) {
