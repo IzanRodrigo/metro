@@ -74,11 +74,18 @@ internal class SwitchingProviderGenerator(
     binding: IrBinding,
   ): IrExpression {
     if (!binding.isSwitchingCandidate()) {
+      // IMPORTANT: Pass fieldInitKey = binding.typeKey to avoid recursively trying to
+      // resolve this binding via its own switching provider entry. Without this guard,
+      // generateBindingCode() short-circuits to the provider field lookup which routes
+      // back through this factory, causing infinite recursion and a StackOverflowError.
       val generator = expressionGeneratorFactory.create(componentReceiver)
-      return generator.generateBindingCode(
-        binding,
-        accessType = IrGraphExpressionGenerator.AccessType.PROVIDER,
-      )
+      return with(scope) {
+        generator.generateBindingCode(
+          binding,
+          accessType = IrGraphExpressionGenerator.AccessType.PROVIDER,
+          fieldInitKey = binding.typeKey,
+        )
+      }
     }
     val info = bindingInfos.getOrPut(binding.typeKey) { createBindingInfo(binding) }
     switchingProviderClass.ensureCase(info)
@@ -101,13 +108,15 @@ internal class SwitchingProviderGenerator(
           buildBlockBody {
             val dispatchReceiver = dispatchReceiverParameter!!
             val expression =
-              expressionGeneratorFactory
-                .create(dispatchReceiver)
-                .generateBindingCode(
-                  binding,
-                  accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
-                  fieldInitKey = binding.typeKey,
-                )
+              with(this) {
+                expressionGeneratorFactory
+                  .create(dispatchReceiver)
+                  .generateBindingCode(
+                    binding,
+                    accessType = IrGraphExpressionGenerator.AccessType.INSTANCE,
+                    fieldInitKey = binding.typeKey,
+                  )
+              }
             +irReturn(expression)
           }
         }
@@ -269,9 +278,7 @@ internal class SwitchingProviderGenerator(
     return when (this) {
       is IrBinding.ConstructorInjected,
       is IrBinding.MembersInjected,
-      is IrBinding.GraphDependency,
-      is IrBinding.Dynamic -> false
+      is IrBinding.GraphDependency -> false
       else -> true
     }
   }
-
