@@ -73,6 +73,13 @@ internal class SwitchingProviderGenerator(
     componentReceiver: IrValueParameter,
     binding: IrBinding,
   ): IrExpression {
+    if (!binding.isSwitchingCandidate()) {
+      val generator = expressionGeneratorFactory.create(componentReceiver)
+      return generator.generateBindingCode(
+        binding,
+        accessType = IrGraphExpressionGenerator.AccessType.PROVIDER,
+      )
+    }
     val info = bindingInfos.getOrPut(binding.typeKey) { createBindingInfo(binding) }
     switchingProviderClass.ensureCase(info)
     val rawProvider = switchingProviderClass.newInstance(scope, componentReceiver, info.id)
@@ -257,3 +264,14 @@ internal class SwitchingProviderGenerator(
     )
   }
 }
+
+  private fun IrBinding.isSwitchingCandidate(): Boolean {
+    return when (this) {
+      is IrBinding.ConstructorInjected,
+      is IrBinding.MembersInjected,
+      is IrBinding.GraphDependency,
+      is IrBinding.Dynamic -> false
+      else -> true
+    }
+  }
+
