@@ -42,6 +42,7 @@ import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irInt
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
@@ -116,6 +117,7 @@ internal class IrGraphGenerator(
     val bindings: List<FieldBinding>,
     val instantiateStatement: IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement,
     val initializeStatement: IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement,
+    var switchingProviderInfo: IrSwitchingProviderGenerator.SwitchingProviderInfo? = null,
   )
 
   /**
@@ -666,13 +668,47 @@ internal class IrGraphGenerator(
           mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
         val shardInitializationStatements =
           mutableListOf<IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement>()
-        var shardInfos =
-          shardGroups.mapIndexed { index, bindings ->
-            createShard(index, bindings).also { info ->
-              shardInstantiationStatements += info.instantiateStatement
-              shardInitializationStatements += info.initializeStatement
+
+        // PASS 1: Create all shard structures and register all provider fields
+        val shardStructures = shardGroups.mapIndexed { index, bindings ->
+          createShardStructure(index, bindings)
+        }
+
+        // PASS 2: Generate SwitchingProviders (now all provider fields are accessible)
+        val switchingProviders = if (metroContext.options.fastInit) {
+          shardStructures.map { structure ->
+            val switchableBindings = structure.bindings.map { fb ->
+              SwitchableBinding(
+                typeKey = fb.typeKey,
+                field = fb.field,
+                binding = bindingGraph.requireBinding(fb.typeKey)
+              )
             }
+            // Create expression generator in component context for generating dependency access
+            val expressionGen = expressionGeneratorFactory.create(thisReceiverParameter)
+            IrSwitchingProviderGenerator(
+              metroContext = metroContext,
+              parentClass = structure.shardClass,
+              bindings = switchableBindings,
+              componentClass = graphClass,
+              bindingFieldContext = bindingFieldContext,
+              bindingGraph = bindingGraph,
+              fieldNameAllocator = fieldNameAllocator,
+              expressionGenerator = expressionGen
+            ).generate()
           }
+        } else {
+          emptyList()
+        }
+
+        // PASS 3: Create initialize functions with SwitchingProvider integration
+        var shardInfos = shardStructures.mapIndexed { index, structure ->
+          val switchingProviderInfo = switchingProviders.getOrNull(index)
+          createShardInitialize(structure, switchingProviderInfo).also { info ->
+            shardInstantiationStatements += info.instantiateStatement
+            shardInitializationStatements += info.initializeStatement
+          }
+        }
 
         val shardOrderResult = computeShardInitializationOrder(shardInfos)
         val shardOrder = shardOrderResult.order
@@ -1028,10 +1064,59 @@ internal class IrGraphGenerator(
     val keyStrings: List<String>,
   )
 
-  private fun createShard(
+  /**
+   * Creates a SwitchingProvider instance for fastInit mode.
+   *
+   * This wraps the SwitchingProvider in DoubleCheck for scoped bindings,
+   * or returns it directly for unscoped bindings.
+   *
+   * Generated expression:
+   * - Scoped: `DoubleCheck.provider(SwitchingProvider<T>(component, switchId))`
+   * - Unscoped: `SwitchingProvider<T>(component, switchId)`
+   */
+  private fun IrBuilderWithScope.createSwitchingProviderInstance(
+    binding: FieldBinding,
+    switchingProviderInfo: IrSwitchingProviderGenerator.SwitchingProviderInfo,
+    componentParameter: IrValueParameter
+  ): IrExpression {
+    val switchId = switchingProviderInfo.switchIds[binding.typeKey]!!
+
+    // Create SwitchingProvider instance
+    val switchingProviderInstance = irCallConstructor(
+      callee = switchingProviderInfo.switchingProviderClass.primaryConstructor!!.symbol,
+      typeArguments = emptyList()
+    ).apply {
+      arguments[0] = irGet(componentParameter)  // component reference
+      arguments[1] = irInt(switchId)  // switch ID
+    }
+
+    // Check if binding is scoped
+    val actualBinding = bindingGraph.requireBinding(binding.typeKey)
+    return if (actualBinding.isScoped()) {
+      // Wrap in DoubleCheck.provider() for scoped bindings
+      switchingProviderInstance.doubleCheck(this, metroSymbols, binding.typeKey)
+    } else {
+      // Direct SwitchingProvider for unscoped
+      switchingProviderInstance
+    }
+  }
+
+  /**
+   * PASS 1: Creates the shard class structure and registers all provider fields.
+   * Does NOT create the initialize function - that happens in Pass 3 after SwitchingProviders exist.
+   */
+  private data class ShardStructure(
+    val index: Int,
+    val shardClass: IrClass,
+    val shardConstructor: IrConstructor,
+    val instanceField: IrField,
+    val bindings: List<FieldBinding>,
+  )
+
+  private fun createShardStructure(
     index: Int,
     bindings: List<FieldBinding>,
-  ): ShardInfo {
+  ): ShardStructure {
     val shardName = "Shard${index + 1}"
     val shardClass =
       pluginContext.irFactory
@@ -1067,6 +1152,7 @@ internal class IrGraphGenerator(
         DescriptorVisibilities.INTERNAL,
       )
 
+    // Register all provider fields in bindingFieldContext
     bindings.forEach { binding ->
       moveFieldToShard(binding.field, shardClass)
       binding.owner = FieldOwner.Shard(index)
@@ -1080,21 +1166,44 @@ internal class IrGraphGenerator(
       )
     }
 
+    return ShardStructure(
+      index = index,
+      shardClass = shardClass,
+      shardConstructor = shardConstructor,
+      instanceField = shardInstanceField,
+      bindings = bindings,
+    )
+  }
+
+  /**
+   * PASS 3: Creates the initialize function for a shard, with optional SwitchingProvider integration.
+   * Must be called AFTER SwitchingProviders are generated (Pass 2).
+   */
+  private fun createShardInitialize(
+    structure: ShardStructure,
+    switchingProviderInfo: IrSwitchingProviderGenerator.SwitchingProviderInfo?,
+  ): ShardInfo {
     val initializeFunction =
-      shardClass
+      structure.shardClass
         .addFunction("initialize", irBuiltIns.unitType, visibility = DescriptorVisibilities.PUBLIC)
         .apply {
           val shardReceiver = dispatchReceiverParameter!!
           val componentParameter = addValueParameter("component", graphClass.defaultType)
           buildBlockBody {
-            bindings.forEach { binding ->
-              val value =
+            structure.bindings.forEach { binding ->
+              val value = if (switchingProviderInfo != null &&
+                             binding.typeKey in switchingProviderInfo.switchIds) {
+                // Use SwitchingProvider for fastInit mode
+                createSwitchingProviderInstance(binding, switchingProviderInfo, componentParameter)
+              } else {
+                // Use standard initializer
                 binding.initializer.invoke(
                   this,
                   componentParameter,
                   shardReceiver,
                   binding.typeKey,
                 )
+              }
               +irSetField(irGet(shardReceiver), binding.field, value)
             }
           }
@@ -1104,27 +1213,28 @@ internal class IrGraphGenerator(
       IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement = { dispatchReceiver ->
         irSetField(
           irGet(dispatchReceiver),
-          shardInstanceField,
-          irCallConstructor(shardConstructor.symbol, emptyList()),
+          structure.instanceField,
+          irCallConstructor(structure.shardConstructor.symbol, emptyList()),
         )
       }
     val initializeStatement:
       IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement = { dispatchReceiver ->
         irInvoke(
-          dispatchReceiver = irGetField(irGet(dispatchReceiver), shardInstanceField),
+          dispatchReceiver = irGetField(irGet(dispatchReceiver), structure.instanceField),
           callee = initializeFunction.symbol,
           args = listOf(irGet(dispatchReceiver)),
         )
       }
 
     return ShardInfo(
-      index = index,
-      shardClass = shardClass,
-      instanceField = shardInstanceField,
+      index = structure.index,
+      shardClass = structure.shardClass,
+      instanceField = structure.instanceField,
       initializeFunction = initializeFunction,
-      bindings = bindings,
+      bindings = structure.bindings,
       instantiateStatement = instantiateStatement,
       initializeStatement = initializeStatement,
+      switchingProviderInfo = switchingProviderInfo,
     )
   }
 

@@ -669,16 +669,19 @@ internal class DependencyGraphTransformer(
       // Generate a no-arg invoke() function
       companionObject.apply {
         requireSimpleFunction(Symbols.StringNames.INVOKE).owner.apply {
-          if (isFakeOverride) {
-            finalizeFakeOverride(metroGraph.thisReceiverOrFail)
-          }
-          body =
-            pluginContext.createIrBuilder(symbol).run {
-              irExprBodySafe(
-                symbol,
-                irCallConstructor(metroGraph.primaryConstructor!!.symbol, emptyList()),
-              )
+          // Only implement if this is the Metro-generated invoke function
+          if (origin == Origins.MetroGraphCreatorsObjectInvokeDeclaration) {
+            if (isFakeOverride) {
+              finalizeFakeOverride(metroGraph.thisReceiverOrFail)
             }
+            body =
+              pluginContext.createIrBuilder(symbol).run {
+                irExprBodySafe(
+                  symbol,
+                  irCallConstructor(metroGraph.primaryConstructor!!.symbol, emptyList()),
+                )
+              }
+          }
         }
       }
     }

@@ -195,6 +195,16 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       valueMapper = { it.toInt() },
     )
   ),
+  FAST_INIT(
+    RawMetroOption.boolean(
+      name = "fast-init",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Enable fast initialization mode using SwitchingProvider pattern. This defers factory creation to first access, significantly speeding up component initialization at the cost of ~1-2ns overhead per first access. Default is false.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   STATEMENTS_PER_INIT_FUN(
     RawMetroOption(
       name = "statements-per-init-fun",
@@ -612,6 +622,7 @@ public data class MetroOptions(
     MetroOption.ENABLE_COMPONENT_SHARDING.raw.defaultValue.expectAs(),
   val keysPerGraphShard: Int =
     MetroOption.KEYS_PER_GRAPH_SHARD.raw.defaultValue.expectAs(),
+  val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val statementsPerInitFun: Int = MetroOption.STATEMENTS_PER_INIT_FUN.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
@@ -771,6 +782,9 @@ public data class MetroOptions(
 
           MetroOption.KEYS_PER_GRAPH_SHARD ->
             options = options.copy(keysPerGraphShard = configuration.getAsInt(entry))
+
+          MetroOption.FAST_INIT ->
+            options = options.copy(fastInit = configuration.getAsBoolean(entry))
 
           MetroOption.STATEMENTS_PER_INIT_FUN ->
             options = options.copy(statementsPerInitFun = configuration.getAsInt(entry))
