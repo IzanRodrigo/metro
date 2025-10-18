@@ -63,6 +63,7 @@ class TacoImpl(...) : Taco
 - **New**: Support context parameters on top-level injected functions. See the [docs](https://zacsweers.github.io/metro/latest/injection-types/#context-parameters) for more information.
 - **New**: Improve diagnostic checks around binding container arguments to annotations and graph creators.
 - **New**: Add a diagnostic to warn on suspicious injection of unqualified object classes.
+- **New**: (Experimental) Add `chunk-large-multibindings` compiler option (disabled by default) to split very large map/set multibindings into helper functions to reduce shard initializer method size. See `docs/multibinding-chunking.md`.
 - **Enhancement**: Add diagnostic for providing a constructor-injected class with a different scope than the class (if the class has a scope).
 - **Enhancement**: Allow replacing/excluding binding containers by `@Origin` annotations.
 - **Fix**: Don't use interoped annotation arguments at matching indices if their name does not match the requested name.
@@ -79,6 +80,8 @@ class TacoImpl(...) : Taco
 - **Fix**: Fix replacements for regular contributed types not getting processed in graph extensions.
 - **Fix**: Don't re-process contribution merging for generated graph extension impls during graph node creation.
 - **Fix**: Don't reserve provider fields for custom wrapper types like interoped `Optional` types, avoiding accidental eager initialization in cycles.
+- **Fix**: Build switching provider cases with the active IR scope so compilation succeeds on context-receiver backends.
+- **Fix**: Prevent recursive provider expression generation in switching providers when resolving non-switching bindings during fast-init field initialization (StackOverflowError in `generateBindingCode`).
 - Change the warning key for redundant provides to more specific `REDUNDANT_PROVIDES`.
 
 0.6.10

@@ -174,6 +174,17 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
+  CHUNK_LARGE_MULTIBINDINGS(
+    RawMetroOption.boolean(
+      name = "chunk-large-multibindings",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description =
+        "Enable splitting very large map/set multibindings into helper functions to avoid oversized initialization methods.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   FAST_INIT(
     RawMetroOption.boolean(
       name = "fast-init",
@@ -618,6 +629,7 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
+  val chunkLargeMultibindings: Boolean = MetroOption.CHUNK_LARGE_MULTIBINDINGS.raw.defaultValue.expectAs(),
   val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val enableComponentSharding: Boolean =
     MetroOption.ENABLE_COMPONENT_SHARDING.raw.defaultValue.expectAs(),
@@ -776,6 +788,9 @@ public data class MetroOptions(
 
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
+
+          MetroOption.CHUNK_LARGE_MULTIBINDINGS ->
+            options = options.copy(chunkLargeMultibindings = configuration.getAsBoolean(entry))
 
           MetroOption.FAST_INIT ->
             options = options.copy(fastInit = configuration.getAsBoolean(entry))

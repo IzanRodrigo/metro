@@ -21,6 +21,7 @@ import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
+import dev.zacsweers.metro.compiler.graph.WrappedType
 import dev.zacsweers.metro.compiler.graph.computeStronglyConnectedComponents
 import java.util.LinkedHashMap
 import java.util.SortedMap
@@ -44,6 +45,8 @@ import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irSetField
+import org.jetbrains.kotlin.ir.builders.irInt
+import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrField
@@ -52,6 +55,7 @@ import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.IrType
+import org.jetbrains.kotlin.ir.types.IrSimpleType
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.util.addChild
@@ -103,11 +107,15 @@ internal class IrGraphGenerator(
   }
 
   private data class FieldBinding(
-    val field: IrField,
-    val typeKey: IrTypeKey,
-    var owner: FieldOwner = FieldOwner.Root,
-    val initializer: FieldInitializer,
-  )
+      val field: IrField,
+      val typeKey: IrTypeKey,
+      var owner: FieldOwner = FieldOwner.Root,
+      var initializer: FieldInitializer,
+      var binding: IrBinding? = null,
+      var isMapMultibinding: Boolean = false,
+      var isSetMultibinding: Boolean = false,
+      var multibindingEntryCount: Int = 0,
+    )
 
   private data class ShardInfo(
     val index: Int,
@@ -691,6 +699,17 @@ internal class IrGraphGenerator(
               it.doubleCheck(this@withInit, metroSymbols, binding.typeKey)
             }
           }
+          // Attach metadata for multibindings so shard chunking logic can act later.
+          fieldBindings.lastOrNull()?.let { fb ->
+            fb.binding = binding
+            if (binding is IrBinding.Multibinding) {
+              val isMap = binding.typeKey.type.rawType().symbol == irBuiltIns.mapClass
+              val isSet = binding.isSet
+              fb.isMapMultibinding = isMap
+              fb.isSetMultibinding = isSet
+              fb.multibindingEntryCount = binding.sourceBindings.size
+            }
+          }
           if (isProviderType) {
             bindingFieldContext.putProviderField(key, field)
           } else {
@@ -1150,14 +1169,288 @@ internal class IrGraphGenerator(
       )
     }
 
-      val initializeFunction =
+    // --- Large multibinding detection scaffolding ---
+    // Heuristic threshold for when to chunk map/set multibinding initializations.
+    // This will later drive helper function emission to avoid MethodTooLarge issues.
+    // TODO: Consider moving to compiler options if we want this configurable.
+    val largeMultibindingEntryThreshold = 50
+    val largeMapMultibindings = if (metroContext.options.chunkLargeMultibindings) {
+      bindings.filter { it.isMapMultibinding && it.multibindingEntryCount > largeMultibindingEntryThreshold }
+    } else emptyList()
+    val largeSetMultibindings = if (metroContext.options.chunkLargeMultibindings) {
+      bindings.filter { it.isSetMultibinding && it.multibindingEntryCount > largeMultibindingEntryThreshold }
+    } else emptyList()
+    if (largeMapMultibindings.isNotEmpty() || largeSetMultibindings.isNotEmpty()) {
+      parentTracer.traceNested(
+        "Shard ${index + 1}: detected ${largeMapMultibindings.size} large map multibindings and ${largeSetMultibindings.size} large set multibindings (threshold=$largeMultibindingEntryThreshold)"
+      ) { /* no-op */ }
+    }
+
+    // Implement chunk helpers for large map multibindings.
+    largeMapMultibindings.forEach { fb ->
+      val irBinding = fb.binding as? IrBinding.Multibinding ?: return@forEach
+      val totalSize = irBinding.sourceBindings.size
+      if (totalSize <= largeMultibindingEntryThreshold) return@forEach
+
+      val contextualTypeKey = irBinding.contextualTypeKey
+      val valueWrappedType = contextualTypeKey.wrappedType.findMapValueType()!!
+      val mapTypeArgs = (contextualTypeKey.typeKey.type as IrSimpleType).arguments
+      if (mapTypeArgs.size != 2) return@forEach
+      val keyType: IrType = mapTypeArgs[0].typeOrFail
+      val rawValueType = mapTypeArgs[1].typeOrFail
+      val rawValueTypeMetadata =
+        rawValueType.typeOrFail.asContextualTypeKey(
+          null,
+          hasDefault = false,
+          patchMutableCollections = false,
+          declaration = irBinding.declaration,
+        )
+      val useProviderFactory = valueWrappedType is WrappedType.Provider
+      val originalType = contextualTypeKey.toIrType()
+      val originalValueType = valueWrappedType.toIrType()
+      val originalValueContextKey =
+        originalValueType.asContextualTypeKey(
+          null,
+          hasDefault = false,
+          patchMutableCollections = false,
+          declaration = irBinding.declaration,
+        )
+      val valueProviderSymbols = metroSymbols.providerSymbolsFor(originalValueType)
+      val valueType: IrType = rawValueTypeMetadata.typeKey.type
+      val builderFunction =
+        if (useProviderFactory) valueProviderSymbols.mapProviderFactoryBuilderFunction
+        else valueProviderSymbols.mapFactoryBuilderFunction
+      val builderType =
+        if (useProviderFactory) valueProviderSymbols.mapProviderFactoryBuilder
+        else valueProviderSymbols.mapFactoryBuilder
+      val putAllFunction =
+        if (useProviderFactory) valueProviderSymbols.mapProviderFactoryBuilderPutAllFunction
+        else valueProviderSymbols.mapFactoryBuilderPutAllFunction
+      val buildFunction =
+        if (useProviderFactory) valueProviderSymbols.mapProviderFactoryBuilderBuildFunction
+        else valueProviderSymbols.mapFactoryBuilderBuildFunction
+
+      // Partition source bindings into chunks
+      val chunks = irBinding.sourceBindings.toList().chunked(largeMultibindingEntryThreshold)
+      val helperReturnType =
+        irBuiltIns.mapClass
+          .typeWith(
+            keyType,
+            if (useProviderFactory) {
+              rawValueType.wrapInProvider(metroSymbols.metroProvider)
+            } else {
+              rawValueType
+            },
+          )
+          .wrapInProvider(metroSymbols.metroProvider)
+      val helperFunctions = mutableListOf<IrSimpleFunction>()
+      chunks.forEachIndexed { idx, chunk ->
+        val chunkBinding =
+          IrBinding.Multibinding(
+            typeKey = irBinding.typeKey,
+            declaration = irBinding.declaration,
+            multibindsAnnotation = irBinding.multibindsAnnotation,
+            isSet = irBinding.isSet,
+            isMap = irBinding.isMap,
+            bindingId = irBinding.bindingId + "_chunk${idx + 1}",
+            allowEmpty = irBinding.allowEmpty,
+            sourceBindings = chunk.toMutableSet(),
+          )
+        val helper =
+          shardClass
+            .addFunction(
+              name = fieldNameAllocator.newName("${fb.field.name.asString()}Chunk${idx + 1}"),
+              returnType = helperReturnType,
+            )
+            .apply {
+              visibility = DescriptorVisibilities.PRIVATE
+              val shardReceiver = dispatchReceiverParameter!!
+              val componentParam = addValueParameter("component", graphClass.defaultType)
+              buildBlockBody {
+                // Generate provider expression for this chunk via standard binding code path
+                val providerExpr =
+                  expressionGeneratorFactory
+                    .create(componentParam)
+                    .generateBindingCode(binding = chunkBinding, contextualTypeKey = contextualTypeKey)
+                +irReturn(providerExpr)
+              }
+            }
+        helperFunctions += helper
+      }
+
+      // Rewrite initializer to use builder.putAll(chunkProvider()) calls
+      fb.initializer = { componentParam, shardReceiver, _ ->
+        with(this) {
+          val builderExpr = irInvoke(
+            callee = builderFunction,
+            typeArgs = listOf(keyType, valueType),
+            typeHint = builderType.typeWith(keyType, valueType),
+            args = listOf(irInt(totalSize)),
+          )
+          // Fold in chunk maps via putAll
+          val mergedBuilder = helperFunctions.fold(builderExpr) { receiver, helperFn ->
+            val helperCall = irInvoke(
+              dispatchReceiver = irGet(shardReceiver),
+              callee = helperFn.symbol,
+              args = listOf(irGet(componentParam)),
+              typeHint = helperReturnType,
+            )
+            irInvoke(
+              dispatchReceiver = receiver,
+              callee = putAllFunction,
+              typeHint = receiver.type,
+              args = listOf(helperCall),
+            )
+          }
+          val builtInstance = irInvoke(
+            dispatchReceiver = mergedBuilder,
+            callee = buildFunction,
+            typeHint = helperReturnType,
+          )
+          with(valueProviderSymbols) { transformToMetroProvider(builtInstance, originalType) }
+        }
+      }
+    }
+
+    // Implement chunk helpers for large set multibindings (only when no existing @ElementsIntoSet providers).
+    largeSetMultibindings.forEach { fb ->
+      val irBinding = fb.binding as? IrBinding.Multibinding ?: return@forEach
+      val sourceBindings = irBinding.sourceBindings.toList()
+      val totalSize = sourceBindings.size
+      if (totalSize <= largeMultibindingEntryThreshold) return@forEach
+      // Determine if any collectionProviders (@ElementsIntoSet) exist; skip if present to avoid complexity.
+      val hasCollectionProviders = sourceBindings.any { key ->
+        val b = bindingGraph.requireBinding(key)
+        b is IrBinding.BindingWithAnnotations && b.annotations.isElementsIntoSet
+      }
+      if (hasCollectionProviders) return@forEach
+      // We chunk set entries into synthetic multibindings treated as collection providers.
+      val elementType = (irBinding.typeKey.type as IrSimpleType).arguments.single().typeOrFail
+      val valueProviderSymbols = metroSymbols.providerSymbolsFor(elementType)
+      val builderFunction = valueProviderSymbols.setFactoryBuilderFunction
+      val addCollectionProviderFunction = valueProviderSymbols.setFactoryBuilderAddCollectionProviderFunction
+      val buildFunction = valueProviderSymbols.setFactoryBuilderBuildFunction
+      val chunks = sourceBindings.chunked(largeMultibindingEntryThreshold)
+      val helperReturnType = irBuiltIns.setClass.typeWith(elementType).wrapInProvider(metroSymbols.metroProvider)
+      val helperFunctions = mutableListOf<IrSimpleFunction>()
+      chunks.forEachIndexed { idx, chunk ->
+        val chunkBinding =
+          IrBinding.Multibinding(
+            typeKey = irBinding.typeKey,
+            declaration = irBinding.declaration,
+            multibindsAnnotation = irBinding.multibindsAnnotation,
+            isSet = true,
+            isMap = false,
+            bindingId = irBinding.bindingId + "_setChunk${idx + 1}",
+            allowEmpty = irBinding.allowEmpty,
+            sourceBindings = chunk.toMutableSet(),
+          )
+        val helper =
+          shardClass
+            .addFunction(
+              name = fieldNameAllocator.newName("${fb.field.name.asString()}SetChunk${idx + 1}"),
+              returnType = helperReturnType,
+            )
+            .apply {
+              visibility = DescriptorVisibilities.PRIVATE
+              val shardReceiver = dispatchReceiverParameter!!
+              val componentParam = addValueParameter("component", graphClass.defaultType)
+              buildBlockBody {
+                val providerExpr =
+                  expressionGeneratorFactory
+                    .create(componentParam)
+                    .generateBindingCode(binding = chunkBinding, contextualTypeKey = irBinding.contextualTypeKey)
+                +irReturn(providerExpr)
+              }
+            }
+        helperFunctions += helper
+      }
+      // Rewrite initializer
+      fb.initializer = { componentParam, shardReceiver, _ ->
+        with(this) {
+          // setFactoryBuilder(individualCount, collectionCount) -> all chunks treated as collection providers
+          val builderExpr = irInvoke(
+            callee = builderFunction,
+            typeHint = valueProviderSymbols.setFactoryBuilder.typeWith(elementType),
+            typeArgs = listOf(elementType),
+            args = listOf(irInt(0), irInt(helperFunctions.size)),
+          )
+          val mergedBuilder = helperFunctions.fold(builderExpr) { receiver, helperFn ->
+            val helperCall = irInvoke(
+              dispatchReceiver = irGet(shardReceiver),
+              callee = helperFn.symbol,
+              args = listOf(irGet(componentParam)),
+              typeHint = helperReturnType,
+            )
+            irInvoke(
+              dispatchReceiver = receiver,
+              callee = addCollectionProviderFunction,
+              typeHint = receiver.type,
+              args = listOf(helperCall),
+            )
+          }
+          val builtInstance = irInvoke(
+            dispatchReceiver = mergedBuilder,
+            callee = buildFunction,
+            typeHint = helperReturnType,
+          )
+          with(valueProviderSymbols) { transformToMetroProvider(builtInstance, irBinding.typeKey.type) }
+        }
+      }
+    }
+
+    // Chunk initialization logic if enabled and we exceed statements threshold.
+    val options = metroContext.options
+    val chunkingEnabled = options.chunkFieldInits
+    val statementsPerInit = options.statementsPerInitFun
+
+    // Each binding produces exactly one assignment statement in shard initialization.
+    val needChunking = chunkingEnabled && bindings.size > statementsPerInit
+
+    // Create part functions if chunking is required.
+    val partFunctions: List<IrSimpleFunction> = if (needChunking) {
+      bindings.chunked(statementsPerInit).mapIndexed { partIndex, chunk ->
         shardClass
-          .addFunction("initialize", irBuiltIns.unitType)
+          .addFunction("initializePart${partIndex + 1}", irBuiltIns.unitType)
           .apply {
-            visibility = DescriptorVisibilities.PUBLIC
+            visibility = DescriptorVisibilities.PRIVATE // internal use only
             val shardReceiver = dispatchReceiverParameter!!
             val componentParameter = addValueParameter("component", graphClass.defaultType)
             buildBlockBody {
+              chunk.forEach { binding ->
+                val value =
+                  binding.initializer.invoke(
+                    this,
+                    componentParameter,
+                    shardReceiver,
+                    binding.typeKey,
+                  )
+                +irSetField(irGet(shardReceiver), binding.field, value)
+              }
+            }
+          }
+      }
+    } else emptyList()
+
+    val initializeFunction =
+      shardClass
+        .addFunction("initialize", irBuiltIns.unitType)
+        .apply {
+          visibility = DescriptorVisibilities.PUBLIC
+          val shardReceiver = dispatchReceiverParameter!!
+          val componentParameter = addValueParameter("component", graphClass.defaultType)
+          buildBlockBody {
+            if (needChunking) {
+              // Delegate to part functions
+              partFunctions.forEach { part ->
+                +irInvoke(
+                  dispatchReceiver = irGet(shardReceiver),
+                  callee = part.symbol,
+                  args = listOf(irGet(componentParameter)),
+                )
+              }
+            } else {
+              // Original inline initialization
               bindings.forEach { binding ->
                 val value =
                   binding.initializer.invoke(
@@ -1170,6 +1463,7 @@ internal class IrGraphGenerator(
               }
             }
           }
+        }
 
     val instantiateStatement:
       IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement = { dispatchReceiver ->
