@@ -109,6 +109,16 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     objects.property(Boolean::class.javaObjectType).convention(true)
 
   /**
+   * Enables the experimental fast initialization strategy.
+   *
+   * Optionally, you can specify a `metro.fastInit` gradle property to enable this globally.
+   */
+  public val fastInit: Property<Boolean> =
+    objects
+      .property(Boolean::class.javaObjectType)
+      .convention(providers.gradleProperty("metro.fastInit").map { it.toBoolean() }.orElse(false))
+
+  /**
    * Maximum number of statements per init function when chunking field initializers. Default is 25,
    * must be > 0.
    */

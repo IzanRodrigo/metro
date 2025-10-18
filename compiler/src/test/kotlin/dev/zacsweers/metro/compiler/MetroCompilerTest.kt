@@ -110,6 +110,7 @@ abstract class MetroCompilerTest {
                 processor.option(entry.raw.cliOption, shrinkUnusedBindings)
               MetroOption.CHUNK_FIELD_INITS ->
                 processor.option(entry.raw.cliOption, chunkFieldInits)
+              MetroOption.FAST_INIT -> processor.option(entry.raw.cliOption, fastInit)
               MetroOption.ENABLE_COMPONENT_SHARDING ->
                 processor.option(entry.raw.cliOption, enableComponentSharding)
               MetroOption.KEYS_PER_GRAPH_SHARD ->

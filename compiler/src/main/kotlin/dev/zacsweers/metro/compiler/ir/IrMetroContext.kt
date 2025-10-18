@@ -45,6 +45,8 @@ internal interface IrMetroContext : IrPluginContext, CompatContext {
   val options: MetroOptions
   val debug: Boolean
     get() = options.debug
+  val fastInit: Boolean
+    get() = options.fastInit
 
   val lookupTracker: LookupTracker?
   val expectActualTracker: ExpectActualTracker

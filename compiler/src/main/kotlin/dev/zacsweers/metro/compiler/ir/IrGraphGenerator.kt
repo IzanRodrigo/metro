@@ -126,6 +126,7 @@ internal class IrGraphGenerator(
    */
   private val fieldBindings = mutableListOf<FieldBinding>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
+  private val fastInitEnabled = metroContext.fastInit
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
       context = this,
