@@ -34,6 +34,7 @@ object MetroDirectives : SimpleDirectivesContainer() {
     directive(
       "If true changes the return type of generated Graph Factories from the declared interface type to the generated Metro graph type. This is helpful for Dagger/Anvil interop."
     )
+  val ENABLE_FAST_INIT by directive("Enable fast-init switching provider generation.")
   val MAX_IR_ERRORS_COUNT by
     valueDirective(
       "Maximum number of errors to report before exiting IR processing. Default is 20, must be > 0."

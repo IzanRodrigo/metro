@@ -43,26 +43,27 @@ internal interface BindingFieldAccess {
   fun hasInstanceField(key: IrTypeKey): Boolean
 
   /**
-   * Checks if a provider field exists for the given key.
+   * Checks if provider access exists for the given key.
    *
    * @param key The type key to check
-   * @return true if a provider field exists for this key
+   * @return true if a provider field or switching-provider entry exists for this key
    */
   fun hasProviderField(key: IrTypeKey): Boolean
 
   /**
-   * Generates an IR expression to access the provider field for the given key.
+   * Generates an IR expression to access the provider for the given key.
    *
    * The generated expression handles cross-shard access automatically, including:
    * - Direct field access for root-owned fields
    * - Shard instance field access followed by provider field access for shard-owned fields
+   * - Switching-provider lookups when fast init is enabled and no backing field exists
    *
    * @param key The type key for the provider to access
    * @param componentReceiver The IR value parameter representing the component instance
-   * @return An IR expression accessing the provider field, or null if no provider field exists
+   * @return An IR expression accessing the provider, or null if no provider access is registered
    */
-  context(scope: IrBuilderWithScope)
   fun getProviderExpression(
+    scope: IrBuilderWithScope,
     key: IrTypeKey,
     componentReceiver: IrValueParameter,
   ): IrExpression?
@@ -78,8 +79,8 @@ internal interface BindingFieldAccess {
    * @param componentReceiver The IR value parameter representing the component instance
    * @return An IR expression accessing the instance field, or null if no instance field exists
    */
-  context(scope: IrBuilderWithScope)
   fun getInstanceExpression(
+    scope: IrBuilderWithScope,
     key: IrTypeKey,
     componentReceiver: IrValueParameter,
   ): IrExpression?

@@ -3,6 +3,7 @@
 package dev.zacsweers.metro.compiler.ir.transformers
 
 import dev.zacsweers.metro.compiler.Symbols
+import dev.zacsweers.metro.compiler.ir.setDispatchReceiver
 import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.expectAsOrNull
 import dev.zacsweers.metro.compiler.ir.IrDynamicGraphGenerator
@@ -93,7 +94,7 @@ internal class CreateGraphTransformer(
           // Replace it with a call directly to the factory function
           withIrBuilder(expression.symbol) {
             irCall(callee = factoryFunction.symbol, type = type).apply {
-              dispatchReceiver = irGetObject(companion.symbol)
+              setDispatchReceiver(irGetObject(companion.symbol))
             }
           }
         }
@@ -127,7 +128,7 @@ internal class CreateGraphTransformer(
           // Replace it with a call directly to the create function
           withIrBuilder(expression.symbol) {
             irCall(callee = factoryFunction.symbol, type = type).apply {
-              dispatchReceiver = irGetObject(companion.symbol)
+              setDispatchReceiver(irGetObject(companion.symbol))
             }
           }
         }

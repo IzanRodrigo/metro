@@ -32,22 +32,22 @@ internal class DefaultBindingFieldAccess(
   }
 
   override fun hasProviderField(key: IrTypeKey): Boolean {
-    return context.providerFieldEntry(key) != null
+    return context.hasProviderEntry(key)
   }
 
-  context(scope: IrBuilderWithScope)
   override fun getProviderExpression(
+    scope: IrBuilderWithScope,
     key: IrTypeKey,
     componentReceiver: IrValueParameter,
   ): IrExpression? {
-    return context.providerExpression(componentReceiver, key)
+    return context.providerExpression(scope, componentReceiver, key)
   }
 
-  context(scope: IrBuilderWithScope)
   override fun getInstanceExpression(
+    scope: IrBuilderWithScope,
     key: IrTypeKey,
     componentReceiver: IrValueParameter,
   ): IrExpression? {
-    return context.instanceExpression(componentReceiver, key)
+    return context.instanceExpression(scope, componentReceiver, key)
   }
 }

@@ -22,6 +22,7 @@ import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
 import dev.zacsweers.metro.compiler.graph.computeStronglyConnectedComponents
+import java.util.LinkedHashMap
 import java.util.SortedMap
 import java.util.SortedSet
 import java.util.TreeMap
@@ -126,6 +127,7 @@ internal class IrGraphGenerator(
    */
   private val fieldBindings = mutableListOf<FieldBinding>()
   private val fieldsToTypeKeys = mutableMapOf<IrField, IrTypeKey>()
+  private val fastInitEnabled = metroContext.fastInit
   private val expressionGeneratorFactory =
     IrGraphExpressionGenerator.Factory(
       context = this,
@@ -138,6 +140,17 @@ internal class IrGraphGenerator(
       graphExtensionGenerator = graphExtensionGenerator,
       parentTracer = parentTracer,
     )
+  private val switchingProviderGenerator =
+    if (fastInitEnabled) {
+      SwitchingProviderGenerator(
+        context = this,
+        graphClass = graphClass,
+        fieldNameAllocator = fieldNameAllocator,
+        expressionGeneratorFactory = expressionGeneratorFactory,
+      )
+    } else {
+      null
+    }
   private fun partitionFieldInitializers(): List<List<FieldBinding>> {
     if (fieldBindings.isEmpty()) {
       return emptyList()
@@ -514,13 +527,46 @@ internal class IrGraphGenerator(
       }
 
       // Collect bindings and their dependencies for provider field ordering
+      val providerAllocations =
+        ProviderFieldCollector(bindingGraph, fastInitEnabled).collect()
+      val providerFieldMap = LinkedHashMap<IrTypeKey, IrBinding>().apply {
+        putAll(providerAllocations.fieldBindings)
+      }
+      val switchingProviderMap: MutableMap<IrTypeKey, IrBinding> =
+        if (fastInitEnabled) {
+          LinkedHashMap<IrTypeKey, IrBinding>().apply {
+            putAll(providerAllocations.switchingBindings)
+          }
+        } else {
+          mutableMapOf()
+        }
+
+      if (fastInitEnabled) {
+        // Dynamic graph entries need bespoke fields to participate in lifecycle replacement.
+        for (dynamicKey in node.dynamicTypeKeys.keys) {
+          switchingProviderMap.remove(dynamicKey)?.let { binding ->
+            providerFieldMap.putIfAbsent(dynamicKey, binding)
+          }
+        }
+
+        // Delegate factories are handled separately; avoid replacing their backing fields.
+        if (switchingProviderMap.isNotEmpty()) {
+          val deferredKeys = sealResult.deferredTypes.toSet()
+          for (deferredKey in deferredKeys) {
+            switchingProviderMap.remove(deferredKey)
+          }
+        }
+      }
+
       val initOrder =
         parentTracer.traceNested("Collect bindings") {
-          val providerFieldBindings = ProviderFieldCollector(bindingGraph).collect()
-          buildList(providerFieldBindings.size) {
+          buildList(providerFieldMap.size) {
             for (key in sealResult.sortedKeys) {
               if (key in sealResult.reachableKeys) {
-                providerFieldBindings[key]?.let(::add)
+                val binding = providerFieldMap[key]
+                if (binding != null) {
+                  add(binding)
+                }
               }
             }
           }
@@ -549,6 +595,20 @@ internal class IrGraphGenerator(
           bindingFieldContext.putProviderField(deferredTypeKey, field)
           field
         }
+
+      if (fastInitEnabled && switchingProviderMap.isNotEmpty()) {
+        val switchingGenerator =
+          switchingProviderGenerator
+            ?: reportCompilerBug("Switching provider generator was not initialized for fast init")
+
+        switchingProviderMap.forEach { (key, binding) ->
+          if (!bindingFieldContext.hasProviderEntry(key)) {
+            bindingFieldContext.putSwitchingProvider(key) { scope, componentReceiver ->
+              switchingGenerator.createProviderExpression(scope, componentReceiver, binding)
+            }
+          }
+        }
+      }
 
       // Create fields in dependency-order
       initOrder
@@ -611,15 +671,25 @@ internal class IrGraphGenerator(
               IrGraphExpressionGenerator.AccessType.INSTANCE
             }
 
-          field.withInit(key) { thisReceiver, typeKey ->
-            expressionGeneratorFactory
-              .create(thisReceiver)
-              .generateBindingCode(binding, accessType = accessType, fieldInitKey = typeKey)
-              .letIf(binding.isScoped() && isProviderType) {
-                // If it's scoped, wrap it in double-check
-                // DoubleCheck.provider(<provider>)
-                it.doubleCheck(this@withInit, metroSymbols, binding.typeKey)
+          field.withInit(key) { componentReceiver, _, typeKey ->
+            val baseExpression =
+              if (fastInitEnabled && isProviderType) {
+                switchingProviderGenerator!!
+                  .createProviderExpression(this@withInit, componentReceiver, binding)
+              } else {
+                expressionGeneratorFactory
+                  .create(componentReceiver)
+                  .generateBindingCode(
+                    binding,
+                    accessType = accessType,
+                    fieldInitKey = typeKey,
+                  )
               }
+            baseExpression.letIf(binding.isScoped() && isProviderType) {
+              // If it's scoped, wrap it in double-check
+              // DoubleCheck.provider(<provider>)
+              it.doubleCheck(this@withInit, metroSymbols, binding.typeKey)
+            }
           }
           if (isProviderType) {
             bindingFieldContext.putProviderField(key, field)
@@ -1080,25 +1150,26 @@ internal class IrGraphGenerator(
       )
     }
 
-    val initializeFunction =
-      shardClass
-        .addFunction("initialize", irBuiltIns.unitType, visibility = DescriptorVisibilities.PUBLIC)
-        .apply {
-          val shardReceiver = dispatchReceiverParameter!!
-          val componentParameter = addValueParameter("component", graphClass.defaultType)
-          buildBlockBody {
-            bindings.forEach { binding ->
-              val value =
-                binding.initializer.invoke(
-                  this,
-                  componentParameter,
-                  shardReceiver,
-                  binding.typeKey,
-                )
-              +irSetField(irGet(shardReceiver), binding.field, value)
+      val initializeFunction =
+        shardClass
+          .addFunction("initialize", irBuiltIns.unitType)
+          .apply {
+            visibility = DescriptorVisibilities.PUBLIC
+            val shardReceiver = dispatchReceiverParameter!!
+            val componentParameter = addValueParameter("component", graphClass.defaultType)
+            buildBlockBody {
+              bindings.forEach { binding ->
+                val value =
+                  binding.initializer.invoke(
+                    this,
+                    componentParameter,
+                    shardReceiver,
+                    binding.typeKey,
+                  )
+                +irSetField(irGet(shardReceiver), binding.field, value)
+              }
             }
           }
-        }
 
     val instantiateStatement:
       IrBuilderWithScope.(thisReceiver: IrValueParameter) -> IrStatement = { dispatchReceiver ->

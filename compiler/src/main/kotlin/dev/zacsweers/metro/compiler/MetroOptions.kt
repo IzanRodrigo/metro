@@ -174,6 +174,16 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       allowMultipleOccurrences = false,
     )
   ),
+  FAST_INIT(
+    RawMetroOption.boolean(
+      name = "fast-init",
+      defaultValue = false,
+      valueDescription = "<true | false>",
+      description = "Enable/disable experimental fast graph initialization.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
   ENABLE_COMPONENT_SHARDING(
     RawMetroOption.boolean(
       name = "enable-component-sharding",
@@ -608,6 +618,7 @@ public data class MetroOptions(
   val shrinkUnusedBindings: Boolean =
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
+  val fastInit: Boolean = MetroOption.FAST_INIT.raw.defaultValue.expectAs(),
   val enableComponentSharding: Boolean =
     MetroOption.ENABLE_COMPONENT_SHARDING.raw.defaultValue.expectAs(),
   val keysPerGraphShard: Int =
@@ -765,6 +776,9 @@ public data class MetroOptions(
 
           MetroOption.CHUNK_FIELD_INITS ->
             options = options.copy(chunkFieldInits = configuration.getAsBoolean(entry))
+
+          MetroOption.FAST_INIT ->
+            options = options.copy(fastInit = configuration.getAsBoolean(entry))
 
           MetroOption.ENABLE_COMPONENT_SHARDING ->
             options = options.copy(enableComponentSharding = configuration.getAsBoolean(entry))

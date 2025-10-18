@@ -21,7 +21,53 @@ internal class BindingFieldContext {
   )
 
   private val instanceFields = mutableMapOf<IrTypeKey, FieldEntry>()
-  private val providerFields = mutableMapOf<IrTypeKey, FieldEntry>()
+  private val providerFields = mutableMapOf<IrTypeKey, ProviderEntry>()
+
+  private sealed interface ProviderEntry {
+    val field: IrField?
+
+    fun asFieldEntry(): FieldEntry? = null
+
+    fun updateOwner(owner: Owner)
+
+    fun expression(
+      scope: IrBuilderWithScope,
+      componentReceiver: IrValueParameter,
+    ): IrExpression
+  }
+
+  private inner class ProviderFieldEntry(
+    private val entry: FieldEntry,
+  ) : ProviderEntry {
+    override val field: IrField
+      get() = entry.field
+
+    override fun asFieldEntry(): FieldEntry = entry
+
+    override fun updateOwner(owner: Owner) {
+      entry.owner = owner
+    }
+
+    override fun expression(
+      scope: IrBuilderWithScope,
+      componentReceiver: IrValueParameter,
+    ): IrExpression = entry.buildGetExpression(scope, componentReceiver)
+  }
+
+  private inner class SwitchingProviderEntry(
+    private val factory: (IrBuilderWithScope, IrValueParameter) -> IrExpression,
+  ) : ProviderEntry {
+    override val field: IrField? = null
+
+    override fun updateOwner(owner: Owner) {
+      // Switching providers do not have backing fields, so ownership never changes.
+    }
+
+    override fun expression(
+      scope: IrBuilderWithScope,
+      componentReceiver: IrValueParameter,
+    ): IrExpression = factory(scope, componentReceiver)
+  }
 
   val availableInstanceKeys: Set<IrTypeKey>
     get() = instanceFields.keys
@@ -44,7 +90,14 @@ internal class BindingFieldContext {
     field: IrField,
     owner: Owner = Owner.Root,
   ) {
-    providerFields[key] = FieldEntry(field, owner)
+    providerFields[key] = ProviderFieldEntry(FieldEntry(field, owner))
+  }
+
+  fun putSwitchingProvider(
+    key: IrTypeKey,
+    factory: (IrBuilderWithScope, IrValueParameter) -> IrExpression,
+  ) {
+    providerFields[key] = SwitchingProviderEntry(factory)
   }
 
   fun updateInstanceFieldOwner(field: IrField, owner: Owner) {
@@ -52,8 +105,14 @@ internal class BindingFieldContext {
   }
 
   fun updateProviderFieldOwner(field: IrField, owner: Owner) {
-    updateOwner(providerFields, field, owner)
+    providerFields.values.forEach { entry ->
+      if (entry.field == field) {
+        entry.updateOwner(owner)
+      }
+    }
   }
+
+  fun hasProviderEntry(key: IrTypeKey): Boolean = providerFields.containsKey(key)
 
   private fun updateOwner(
     map: MutableMap<IrTypeKey, FieldEntry>,
@@ -69,24 +128,26 @@ internal class BindingFieldContext {
 
   fun instanceFieldEntry(key: IrTypeKey): FieldEntry? = instanceFields[key]
 
-  fun providerFieldEntry(key: IrTypeKey): FieldEntry? = providerFields[key]
+  fun providerFieldEntry(key: IrTypeKey): FieldEntry? = providerFields[key]?.asFieldEntry()
 
   // Find provider field entry by field reference (fallback when key lookup fails)
   // This is needed when keys don't match exactly (e.g., qualified vs unqualified)
   fun providerFieldEntryByField(field: IrField): FieldEntry? =
-    providerFields.values.find { it.field == field }
+    providerFields.values.firstNotNullOfOrNull { entry ->
+      if (entry.field == field) entry.asFieldEntry() else null
+    }
 
-  context(scope: IrBuilderWithScope)
   fun providerExpression(
+    scope: IrBuilderWithScope,
     componentReceiver: IrValueParameter,
     key: IrTypeKey,
   ): IrExpression? {
     val entry = providerFields[key] ?: return null
-    return entry.buildGetExpression(scope, componentReceiver)
+    return entry.expression(scope, componentReceiver)
   }
 
-  context(scope: IrBuilderWithScope)
   fun instanceExpression(
+    scope: IrBuilderWithScope,
     componentReceiver: IrValueParameter,
     key: IrTypeKey,
   ): IrExpression? {

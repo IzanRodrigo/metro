@@ -73,7 +73,7 @@ internal fun copyParameterDefaultValues(
                 newGet.type.requireSimpleType().arguments[0].typeOrFail,
                 context.metroSymbols.providerInvoke,
               )
-              .apply { this.dispatchReceiver = newGet }
+              .apply { setDispatchReceiver(newGet) }
           } else {
             newGet
           }

@@ -1215,6 +1215,11 @@ internal fun IrFunction.setDispatchReceiver(value: IrValueParameter?) {
   setReceiverParameter(IrParameterKind.DispatchReceiver, value)
 }
 
+@Suppress("DEPRECATION")
+internal fun IrMemberAccessExpression<*>.setDispatchReceiver(value: IrExpression?) {
+  dispatchReceiver = value
+}
+
 @OptIn(DelicateIrParameterIndexSetter::class, DeprecatedForRemovalCompilerApi::class)
 private fun IrFunction.setReceiverParameter(kind: IrParameterKind, value: IrValueParameter?) {
   val parameters = parameters.toMutableList()

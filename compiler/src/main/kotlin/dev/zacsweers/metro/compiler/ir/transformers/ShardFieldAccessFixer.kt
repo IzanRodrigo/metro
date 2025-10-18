@@ -3,6 +3,7 @@
 package dev.zacsweers.metro.compiler.ir.transformers
 
 import dev.zacsweers.metro.compiler.ir.generatedGraphExtensionData
+import dev.zacsweers.metro.compiler.ir.rawTypeOrNull
 import dev.zacsweers.metro.compiler.ir.thisReceiverOrFail
 import org.jetbrains.kotlin.backend.common.IrElementTransformerVoidWithContext
 import org.jetbrains.kotlin.backend.common.lower.DeclarationIrBuilder
@@ -16,7 +17,6 @@ import org.jetbrains.kotlin.ir.declarations.IrField
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.expressions.IrGetField
-import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 
@@ -92,6 +92,11 @@ internal class ShardFieldAccessFixer(
               // Already accessing a shard - don't double-transform
               return super.visitGetField(expression)
             }
+          }
+
+          // If the receiver is already the shard instance, there's nothing to rewrite
+          if (transformedReceiver.type.rawTypeOrNull() == fieldParent) {
+            return super.visitGetField(expression)
           }
 
           // Simply add shard access between the receiver and the field

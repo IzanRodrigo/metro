@@ -119,7 +119,7 @@ private constructor(
       // This is important for cases like DelegateFactory and breaking cycles.
       if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
         if (fieldAccess.hasField(binding.typeKey)) {
-          fieldAccess.getProviderExpression(binding.typeKey, thisReceiver)?.let { expression ->
+          fieldAccess.getProviderExpression(this, binding.typeKey, thisReceiver)?.let { expression ->
             val providerInstance =
               with(metroProviderSymbols) { transformMetroProvider(expression, contextualTypeKey) }
             return if (accessType == AccessType.INSTANCE) {
@@ -128,7 +128,7 @@ private constructor(
               providerInstance
             }
           }
-          fieldAccess.getInstanceExpression(binding.typeKey, thisReceiver)?.let { instance ->
+          fieldAccess.getInstanceExpression(this, binding.typeKey, thisReceiver)?.let { instance ->
             return if (accessType == AccessType.INSTANCE) {
               instance
             } else {
@@ -512,7 +512,7 @@ private constructor(
             irGetField(actualReceiver, binding.fieldAccess.field)
           } else if (binding.getter != null) {
             val graphInstance =
-              fieldAccess.getInstanceExpression(ownerKey, thisReceiver)
+              fieldAccess.getInstanceExpression(this, ownerKey, thisReceiver)
                 ?: reportCompilerBug(
                   "No matching included type instance found for type $ownerKey while processing ${node.typeKey}."
                 )
@@ -654,7 +654,7 @@ private constructor(
         // TODO consolidate this logic with generateBindingCode
         if (accessType == AccessType.INSTANCE) {
           // IFF the parameter can take a direct instance, try our instance fields
-          fieldAccess.getInstanceExpression(typeKey, thisReceiver)?.let { instance ->
+          fieldAccess.getInstanceExpression(this, typeKey, thisReceiver)?.let { instance ->
             return@mapIndexed with(metroProviderSymbols) {
               transformMetroProvider(instance, contextualTypeKey)
             }
@@ -662,7 +662,7 @@ private constructor(
         }
 
         val providerInstance =
-          fieldAccess.getProviderExpression(typeKey, thisReceiver)
+          fieldAccess.getProviderExpression(this, typeKey, thisReceiver)
             ?: run {
               // Generate binding code for each param
               val paramBinding = bindingGraph.requireBinding(contextualTypeKey)

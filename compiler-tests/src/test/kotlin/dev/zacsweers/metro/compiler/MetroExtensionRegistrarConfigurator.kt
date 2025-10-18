@@ -72,15 +72,16 @@ class MetroExtensionRegistrarConfigurator(testServices: TestServices) :
         enableComponentSharding =
           module.directives.singleOrZeroValue(MetroDirectives.COMPONENT_SHARDING)
             ?: optionDefaults.enableComponentSharding,
-        keysPerComponentShard =
+        keysPerGraphShard =
           module.directives.singleOrZeroValue(MetroDirectives.KEYS_PER_GRAPH_SHARD)
-            ?: optionDefaults.keysPerComponentShard,
+            ?: optionDefaults.keysPerGraphShard,
         enableFullBindingGraphValidation =
           MetroDirectives.ENABLE_FULL_BINDING_GRAPH_VALIDATION in module.directives,
         enableGraphImplClassAsReturnType =
           MetroDirectives.ENABLE_GRAPH_IMPL_CLASS_AS_RETURN_TYPE in module.directives,
         generateJvmContributionHintsInFir =
           MetroDirectives.GENERATE_JVM_CONTRIBUTION_HINTS_IN_FIR in module.directives,
+        fastInit = MetroDirectives.ENABLE_FAST_INIT in module.directives,
         publicProviderSeverity =
           if (transformProvidersToPrivate) {
             MetroOptions.DiagnosticSeverity.NONE
