@@ -4,6 +4,7 @@ package dev.zacsweers.metro.compiler.ir
 
 import dev.zacsweers.metro.compiler.MetroAnnotations
 import dev.zacsweers.metro.compiler.MetroOptions
+import dev.zacsweers.metro.compiler.Origins
 import dev.zacsweers.metro.compiler.Symbols
 import dev.zacsweers.metro.compiler.Symbols.DaggerSymbols
 import dev.zacsweers.metro.compiler.compat.CompatContext
@@ -494,21 +495,32 @@ internal fun irLambda(
 internal val IrClass.isCompanionObject: Boolean
   get() = isObject && isCompanion
 
+@OptIn(DeprecatedForRemovalCompilerApi::class)
 internal fun IrBuilderWithScope.irCallConstructorWithSameParameters(
   source: IrSimpleFunction,
   constructor: IrConstructorSymbol,
 ): IrConstructorCall {
-  return irCall(constructor)
-    .apply {
-      for ((i, parameter) in source.nonDispatchParameters.withIndex()) {
-        arguments[i] = irGet(parameter)
-      }
-    }
-    .apply {
-      for (typeParameter in source.typeParameters) {
-        typeArguments[typeParameter.index] = typeParameter.defaultType
-      }
-    }
+  val call = irCall(constructor)
+
+  val ownerClass = constructor.owner.parentAsClass
+  if (ownerClass.isInner) {
+    val instanceParameter =
+      source.valueParameters.find { it.origin == Origins.InstanceParameter }
+        ?: reportCompilerBug(
+          "Missing graph instance parameter while creating ${ownerClass.kotlinFqName}"
+        )
+    call.dispatchReceiver = irGet(instanceParameter)
+  }
+
+  for ((index, parameter) in source.nonDispatchParameters.withIndex()) {
+    call.arguments[index] = irGet(parameter)
+  }
+
+  for (typeParameter in source.typeParameters) {
+    call.typeArguments[typeParameter.index] = typeParameter.defaultType
+  }
+
+  return call
 }
 
 /** For use with generated factory creator functions, converts parameters to Provider<T> types. */
@@ -596,9 +608,18 @@ internal fun IrBuilderWithScope.typeAsProviderArgument(
       with(providerSymbols) { invokeDoubleCheckLazy(contextKey, providerExpression) }
     }
 
-    isAssisted || isGraphInstance -> {
-      // provider
+    isAssisted -> {
       with(providerSymbols) { transformMetroProvider(providerExpression, contextKey) }
+    }
+
+    isGraphInstance -> {
+      val metroProviderExpression =
+        with(providerSymbols) { transformToMetroProvider(providerExpression, contextKey.typeKey.type) }
+      irInvoke(
+        dispatchReceiver = metroProviderExpression,
+        callee = symbols.providerInvoke,
+        typeHint = contextKey.typeKey.type,
+      )
     }
 
     else -> {

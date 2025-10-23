@@ -430,6 +430,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     }
 
     @Test
+    @TestMetadata("BoundaryComponentSharding.kt")
+    public void testBoundaryComponentSharding() {
+      runTest("compiler-tests/src/test/data/box/dependencygraph/BoundaryComponentSharding.kt");
+    }
+
+    @Test
     @TestMetadata("ContributesCanBeInject.kt")
     public void testContributesCanBeInject() {
       runTest("compiler-tests/src/test/data/box/dependencygraph/ContributesCanBeInject.kt");
@@ -439,6 +445,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     @TestMetadata("DefaultAccessorBodiesWorkAcrossModules.kt")
     public void testDefaultAccessorBodiesWorkAcrossModules() {
       runTest("compiler-tests/src/test/data/box/dependencygraph/DefaultAccessorBodiesWorkAcrossModules.kt");
+    }
+
+    @Test
+    @TestMetadata("EmptyComponentSharding.kt")
+    public void testEmptyComponentSharding() {
+      runTest("compiler-tests/src/test/data/box/dependencygraph/EmptyComponentSharding.kt");
     }
 
     @Test
@@ -487,6 +499,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     @TestMetadata("InitsAreChunkedWithCycleBox.kt")
     public void testInitsAreChunkedWithCycleBox() {
       runTest("compiler-tests/src/test/data/box/dependencygraph/InitsAreChunkedWithCycleBox.kt");
+    }
+
+    @Test
+    @TestMetadata("MinimalComponentSharding.kt")
+    public void testMinimalComponentSharding() {
+      runTest("compiler-tests/src/test/data/box/dependencygraph/MinimalComponentSharding.kt");
     }
 
     @Test
@@ -571,6 +589,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     @TestMetadata("StaticGraphCompanionsSeparateModules.kt")
     public void testStaticGraphCompanionsSeparateModules() {
       runTest("compiler-tests/src/test/data/box/dependencygraph/StaticGraphCompanionsSeparateModules.kt");
+    }
+
+    @Test
+    @TestMetadata("TriggerShardingComponent.kt")
+    public void testTriggerShardingComponent() {
+      runTest("compiler-tests/src/test/data/box/dependencygraph/TriggerShardingComponent.kt");
     }
 
     @Nested

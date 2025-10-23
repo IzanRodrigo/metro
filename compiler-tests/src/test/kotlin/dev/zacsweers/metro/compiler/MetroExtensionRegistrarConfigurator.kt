@@ -72,9 +72,9 @@ class MetroExtensionRegistrarConfigurator(testServices: TestServices) :
         enableComponentSharding =
           module.directives.singleOrZeroValue(MetroDirectives.COMPONENT_SHARDING)
             ?: optionDefaults.enableComponentSharding,
-        keysPerComponentShard =
+        keysPerGraphShard =
           module.directives.singleOrZeroValue(MetroDirectives.KEYS_PER_GRAPH_SHARD)
-            ?: optionDefaults.keysPerComponentShard,
+            ?: optionDefaults.keysPerGraphShard,
         enableFullBindingGraphValidation =
           MetroDirectives.ENABLE_FULL_BINDING_GRAPH_VALIDATION in module.directives,
         enableGraphImplClassAsReturnType =

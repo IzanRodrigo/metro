@@ -269,11 +269,19 @@ internal class BindingContainerTransformer(context: IrMetroContext) : IrMetroCon
         )
 
     val ctor = factoryCls.primaryConstructor!!
+    val constructorParametersToFields = assignConstructorParamsToFields(ctor, factoryCls)
+    if (constructorParametersToFields.keys.isNotEmpty()) {
+      println(
+        "Factory constructor params: " +
+          constructorParametersToFields.keys.joinToString { "${it.origin}:${it.name.asString()}" }
+      )
+    }
+
 
     val graphType = reference.graphParent.typeWith()
 
-    val instanceParam =
-      if (!reference.isInObject) {
+    val graphParameter =
+      if (constructorParametersToFields.keys.any { it.origin == Origins.InstanceParameter }) {
         val contextualTypeKey = IrContextualTypeKey.create(typeKey = IrTypeKey(graphType))
         Parameter.regular(
           kind = IrParameterKind.Regular,
@@ -293,20 +301,28 @@ internal class BindingContainerTransformer(context: IrMetroContext) : IrMetroCon
     val sourceParameters =
       Parameters(
         reference.callee.owner.callableId,
-        instance = instanceParam,
+        instance = null,
         extensionReceiver = null,
-        regularParameters = sourceValueParameters,
+        regularParameters = buildList {
+          graphParameter?.let(::add)
+          addAll(sourceValueParameters)
+        },
         contextParameters = emptyList(),
         ir = null, // Will set later
-      )
-
-    val constructorParametersToFields = assignConstructorParamsToFields(ctor, factoryCls)
+      ).also {
+        if (graphParameter != null) {
+          println("Graph parameter inserted: graphInstance=${graphParameter.isGraphInstance}")
+        }
+      }
 
     val sourceParametersToFields: Map<Parameter, IrField> =
       constructorParametersToFields.entries.associate { (irParam, field) ->
         val sourceParam =
           if (irParam.origin == Origins.InstanceParameter) {
-            sourceParameters.dispatchReceiverParameter!!
+            graphParameter
+              ?: reportCompilerBug(
+                "No graph parameter available for ${reference.callableId}"
+              )
           } else if (irParam.indexInParameters == -1) {
             reportCompilerBug(
               "No source parameter found for $irParam. Index was somehow -1.\n${reference.parent.owner.dumpKotlinLike()}"
@@ -317,9 +333,10 @@ internal class BindingContainerTransformer(context: IrMetroContext) : IrMetroCon
               reference.callee.owner.parameters.filter { it.kind == IrParameterKind.Regular }
 
             // Find the corresponding source parameter by matching names
-            sourceParameters.regularParameters.getOrNull(
-              regularParams.indexOfFirst { it.name == irParam.name }
-            )
+            // Account for graphParameter offset if it exists (it's inserted at the beginning)
+            val indexOffset = if (graphParameter != null) 1 else 0
+            val paramIndex = regularParams.indexOfFirst { it.name == irParam.name }
+            sourceParameters.regularParameters.getOrNull(paramIndex + indexOffset)
               ?: reportCompilerBug(
                 "No source parameter found for $irParam\nparam is ${irParam.name} in function ${ctor.dumpKotlinLike()}\n${reference.parent.owner.dumpKotlinLike()}"
               )

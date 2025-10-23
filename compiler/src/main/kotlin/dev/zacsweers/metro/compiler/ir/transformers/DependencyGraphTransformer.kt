@@ -24,9 +24,11 @@ import dev.zacsweers.metro.compiler.ir.IrContributionData
 import dev.zacsweers.metro.compiler.ir.IrContributionMerger
 import dev.zacsweers.metro.compiler.ir.IrDynamicGraphGenerator
 import dev.zacsweers.metro.compiler.ir.IrGraphExtensionGenerator
+import dev.zacsweers.metro.compiler.ir.FastInitResult
 import dev.zacsweers.metro.compiler.ir.IrGraphGenerator
 import dev.zacsweers.metro.compiler.ir.IrMetroContext
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
+import dev.zacsweers.metro.compiler.ir.analyzeFastInit
 import dev.zacsweers.metro.compiler.ir.ParentContext
 import dev.zacsweers.metro.compiler.ir.annotationsIn
 import dev.zacsweers.metro.compiler.ir.createIrBuilder
@@ -476,6 +478,18 @@ internal class DependencyGraphTransformer(
         "graph-dump-${node.sourceGraph.kotlinFqName.asString().replace(".", "-")}.txt"
       }) {
         bindingGraph.dumpGraph(node.sourceGraph.kotlinFqName.asString(), short = false)
+      }
+
+      // Story 2.6: Fast Init analysis (exclude graph extensions for now - Story 2.10)
+      if (options.fastInit) {
+        // Graph extensions (subcomponents) need special handling - skip for MVP
+        val isGraphExtension = dependencyGraphDeclaration.origin == Origins.GeneratedGraphExtension
+        if (!isGraphExtension) {
+          with(metroContext) {
+            val fastInitResult = analyzeFastInit(dependencyGraphDeclaration, bindingGraph)
+            bindingGraph.applyFastInit(fastInitResult)
+          }
+        }
       }
 
       // Check if any parents haven't been generated yet. If so, generate them now

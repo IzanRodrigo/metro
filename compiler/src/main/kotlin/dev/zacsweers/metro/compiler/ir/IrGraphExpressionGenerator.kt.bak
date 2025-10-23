@@ -42,7 +42,6 @@ import org.jetbrains.kotlin.ir.util.isObject
 import org.jetbrains.kotlin.ir.util.isStatic
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.primaryConstructor
-import org.jetbrains.kotlin.ir.types.classOrNull
 import org.jetbrains.kotlin.name.Name
 
 internal class IrGraphExpressionGenerator
@@ -216,17 +215,13 @@ private constructor(
           if (node.sourceGraph.origin == Origins.GeneratedGraphExtension) {
             println("GraphExtension Provided binding ${binding.typeKey} (context: ${contextualTypeKey.typeKey})")
           }
-          // Only try to reuse provider field if we're not currently initializing it
-          // This prevents self-references during shard initialization
-          if (fieldInitKey == null || fieldInitKey != binding.typeKey) {
-            fieldAccess.getProviderExpression(binding.typeKey, thisReceiver)?.let { providerExpression ->
-              if (node.sourceGraph.origin == Origins.GeneratedGraphExtension) {
-                println("GraphExtension using provider field for ${binding.typeKey}")
-              }
-              val provider =
-                with(metroProviderSymbols) { transformMetroProvider(providerExpression, contextualTypeKey) }
-              return provider.transformAccessIfNeeded(accessType, AccessType.PROVIDER, binding.typeKey.type)
+          fieldAccess.getProviderExpression(binding.typeKey, thisReceiver)?.let { providerExpression ->
+            if (node.sourceGraph.origin == Origins.GeneratedGraphExtension) {
+              println("GraphExtension using provider field for ${binding.typeKey}")
             }
+            val provider =
+              with(metroProviderSymbols) { transformMetroProvider(providerExpression, contextualTypeKey) }
+            return provider.transformAccessIfNeeded(accessType, AccessType.PROVIDER, binding.typeKey.type)
           }
           if (node.sourceGraph.origin == Origins.GeneratedGraphExtension) {
             println("GraphExtension invoking factory for ${binding.typeKey}")

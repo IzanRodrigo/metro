@@ -69,6 +69,10 @@ internal class IrBindingGraph(
   private val extraKeeps = mutableMapOf<IrContextualTypeKey, IrBindingStack.Entry>()
   private val reservedFields = mutableMapOf<IrTypeKey, ParentContext.FieldAccess>()
 
+  // Fast Init classification (Story 2.5)
+  private val eagerBindings = mutableSetOf<IrTypeKey>()
+  private val deferredBindings = mutableSetOf<IrTypeKey>()
+
   // Thin immutable view over the internal bindings
   fun bindingsSnapshot(): Map<IrTypeKey, IrBinding> = realGraph.bindings
 
@@ -93,6 +97,17 @@ internal class IrBindingGraph(
   }
 
   fun reservedField(key: IrTypeKey): ParentContext.FieldAccess? = reservedFields[key]
+
+  // Fast Init methods (Story 2.5)
+  fun applyFastInit(result: FastInitResult) {
+    eagerBindings.clear()
+    deferredBindings.clear()
+    eagerBindings.addAll(result.eagerKeys)
+    deferredBindings.addAll(result.deferredKeys)
+    // TODO: Add logging once integrated
+  }
+
+  fun isEagerBinding(key: IrTypeKey): Boolean = key in eagerBindings || eagerBindings.isEmpty()
 
   fun findBinding(key: IrTypeKey): IrBinding? = realGraph[key]
 

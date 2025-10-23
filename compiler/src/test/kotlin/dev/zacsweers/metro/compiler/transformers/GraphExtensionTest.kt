@@ -38,7 +38,8 @@ class GraphExtensionTest : MetroCompilerTest() {
               }
             }
         """
-      )
+      ),
+      debug = true,
     ) {
       val parentGraph = ParentGraph.generatedMetroGraphClass().createGraphWithNoArgs()
       val childGraph = parentGraph.invokeInstanceMethod<Any>("create")

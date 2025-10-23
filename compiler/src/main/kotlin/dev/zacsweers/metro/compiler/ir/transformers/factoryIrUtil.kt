@@ -19,6 +19,7 @@ import dev.zacsweers.metro.compiler.ir.stubExpression
 import dev.zacsweers.metro.compiler.ir.thisReceiverOrFail
 import dev.zacsweers.metro.compiler.metroAnnotations
 import dev.zacsweers.metro.compiler.mirrorIrConstructorCalls
+import dev.zacsweers.metro.compiler.reportCompilerBug
 import org.jetbrains.kotlin.backend.jvm.codegen.AnnotationCodegen.Companion.annotationClass
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
@@ -73,13 +74,19 @@ internal fun generateStaticCreateFunction(
       copyParameterDefaultValues(
         providerFunction = providerFunction,
         sourceMetroParameters = parameters,
-        sourceParameters = parameters.nonDispatchParameters.filterNot { it.isAssisted }.map { it.ir },
+        sourceParameters =
+          parameters.nonDispatchParameters
+            .filterNot { it.isAssisted || it.isGraphInstance }
+            .map { it.ir },
         targetParameters = valueParamsToPatch,
-        targetGraphParameter = instanceParam,
+        targetGraphParameter = null,
         wrapInProvider = true,
       )
+      instanceParam?.defaultValue = null
+      if (instanceParam?.defaultValue != null) {
+        reportCompilerBug("Factory create instance parameter still has default for ${targetClass.name}")
+      }
     }
-
     body =
       context.createIrBuilder(symbol).run {
         irExprBodySafe(
