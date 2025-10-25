@@ -14,6 +14,11 @@ import org.jetbrains.kotlin.name.ClassId
 // https://github.com/google/dagger/blob/b39cf2d0640e4b24338dd290cb1cb2e923d38cb3/dagger-compiler/main/java/dagger/internal/codegen/writing/ComponentImplementation.java#L263
 internal const val DEFAULT_STATEMENTS_PER_INIT_FUN = 25
 
+// Component sharding configuration
+// Default is lower than Dagger's 900 to be more aggressive with sharding
+// https://github.com/google/dagger/blob/master/java/dagger/internal/codegen/writing/ComponentImplementation.java#L48
+internal const val DEFAULT_KEYS_PER_GRAPH_SHARD = 400
+
 internal data class RawMetroOption<T : Any>(
   val name: String,
   val defaultValue: T,
@@ -180,6 +185,28 @@ internal enum class MetroOption(val raw: RawMetroOption<*>) {
       valueDescription = "<count>",
       description =
         "Maximum number of statements per init method when chunking field initializers. Default is $DEFAULT_STATEMENTS_PER_INIT_FUN, must be > 0.",
+      required = false,
+      allowMultipleOccurrences = false,
+      valueMapper = { it.toInt() },
+    )
+  ),
+  ENABLE_COMPONENT_SHARDING(
+    RawMetroOption.boolean(
+      name = "enable-component-sharding",
+      defaultValue = true,
+      valueDescription = "<true | false>",
+      description = "Enable/disable component sharding of binding graphs.",
+      required = false,
+      allowMultipleOccurrences = false,
+    )
+  ),
+  KEYS_PER_GRAPH_SHARD(
+    RawMetroOption(
+      name = "keys-per-graph-shard",
+      defaultValue = DEFAULT_KEYS_PER_GRAPH_SHARD,
+      valueDescription = "<count>",
+      description =
+        "Maximum number of binding keys per graph shard when sharding is enabled. Default is $DEFAULT_KEYS_PER_GRAPH_SHARD, must be > 0.",
       required = false,
       allowMultipleOccurrences = false,
       valueMapper = { it.toInt() },
@@ -602,6 +629,9 @@ public data class MetroOptions(
     MetroOption.SHRINK_UNUSED_BINDINGS.raw.defaultValue.expectAs(),
   val chunkFieldInits: Boolean = MetroOption.CHUNK_FIELD_INITS.raw.defaultValue.expectAs(),
   val statementsPerInitFun: Int = MetroOption.STATEMENTS_PER_INIT_FUN.raw.defaultValue.expectAs(),
+  val enableComponentSharding: Boolean =
+    MetroOption.ENABLE_COMPONENT_SHARDING.raw.defaultValue.expectAs(),
+  val keysPerGraphShard: Int = MetroOption.KEYS_PER_GRAPH_SHARD.raw.defaultValue.expectAs(),
   val publicProviderSeverity: DiagnosticSeverity =
     if (transformProvidersToPrivate) {
       DiagnosticSeverity.NONE
@@ -764,6 +794,12 @@ public data class MetroOptions(
 
           MetroOption.STATEMENTS_PER_INIT_FUN ->
             options = options.copy(statementsPerInitFun = configuration.getAsInt(entry))
+
+          MetroOption.ENABLE_COMPONENT_SHARDING ->
+            options = options.copy(enableComponentSharding = configuration.getAsBoolean(entry))
+
+          MetroOption.KEYS_PER_GRAPH_SHARD ->
+            options = options.copy(keysPerGraphShard = configuration.getAsInt(entry))
 
           MetroOption.PUBLIC_PROVIDER_SEVERITY ->
             options =

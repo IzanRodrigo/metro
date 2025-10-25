@@ -48,24 +48,36 @@ import dev.zacsweers.metro.compiler.reportCompilerBug
 import dev.zacsweers.metro.compiler.suffixIfNot
 import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
+import dev.zacsweers.metro.compiler.graph.computeStronglyConnectedComponents
+import java.util.SortedMap
+import java.util.SortedSet
+import java.util.TreeMap
+import java.util.TreeSet
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
 import org.jetbrains.kotlin.descriptors.DescriptorVisibility
+import org.jetbrains.kotlin.descriptors.Modality
 import org.jetbrains.kotlin.ir.IrStatement
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.declarations.addBackingField
+import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
 import org.jetbrains.kotlin.ir.builders.declarations.addFunction
 import org.jetbrains.kotlin.ir.builders.declarations.addGetter
 import org.jetbrains.kotlin.ir.builders.declarations.addProperty
+import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
+import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.declarations.buildProperty
 import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.builders.irReturn
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrOverridableDeclaration
 import org.jetbrains.kotlin.ir.declarations.IrProperty
+import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
 import org.jetbrains.kotlin.ir.expressions.IrBody
 import org.jetbrains.kotlin.ir.expressions.IrExpression
@@ -152,6 +164,72 @@ internal class IrGraphGenerator(
       getterPropertyFor = ::getOrCreateLazyProperty,
     )
 
+  // ===== Component Sharding Data Structures =====
+
+  /**
+   * Represents the owner of a property for component sharding purposes.
+   *
+   * Properties can either be owned by the root component or by a specific shard. This is used to
+   * track property location during shard generation and to generate correct access patterns
+   * (direct access for root, cross-shard access for shard-owned).
+   */
+  private sealed interface PropertyOwner {
+    /** Property is owned by the root component class */
+    data object Root : PropertyOwner
+
+    /** Property is owned by a nested shard class */
+    data class Shard(val index: Int) : PropertyOwner
+  }
+
+  /**
+   * Tracks a property binding with its associated metadata for sharding.
+   *
+   * @property property The IR property itself
+   * @property typeKey The type key for this binding
+   * @property owner The current owner (Root or Shard). Initially Root, updated during shard
+   *   generation
+   * @property initializer The initialization expression for this property
+   */
+  private data class PropertyBinding(
+    val property: IrProperty,
+    val typeKey: IrTypeKey,
+    var owner: PropertyOwner = PropertyOwner.Root,
+    val initializer: PropertyInitializer,
+  )
+
+  /**
+   * Contains all metadata for a generated shard.
+   *
+   * @property index Zero-based shard index (shard 0, shard 1, etc.)
+   * @property shardClass The generated nested shard class
+   * @property instanceProperty The property on the root component holding the shard instance (e.g.,
+   *   `val shard1: Shard1`)
+   * @property initializeFunction The `initialize(component)` function on the shard class
+   * @property bindings The property bindings that were moved to this shard
+   * @property dependencies Set of other shard indices this shard depends on (for initialization
+   *   order)
+   */
+  private data class ShardInfo(
+    val index: Int,
+    val shardClass: IrClass,
+    val instanceProperty: IrProperty,
+    val initializeFunction: IrSimpleFunction,
+    val bindings: List<PropertyBinding>,
+    val dependencies: Set<Int> = emptySet(),
+  )
+
+  /**
+   * Result of computing shard initialization order.
+   *
+   * @property shards List of all shards in the original order
+   * @property initializationOrder List of shard indices in the order they should be initialized
+   *   (topologically sorted by dependencies)
+   */
+  private data class ShardOrderResult(
+    val shards: List<ShardInfo>,
+    val initializationOrder: List<Int>,
+  )
+
   fun IrProperty.withInit(typeKey: IrTypeKey, init: PropertyInitializer): IrProperty = apply {
     // Only necessary for fields
     if (backingField != null) {
@@ -234,6 +312,449 @@ internal class IrGraphGenerator(
             }
         }
     }
+  }
+
+  // ===== Component Sharding Algorithm =====
+
+  /**
+   * Partitions property initializers into shards using an SCC-aware algorithm.
+   *
+   * This follows Dagger's proven sharding approach:
+   * 1. Sort properties by dependency order (use sealResult.sortedKeys)
+   * 2. Compute strongly-connected components (SCCs) to identify binding groups
+   * 3. Fill shards sequentially, keeping SCCs together
+   * 4. Ensure each shard stays under the keysPerGraphShard limit
+   *
+   * ## Algorithm Details
+   *
+   * The algorithm ensures that:
+   * - Bindings with circular dependencies (SCCs) stay in the same shard
+   * - Shards are filled in topological order
+   * - No SCC is split across shards (maintains locality)
+   * - Deterministic output (same input → same sharding)
+   *
+   * ## Example
+   *
+   * Given 1000 bindings with keysPerGraphShard=400:
+   * ```
+   * Shard 1: Bindings 0-399 (including SCC groups 0-5)
+   * Shard 2: Bindings 400-799 (including SCC groups 6-12)
+   * Shard 3: Bindings 800-999 (including SCC groups 13-18)
+   * ```
+   *
+   * @return List of shard groups, where each group contains the property bindings for that shard. If
+   *   sharding is disabled or unnecessary, returns a single group with all bindings.
+   */
+  private fun partitionPropertyInitializers(): List<List<PropertyBinding>> {
+    if (propertyInitializers.isEmpty()) {
+      return emptyList()
+    }
+
+    // Build a map from type key to its position in the dependency order
+    val keyOrder = sealResult.sortedKeys.withIndex().associate { (index, key) -> key to index }
+
+    // Convert property initializers to PropertyBinding objects and sort by dependency order
+    val orderedBindings =
+      propertyInitializers
+        .withIndex()
+        .map { (originalIndex, pair) ->
+          val (property, initializer) = pair
+          PropertyBinding(
+            property = property,
+            typeKey = propertiesToTypeKeys.getValue(property),
+            owner = PropertyOwner.Root,
+            initializer = initializer,
+          ) to originalIndex
+        }
+        .sortedWith(
+          compareBy(
+            // Primary: dependency order
+            { (binding, _) -> keyOrder[binding.typeKey] ?: Int.MAX_VALUE },
+            // Secondary: original insertion order (for determinism when keys not in keyOrder)
+            { (_, originalIndex) -> originalIndex },
+          )
+        )
+        .map { it.first }
+
+    if (orderedBindings.isEmpty()) {
+      return listOf(emptyList())
+    }
+
+    // Check if sharding is enabled and necessary
+    if (!options.enableComponentSharding) {
+      return listOf(orderedBindings)
+    }
+
+    val maxBindingsPerShard = options.keysPerGraphShard
+    if (maxBindingsPerShard <= 0 || orderedBindings.size <= maxBindingsPerShard) {
+      // Not enough bindings to require sharding
+      return listOf(orderedBindings)
+    }
+
+    // Build adjacency list for SCC computation
+    val bindingByKey = orderedBindings.associateBy { it.typeKey }
+    val adjacency: SortedMap<IrTypeKey, SortedSet<IrTypeKey>> = TreeMap()
+
+    // Initialize adjacency list with all keys
+    for (binding in orderedBindings) {
+      adjacency[binding.typeKey] = TreeSet()
+    }
+
+    // Populate dependencies
+    for (binding in orderedBindings) {
+      val dependencies =
+        bindingGraph
+          .requireBinding(binding.typeKey)
+          .dependencies
+          .map { it.typeKey }
+          .filter { it in bindingByKey } // Only include dependencies that are in our binding set
+
+      adjacency.getValue(binding.typeKey).addAll(dependencies)
+    }
+
+    // Compute strongly-connected components using Tarjan's algorithm
+    val (components, componentOf) = adjacency.computeStronglyConnectedComponents()
+
+    // If a key is not in componentOf (e.g., disconnected), assign it a unique component ID
+    val componentIdForKey: (IrTypeKey) -> Int = { key ->
+      componentOf[key] ?: (components.size + keyOrder.getOrElse(key) { key.hashCode() })
+    }
+
+    // Group bindings by their SCC, maintaining dependency order
+    val componentsInOrder = mutableListOf<List<PropertyBinding>>()
+    var index = 0
+
+    while (index < orderedBindings.size) {
+      val startBinding = orderedBindings[index]
+      val componentId = componentIdForKey(startBinding.typeKey)
+      val group = mutableListOf<PropertyBinding>()
+
+      // Collect all bindings in the same SCC
+      while (index < orderedBindings.size) {
+        val currentBinding = orderedBindings[index]
+        if (componentIdForKey(currentBinding.typeKey) != componentId) {
+          break
+        }
+        group += currentBinding
+        index++
+      }
+
+      if (group.isNotEmpty()) {
+        componentsInOrder += group
+      }
+    }
+
+    // Fill shards by adding complete SCCs until we hit the limit
+    val shards = mutableListOf<MutableList<PropertyBinding>>()
+    var currentShard = mutableListOf<PropertyBinding>()
+    var currentSize = 0
+
+    for (componentBindings in componentsInOrder) {
+      // If adding this SCC would exceed the limit, start a new shard
+      // Important: We never split an SCC across shards
+      if (currentShard.isNotEmpty() && currentSize + componentBindings.size > maxBindingsPerShard) {
+        shards += currentShard
+        currentShard = mutableListOf()
+        currentSize = 0
+      }
+
+      currentShard.addAll(componentBindings)
+      currentSize += componentBindings.size
+    }
+
+    // Add the last shard
+    if (currentShard.isNotEmpty()) {
+      shards += currentShard
+    }
+
+    // If we ended up with only one shard, sharding is unnecessary
+    return if (shards.size <= 1) {
+      listOf(orderedBindings)
+    } else {
+      shards.map { it.toList() }
+    }
+  }
+
+  /**
+   * Computes the initialization order for shards based on cross-shard dependencies.
+   *
+   * Shards must be initialized in topological order to ensure that when Shard B depends on bindings
+   * in Shard A, Shard A is initialized first.
+   *
+   * ## Algorithm
+   *
+   * 1. Build a dependency graph between shards
+   * 2. For each shard, check if its bindings depend on bindings in other shards
+   * 3. Topologically sort shards by dependencies
+   * 4. Return the sorted initialization order
+   *
+   * ## Example
+   *
+   * ```
+   * Shard 1: [A, B, C]
+   * Shard 2: [D depends on A, E, F]
+   * Shard 3: [G depends on D, H]
+   *
+   * Result: [1, 2, 3] (Shard 1 → Shard 2 → Shard 3)
+   * ```
+   *
+   * @param shardGroups The partitioned shards (from partitionPropertyInitializers)
+   * @return ShardOrderResult with complete shard metadata and initialization order
+   */
+  private fun computeShardInitializationOrder(
+    shardGroups: List<List<PropertyBinding>>
+  ): ShardOrderResult {
+    if (shardGroups.size <= 1) {
+      // Single shard or no shards - no ordering needed
+      // Note: ShardInfo creation happens later in generateShardClasses
+      return ShardOrderResult(shards = emptyList(), initializationOrder = emptyList())
+    }
+
+    // Build a map from binding type key to shard index
+    val bindingToShard = mutableMapOf<IrTypeKey, Int>()
+    shardGroups.forEachIndexed { shardIndex, bindings ->
+      bindings.forEach { binding -> bindingToShard[binding.typeKey] = shardIndex }
+    }
+
+    // Compute dependencies between shards
+    // shardDependencies[i] = set of shard indices that shard i depends on
+    val shardDependencies = Array(shardGroups.size) { mutableSetOf<Int>() }
+
+    shardGroups.forEachIndexed { shardIndex, bindings ->
+      for (binding in bindings) {
+        // Get all dependencies for this binding
+        val deps = bindingGraph.requireBinding(binding.typeKey).dependencies.map { it.typeKey }
+
+        for (depKey in deps) {
+          val depShardIndex = bindingToShard[depKey]
+          if (depShardIndex != null && depShardIndex != shardIndex) {
+            // This binding depends on a binding in another shard
+            shardDependencies[shardIndex].add(depShardIndex)
+          }
+        }
+      }
+    }
+
+    // Topological sort using Kahn's algorithm
+    val inDegree = IntArray(shardGroups.size)
+    shardDependencies.forEach { deps -> deps.forEach { inDegree[it]++ } }
+
+    // Use a priority queue for deterministic ordering
+    val queue = java.util.PriorityQueue<Int>()
+    for (i in shardDependencies.indices) {
+      if (inDegree[i] == 0) {
+        queue.add(i)
+      }
+    }
+
+    val initializationOrder = mutableListOf<Int>()
+    while (queue.isNotEmpty()) {
+      val shardIndex = queue.remove()
+      initializationOrder += shardIndex
+
+      for (dependent in shardDependencies.indices) {
+        if (shardIndex in shardDependencies[dependent]) {
+          if (--inDegree[dependent] == 0) {
+            queue.add(dependent)
+          }
+        }
+      }
+    }
+
+    check(initializationOrder.size == shardGroups.size) {
+      "Cycle detected in shard dependencies (should be impossible after SCC grouping)"
+    }
+
+    // Note: ShardInfo objects will be created during shard class generation
+    // This just returns the order - the actual ShardInfo list is built later
+    return ShardOrderResult(
+      shards = emptyList(), // Populated later in generateShardClasses
+      initializationOrder = initializationOrder,
+    )
+  }
+
+  /**
+   * Generates shard classes for the partitioned property groups.
+   *
+   * For each shard group, this creates:
+   * 1. A nested shard class (e.g., `Shard1`, `Shard2`)
+   * 2. A property on the root component to hold the shard instance
+   * 3. An `initialize(component)` method on the shard
+   * 4. Moves properties from the root to the shard
+   *
+   * ## Generated Structure
+   *
+   * ```kotlin
+   * class Component$$$MetroGraph {
+   *   private val shard1: Shard1
+   *   private val shard2: Shard2
+   *
+   *   init {
+   *     shard1 = Shard1()
+   *     shard1.initialize(this)
+   *     shard2 = Shard2()
+   *     shard2.initialize(this)
+   *   }
+   *
+   *   private class Shard1 {
+   *     private val fooProvider: Provider<Foo>
+   *     private val barProvider: Provider<Bar>
+   *
+   *     fun initialize(component: Component$$$MetroGraph) {
+   *       fooProvider = ...
+   *       barProvider = ...
+   *     }
+   *   }
+   * }
+   * ```
+   *
+   * @param shardGroups The partitioned property bindings
+   * @return List of ShardInfo containing all metadata for each shard
+   */
+  private fun generateShardClasses(shardGroups: List<List<PropertyBinding>>): List<ShardInfo> {
+    return shardGroups.mapIndexed { index, bindings -> generateShardClass(index, bindings) }
+  }
+
+  /**
+   * Generates a single shard class with all its properties and initialize method.
+   *
+   * @param shardIndex Zero-based index (0 for Shard1, 1 for Shard2, etc.)
+   * @param bindings The property bindings that should be moved to this shard
+   * @return ShardInfo containing all metadata for this shard
+   */
+  private fun generateShardClass(shardIndex: Int, bindings: List<PropertyBinding>): ShardInfo {
+    val shardName = "Shard${shardIndex + 1}" // Shard1, Shard2, etc.
+
+    // Create the nested shard class
+    val shardClass =
+      graphClass.factory.buildClass {
+          name = Name.identifier(shardName)
+          visibility = DescriptorVisibilities.PRIVATE
+          modality = Modality.FINAL
+        }
+        .apply {
+          // Set parent to the graph class (nested class)
+          parent = graphClass
+
+          // Add to the graph class as a nested class
+          graphClass.addChild(this)
+
+          // Set supertype to Any
+          superTypes = listOf(irBuiltIns.anyType)
+
+          // Add primary constructor
+          addConstructor {
+            isPrimary = true
+            visibility = DescriptorVisibilities.PUBLIC
+          }.apply {
+            // Empty constructor body (properties initialized in initialize() method)
+            body = createIrBuilder(symbol).irBlockBody {}
+          }
+        }
+
+    // Move properties to the shard class
+    for (binding in bindings) {
+      movePropertyToShard(binding.property, shardClass)
+    }
+
+    // Create the shard instance property on the root component
+    val shardInstanceProperty =
+      graphClass.addProperty {
+        this.name = Name.identifier(shardName.replaceFirstChar { it.lowercase() }) // shard1, shard2
+        this.visibility = DescriptorVisibilities.PRIVATE
+      }.apply {
+        // Add backing field with the shard class type
+        addBackingField {
+          type = irBuiltIns.anyType // Safe: use anyType to avoid initialization issues
+          visibility = DescriptorVisibilities.PRIVATE
+        }
+
+        // Add getter that returns the field
+        addGetter().apply {
+          returnType = irBuiltIns.anyType
+          visibility = DescriptorVisibilities.PRIVATE
+          body =
+            createIrBuilder(symbol).irBlockBody {
+              +irReturn(irGetField(irGet(dispatchReceiverParameter!!), backingField!!))
+            }
+        }
+      }
+
+    // Create the initialize(component) method on the shard
+    val initializeFunction =
+      shardClass.addFunction {
+        name = Name.identifier("initialize")
+        returnType = irBuiltIns.unitType
+        visibility = DescriptorVisibilities.INTERNAL
+      }.apply {
+        // Add parameter: component with type matching the graph class
+        val componentParam =
+          addValueParameter {
+            name = Name.identifier("component")
+            type = irBuiltIns.anyType // Safe: use anyType
+          }
+
+        // Build the function body - initialize all properties
+        body =
+          createIrBuilder(symbol).irBlockBody {
+            val shardReceiver = dispatchReceiverParameter!!
+
+            for (binding in bindings) {
+              val property = binding.property
+              val backingField = property.backingField
+
+              if (backingField != null) {
+                // Generate: this.field = initializer(component, typeKey)
+                val initValue = binding.initializer.invoke(this@irBlockBody, componentParam, binding.typeKey)
+                +irSetField(
+                  irGet(shardReceiver),
+                  backingField,
+                  initValue,
+                )
+              }
+            }
+          }
+      }
+
+    // Update ownership tracking for all moved properties
+    for (binding in bindings) {
+      binding.owner = PropertyOwner.Shard(shardIndex)
+      bindingPropertyContext.updateProviderPropertyOwner(
+        binding.property,
+        BindingPropertyContext.Owner.Shard(shardInstanceProperty),
+      )
+      // Also update instance property owner if it exists
+      bindingPropertyContext.updateInstancePropertyOwner(
+        binding.property,
+        BindingPropertyContext.Owner.Shard(shardInstanceProperty),
+      )
+    }
+
+    return ShardInfo(
+      index = shardIndex,
+      shardClass = shardClass,
+      instanceProperty = shardInstanceProperty,
+      initializeFunction = initializeFunction,
+      bindings = bindings,
+    )
+  }
+
+  /**
+   * Moves a property from the root component class to a shard class.
+   *
+   * This updates the property's parent and removes it from the root component's declarations. The
+   * property is then added as a child of the shard class.
+   *
+   * @param property The property to move
+   * @param shardClass The shard class to move the property to
+   */
+  private fun movePropertyToShard(property: IrProperty, shardClass: IrClass) {
+    // Remove from graph class
+    graphClass.declarations.remove(property)
+
+    // Add to shard class
+    shardClass.addChild(property)
+    property.parent = shardClass
   }
 
   fun generate() =
@@ -557,65 +1078,108 @@ internal class IrGraphGenerator(
         }
       }
 
-      // Use chunked inits if the graph is large enough
-      val mustChunkInits =
-        options.chunkFieldInits && propertyInitializers.size > options.statementsPerInitFun
+      // ==== Component Sharding Integration ====
+      // Partition properties into shards if sharding is enabled and beneficial
+      val shardGroups = partitionPropertyInitializers()
 
-      if (mustChunkInits) {
-        // Larger graph, split statements
-        // Chunk our constructor statements and split across multiple init functions
-        val chunks =
-          buildList<InitStatement> {
-              // Add property initializers and interleave setDelegate calls as dependencies are
-              // ready
-              for ((property, init) in propertyInitializers) {
-                val typeKey = propertiesToTypeKeys.getValue(property)
+      if (shardGroups.size > 1) {
+        // Sharding is enabled and beneficial - generate shard classes
+        val shardInfos = generateShardClasses(shardGroups)
 
-                // Add this property's initialization
-                add { thisReceiver ->
-                  irSetField(
-                    irGet(thisReceiver),
-                    property.backingField!!,
-                    init(thisReceiver, typeKey),
-                  )
-                }
-              }
+        // Compute initialization order based on cross-shard dependencies
+        val orderResult = computeShardInitializationOrder(shardGroups)
+        val initOrder = orderResult.initializationOrder
 
-              addDeferredSetDelegateCalls(this)
-            }
-            .chunked(options.statementsPerInitFun)
-
-        val initFunctionsToCall =
-          chunks.map { statementsChunk ->
-            val initName = functionNameAllocator.newName("init")
-            addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
-              .apply {
-                val localReceiver = thisReceiverParameter.copyTo(this)
-                setDispatchReceiver(localReceiver)
-                buildBlockBody {
-                  for (statement in statementsChunk) {
-                    +statement(localReceiver)
-                  }
-                }
-              }
-          }
+        // Add shard instantiation and initialization to constructor
+        // Two-phase: 1) Create all shards, 2) Initialize in dependency order
         constructorStatements += buildList {
-          for (initFunction in initFunctionsToCall) {
+          // Phase 1: Instantiate all shards
+          for (info in shardInfos) {
             add { dispatchReceiver ->
-              irInvoke(dispatchReceiver = irGet(dispatchReceiver), callee = initFunction.symbol)
+              irSetField(
+                irGet(dispatchReceiver),
+                info.instanceProperty.backingField!!,
+                irCallConstructor(info.shardClass.primaryConstructor!!.symbol, emptyList()),
+              )
             }
           }
+
+          // Phase 2: Initialize shards in dependency order
+          for (shardIndex in initOrder) {
+            val info = shardInfos[shardIndex]
+            add { dispatchReceiver ->
+              irInvoke(
+                dispatchReceiver = irGetField(irGet(dispatchReceiver), info.instanceProperty.backingField!!),
+                callee = info.initializeFunction.symbol,
+                args = listOf(irGet(dispatchReceiver)), // Pass component as argument
+              )
+            }
+          }
+
+          // Add deferred setDelegate calls after all shards are initialized
+          addDeferredSetDelegateCalls(this)
         }
       } else {
-        // Small graph, just do it in the constructor
-        // Assign those initializers directly to their properties and mark them as final
-        for ((property, init) in propertyInitializers) {
-          property.initFinal {
-            val typeKey = propertiesToTypeKeys.getValue(property)
-            init(thisReceiverParameter, typeKey)
+        // No sharding needed - use the original chunked init logic
+        val mustChunkInits =
+          options.chunkFieldInits && propertyInitializers.size > options.statementsPerInitFun
+
+        if (mustChunkInits) {
+          // Larger graph, split statements
+          // Chunk our constructor statements and split across multiple init functions
+          val chunks =
+            buildList<InitStatement> {
+                // Add property initializers and interleave setDelegate calls as dependencies are
+                // ready
+                for ((property, init) in propertyInitializers) {
+                  val typeKey = propertiesToTypeKeys.getValue(property)
+
+                  // Add this property's initialization
+                  add { thisReceiver ->
+                    irSetField(
+                      irGet(thisReceiver),
+                      property.backingField!!,
+                      init(thisReceiver, typeKey),
+                    )
+                  }
+                }
+
+                addDeferredSetDelegateCalls(this)
+              }
+              .chunked(options.statementsPerInitFun)
+
+          val initFunctionsToCall =
+            chunks.map { statementsChunk ->
+              val initName = functionNameAllocator.newName("init")
+              addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
+                .apply {
+                  val localReceiver = thisReceiverParameter.copyTo(this)
+                  setDispatchReceiver(localReceiver)
+                  buildBlockBody {
+                    for (statement in statementsChunk) {
+                      +statement(localReceiver)
+                    }
+                  }
+                }
+            }
+          constructorStatements += buildList {
+            for (initFunction in initFunctionsToCall) {
+              add { dispatchReceiver ->
+                irInvoke(dispatchReceiver = irGet(dispatchReceiver), callee = initFunction.symbol)
+              }
+            }
           }
+        } else {
+          // Small graph, just do it in the constructor
+          // Assign those initializers directly to their properties and mark them as final
+          for ((property, init) in propertyInitializers) {
+            property.initFinal {
+              val typeKey = propertiesToTypeKeys.getValue(property)
+              init(thisReceiverParameter, typeKey)
+            }
+          }
+          addDeferredSetDelegateCalls(constructorStatements)
         }
-        addDeferredSetDelegateCalls(constructorStatements)
       }
 
       // Add extra constructor statements

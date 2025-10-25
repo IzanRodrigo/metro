@@ -115,6 +115,21 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val statementsPerInitFun: Property<Int> =
     objects.property(Int::class.javaObjectType).convention(25)
 
+  /** Enable/disable component sharding of binding graphs. Enabled by default. */
+  public val enableComponentSharding: Property<Boolean> =
+    objects.property(Boolean::class.javaObjectType).convention(true)
+
+  /**
+   * Maximum number of binding keys per graph shard when sharding is enabled. Default is 400, must
+   * be > 0.
+   *
+   * This follows Dagger's approach but uses a lower default (400 vs Dagger's 900) to be more
+   * aggressive with sharding. Lower values create more, smaller shards which can help with
+   * compilation performance and JVM method size limits.
+   */
+  public val keysPerGraphShard: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(400)
+
   @Suppress("DEPRECATION")
   @Deprecated("Use optionalBindingBehavior instead", ReplaceWith("optionalBindingBehavior"))
   public val optionalDependencyBehavior: Property<OptionalDependencyBehavior> =
