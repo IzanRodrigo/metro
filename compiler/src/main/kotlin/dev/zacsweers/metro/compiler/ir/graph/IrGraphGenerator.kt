@@ -1090,6 +1090,82 @@ internal class IrGraphGenerator(
         val orderResult = computeShardInitializationOrder(shardGroups)
         val initOrder = orderResult.initializationOrder
 
+        // Generate diagnostic report showing sharding plan
+        writeDiagnostic("sharding-plan-${parentTracer.tag}.txt") {
+          buildString {
+            appendLine("=== Metro Component Sharding Plan ===")
+            appendLine()
+            appendLine("Component: ${graphClass.kotlinFqName}")
+            appendLine("Total bindings: ${propertyInitializers.size}")
+            appendLine("Keys per shard limit: ${options.keysPerGraphShard}")
+            appendLine("Shard count: ${shardInfos.size}")
+            appendLine("Sharding enabled: ${options.enableComponentSharding}")
+            appendLine()
+
+            appendLine("Initialization order: ${
+              initOrder.joinToString(" → ") { "Shard${it + 1}" }
+            }")
+            appendLine()
+
+            shardInfos.forEach { info ->
+              appendLine("Shard ${info.index + 1}:")
+              appendLine("  Class: ${info.shardClass.kotlinFqName}")
+              appendLine("  Bindings: ${info.bindings.size}")
+              appendLine("  Instance property: ${info.instanceProperty.name}")
+              appendLine("  Initialize function: ${info.initializeFunction.name}")
+
+              if (info.bindings.size <= 10) {
+                // Show all bindings for small shards
+                appendLine("  Binding keys:")
+                info.bindings.forEach { binding ->
+                  appendLine("    - ${binding.typeKey}")
+                }
+              } else {
+                // Show first and last for large shards
+                appendLine("  Binding keys (first 5):")
+                info.bindings.take(5).forEach { binding ->
+                  appendLine("    - ${binding.typeKey}")
+                }
+                appendLine("    ... (${info.bindings.size - 10} more)")
+                appendLine("  Binding keys (last 5):")
+                info.bindings.takeLast(5).forEach { binding ->
+                  appendLine("    - ${binding.typeKey}")
+                }
+              }
+              appendLine()
+            }
+
+            // Compute and display cross-shard dependencies
+            appendLine("Cross-shard dependencies:")
+            val bindingToShard = mutableMapOf<IrTypeKey, Int>()
+            shardInfos.forEach { info ->
+              info.bindings.forEach { binding ->
+                bindingToShard[binding.typeKey] = info.index
+              }
+            }
+
+            var crossShardDepCount = 0
+            shardInfos.forEach { info ->
+              info.bindings.forEach { binding ->
+                val deps = bindingGraph.requireBinding(binding.typeKey).dependencies
+                deps.forEach { dep ->
+                  val depShard = bindingToShard[dep.typeKey]
+                  if (depShard != null && depShard != info.index) {
+                    appendLine("  Shard${info.index + 1}.${binding.typeKey} → Shard${depShard + 1}.${dep.typeKey}")
+                    crossShardDepCount++
+                  }
+                }
+              }
+            }
+
+            if (crossShardDepCount == 0) {
+              appendLine("  (none)")
+            }
+            appendLine()
+            appendLine("Total cross-shard dependencies: $crossShardDepCount")
+          }
+        }
+
         // Add shard instantiation and initialization to constructor
         // Two-phase: 1) Create all shards, 2) Initialize in dependency order
         constructorStatements += buildList {

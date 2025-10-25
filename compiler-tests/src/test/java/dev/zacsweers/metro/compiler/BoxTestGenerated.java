@@ -490,6 +490,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
     }
 
     @Test
+    @TestMetadata("MinimalComponentSharding.kt")
+    public void testMinimalComponentSharding() {
+      runTest("compiler-tests/src/test/data/box/dependencygraph/MinimalComponentSharding.kt");
+    }
+
+    @Test
     @TestMetadata("MultiLevelTransitiveIncludes.kt")
     public void testMultiLevelTransitiveIncludes() {
       runTest("compiler-tests/src/test/data/box/dependencygraph/MultiLevelTransitiveIncludes.kt");
