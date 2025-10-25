@@ -7,6 +7,7 @@ import dev.zacsweers.metro.compiler.ir.BindingFieldAccess
 import dev.zacsweers.metro.compiler.ir.IrContextualTypeKey
 import dev.zacsweers.metro.compiler.ir.IrMetroContext
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
+import dev.zacsweers.metro.compiler.ir.ParentContext
 import dev.zacsweers.metro.compiler.ir.getAllSuperTypes
 import dev.zacsweers.metro.compiler.ir.graph.BindingPropertyContext
 import dev.zacsweers.metro.compiler.ir.graph.DependencyGraphNode
@@ -35,11 +36,14 @@ import dev.zacsweers.metro.compiler.tracing.Tracer
 import org.jetbrains.kotlin.ir.builders.IrBuilderWithScope
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
+import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrFunction
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
 import org.jetbrains.kotlin.ir.declarations.IrValueParameter
+import org.jetbrains.kotlin.ir.expressions.IrGetValue
 import org.jetbrains.kotlin.ir.expressions.IrBody
 import org.jetbrains.kotlin.ir.expressions.IrExpression
 import org.jetbrains.kotlin.ir.types.defaultType
@@ -48,6 +52,7 @@ import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.isObject
 import org.jetbrains.kotlin.ir.util.isStatic
 import org.jetbrains.kotlin.ir.util.kotlinFqName
+import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.util.primaryConstructor
 import org.jetbrains.kotlin.name.Name
 
@@ -119,6 +124,186 @@ private constructor(
   // Here to defeat type checking
   private val multibindingGetter: MultibindingExpressionGenerator
     get() = multibindingExpressionGenerator
+
+  /**
+   * Gets the correct receiver for accessing bindings, handling subcomponent parent access.
+   *
+   * For nested subcomponents accessing parent bindings, we can't use thisReceiver directly.
+   * Instead, we must access the parent via the stored parent field.
+   *
+   * @param ownerKey The type key of the component that owns the binding
+   * @return The receiver to use for accessing the binding
+   */
+  context(scope: IrBuilderWithScope)
+  private fun getReceiverForBindingAccess(ownerKey: IrTypeKey): IrValueParameter {
+    // Check if we're accessing a parent binding (owner is different from current component)
+    if (ownerKey == node.typeKey) {
+      // Same component - use thisReceiver
+      return thisReceiver
+    }
+
+    // Different component - accessing parent binding
+    // Check if current class has a parent field (subcomponent/nested class)
+    val currentClass = thisReceiver.parent as? IrClass
+    if (currentClass != null) {
+      val parentProperty = currentClass.declarations
+        .filterIsInstance<IrProperty>()
+        .find { it.name.asString() == "parent" }
+
+      if (parentProperty?.backingField != null) {
+        // We're in a subcomponent with explicit parent field
+        // Create a synthetic value parameter representing the parent
+        // This is a workaround since BindingFieldAccess expects IrValueParameter
+        // but we need to use the parent field. We'll handle this in the expression.
+        // For now, return the parent's thisReceiver but mark that we need transformation
+
+        // Actually, we need to return something that BindingFieldAccess can work with.
+        // The issue is that getInstanceExpression expects a receiver parameter.
+        // Let's just return thisReceiver for now and handle the transformation differently.
+        return thisReceiver
+      }
+    }
+
+    // Fallback to thisReceiver
+    return thisReceiver
+  }
+
+  /**
+   * Gets receiver for accessing parent bindings, with lazy shard lookup.
+   *
+   * For nested subcomponents accessing parent bindings, we need to:
+   * 1. Get the parent instance via this.parent field
+   * 2. Check if the property is in a shard (lazy lookup from parent's BindingPropertyContext)
+   * 3. If in shard, access the shard instance first, then the property
+   *
+   * @param propertyAccess The property access info from ParentContext
+   * @return Expression to get the receiver that contains the property
+   */
+  context(scope: IrBuilderWithScope)
+  private fun getReceiverForParentProperty(
+    propertyAccess: ParentContext.PropertyAccess
+  ): IrExpression {
+    // Check if the property belongs to a parent graph (not the current node)
+    if (propertyAccess.parentKey == node.typeKey) {
+      // Same graph - use the receiver as-is
+      return scope.irGet(propertyAccess.receiverParameter)
+    }
+
+    // Different graph - this is a parent binding
+    // Get parent instance expression (via this.parent field for nested subcomponents)
+    val parentReceiver = run {
+      val currentClass = thisReceiver.parent as? IrClass
+      if (currentClass != null) {
+        val parentProperty = currentClass.declarations
+          .filterIsInstance<IrProperty>()
+          .find { it.name.asString() == "parent" }
+
+        if (parentProperty?.backingField != null) {
+          // We're in a subcomponent - access parent via the stored parent field
+          scope.irGetField(scope.irGet(thisReceiver), parentProperty.backingField!!)
+        } else {
+          // Not a subcomponent, use original receiver
+          scope.irGet(propertyAccess.receiverParameter)
+        }
+      } else {
+        scope.irGet(propertyAccess.receiverParameter)
+      }
+    }
+
+    // Lazy shard lookup: check if property is in a shard of the parent
+    if (propertyAccess.parentBindingPropertyContext != null &&
+        propertyAccess.propertyTypeKey != null) {
+      val propertyEntry = propertyAccess.parentBindingPropertyContext.providerPropertyEntry(
+        propertyAccess.propertyTypeKey
+      )
+      when (val owner = propertyEntry?.owner) {
+        is BindingPropertyContext.Owner.Shard -> {
+          // Property is in parent's shard, access through shard instance
+          return scope.irGetField(parentReceiver, owner.instanceProperty.backingField!!)
+        }
+        else -> {
+          // Property is in parent's root, use parent receiver as-is
+          return parentReceiver
+        }
+      }
+    }
+
+    // No binding context, property must be in root
+    return parentReceiver
+  }
+
+  /**
+   * Transforms a graph instance expression to use parent field for subcomponents.
+   *
+   * When fieldAccess.getInstanceExpression returns an expression using thisReceiver,
+   * but we're actually in a subcomponent accessing parent, we need to transform
+   * the expression to use this.parent instead of this.
+   *
+   * This recursively walks the IR tree and replaces all GET_VAR references to the parent's
+   * thisReceiver with GET_FIELD access to this.parent.
+   */
+  context(scope: IrBuilderWithScope)
+  private fun transformGraphInstanceForParentAccess(
+    graphInstanceExpr: IrExpression,
+    ownerKey: IrTypeKey
+  ): IrExpression {
+    // Only transform if accessing parent from subcomponent
+    if (ownerKey == node.typeKey) {
+      return graphInstanceExpr
+    }
+
+    // Check if we're in a subcomponent
+    val currentClass = thisReceiver.parent as? IrClass
+    if (currentClass != null) {
+      val parentProperty = currentClass.declarations
+        .filterIsInstance<IrProperty>()
+        .find { it.name.asString() == "parent" }
+
+      if (parentProperty?.backingField != null) {
+        // We're in a subcomponent - need to transform the entire expression tree
+        // Replace all references to parent's thisReceiver with this.parent field access
+        return transformReceiverReferences(
+          graphInstanceExpr,
+          parentProperty.backingField!!,
+          scope
+        )
+      }
+    }
+
+    return graphInstanceExpr
+  }
+
+  /**
+   * Recursively transforms an IR expression tree, replacing GET_VAR references to parent's
+   * thisReceiver with GET_FIELD this.parent.
+   */
+  context(scope: IrBuilderWithScope)
+  private fun transformReceiverReferences(
+    expression: IrExpression,
+    parentField: org.jetbrains.kotlin.ir.declarations.IrField,
+    builder: IrBuilderWithScope
+  ): IrExpression {
+    // Get the parent graph class (the class that contains our subcomponent)
+    val parentGraphClass = (thisReceiver.parent as? IrClass)?.parent as? IrClass
+
+    return expression.transform(object : IrElementTransformerVoid() {
+      override fun visitGetValue(expression: IrGetValue): IrExpression {
+        // Check if this is a GET_VAR of the parent graph's thisReceiver
+        val symbol = expression.symbol
+        if (symbol.owner is IrValueParameter) {
+          val param = symbol.owner as IrValueParameter
+
+          // Check if it belongs to the parent graph class and is a dispatch receiver
+          val paramOwner = param.parent as? IrClass
+          if (paramOwner == parentGraphClass && param.name.asString() == "<this>") {
+            // This is the parent graph's thisReceiver - replace with this.parent
+            return builder.irGetField(builder.irGet(thisReceiver), parentField)
+          }
+        }
+        return super.visitGetValue(expression)
+      }
+    }, null) as IrExpression
+  }
 
   context(scope: IrBuilderWithScope)
   override fun generateBindingCode(
@@ -465,17 +650,20 @@ private constructor(
         is IrBinding.GraphDependency -> {
           val ownerKey = binding.ownerKey
           if (binding.propertyAccess != null) {
-            // Just get the property
-            irGetProperty(
-              irGet(binding.propertyAccess.receiverParameter),
-              binding.propertyAccess.property,
-            )
+            // Get the receiver (parent root or shard) via lazy shard lookup
+            val actualReceiver = getReceiverForParentProperty(binding.propertyAccess)
+
+            // Access the property from the actual receiver
+            irGetProperty(actualReceiver, binding.propertyAccess.property)
           } else if (binding.getter != null) {
-            val graphInstanceExpr =
+            val rawGraphInstanceExpr =
               fieldAccess.getInstanceExpression(ownerKey, thisReceiver)
                 ?: reportCompilerBug(
                   "No matching included type instance found for type $ownerKey while processing ${node.typeKey}. Available instance fields ${bindingPropertyContext.availableInstanceKeys}"
                 )
+
+            // Transform the expression if we're in a subcomponent accessing parent
+            val graphInstanceExpr = transformGraphInstanceForParentAccess(rawGraphInstanceExpr, ownerKey)
 
             val getterContextKey = IrContextualTypeKey.from(binding.getter)
 

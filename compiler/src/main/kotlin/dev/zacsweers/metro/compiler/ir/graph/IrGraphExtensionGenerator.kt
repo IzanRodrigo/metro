@@ -40,12 +40,17 @@ import dev.zacsweers.metro.compiler.tracing.Tracer
 import dev.zacsweers.metro.compiler.tracing.traceNested
 import org.jetbrains.kotlin.descriptors.ClassKind
 import org.jetbrains.kotlin.descriptors.DescriptorVisibilities
+import org.jetbrains.kotlin.ir.builders.declarations.addBackingField
 import org.jetbrains.kotlin.ir.builders.declarations.addConstructor
+import org.jetbrains.kotlin.ir.builders.declarations.addField
+import org.jetbrains.kotlin.ir.builders.declarations.addProperty
 import org.jetbrains.kotlin.ir.builders.declarations.addValueParameter
 import org.jetbrains.kotlin.ir.builders.declarations.buildClass
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
+import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
 import org.jetbrains.kotlin.ir.builders.irGetField
+import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
 import org.jetbrains.kotlin.ir.declarations.IrConstructor
 import org.jetbrains.kotlin.ir.declarations.IrSimpleFunction
@@ -62,6 +67,7 @@ import org.jetbrains.kotlin.ir.util.parentAsClass
 import org.jetbrains.kotlin.ir.util.parentClassOrNull
 import org.jetbrains.kotlin.ir.util.remapTypes
 import org.jetbrains.kotlin.name.ClassId
+import org.jetbrains.kotlin.name.Name
 
 internal class IrGraphExtensionGenerator(
   context: IrMetroContext,
@@ -219,7 +225,7 @@ internal class IrGraphExtensionGenerator(
               .asName()
           origin = Origins.GeneratedGraphExtension
           kind = ClassKind.CLASS
-          isInner = true
+          isInner = false  // CRITICAL: Nested (not inner) to avoid synthetic accessors with sharding
         }
         .apply {
           createThisReceiverParameter()
@@ -262,6 +268,9 @@ internal class IrGraphExtensionGenerator(
           // Add only non-binding-container contributions as supertypes
           contributions?.let { superTypes += it.supertypes }
 
+          // CRITICAL: Capture parent parameter reference for later use
+          var capturedParentParam: org.jetbrains.kotlin.ir.declarations.IrValueParameter? = null
+
           val ctor =
             addConstructor {
                 isPrimary = true
@@ -270,10 +279,13 @@ internal class IrGraphExtensionGenerator(
                 isFakeOverride = true
               }
               .apply {
-                // TODO generics?
-                setDispatchReceiver(
-                  parentGraph.thisReceiverOrFail.copyTo(this, type = parentGraph.defaultType)
-                )
+                // CRITICAL: Since this is now a nested class (not inner), add explicit parent parameter
+                // Mark with special origin so Metro's creator validation skips it
+                val parentParam = addValueParameter("parent", parentGraph.defaultType).apply {
+                  origin = Origins.GeneratedGraphExtension  // Mark as synthetic parameter
+                }
+                capturedParentParam = parentParam  // Capture for field initializer
+
                 // Copy over any creator params
                 creatorFunction?.let {
                   for (param in it.regularParameters) {
@@ -285,6 +297,22 @@ internal class IrGraphExtensionGenerator(
 
                 body = this.generateDefaultConstructorBody()
               }
+
+          // CRITICAL: Store parent param as a field (AFTER constructor is defined)
+          // Use field initializer pattern like assignConstructorParamsToFields
+          val parentParam = capturedParentParam!!
+          val parentProperty = addProperty {
+            name = Name.identifier("parent")
+            visibility = DescriptorVisibilities.PRIVATE
+          }
+          val parentField = parentProperty.addBackingField {
+            type = parentGraph.defaultType
+            visibility = DescriptorVisibilities.PRIVATE
+          }.apply {
+            isFinal = true
+            // Initialize from constructor parameter
+            initializer = createIrBuilder(symbol).run { irExprBody(irGet(parentParam)) }
+          }
 
           // Must be added to the parent before we generate a factory impl
           parentGraph.addChild(this)

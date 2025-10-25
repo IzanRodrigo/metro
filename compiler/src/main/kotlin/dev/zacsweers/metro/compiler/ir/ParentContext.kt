@@ -27,11 +27,14 @@ internal class ParentContext(private val metroContext: IrMetroContext) {
     val parentKey: IrTypeKey,
     val property: IrProperty,
     val receiverParameter: IrValueParameter,
+    val parentBindingPropertyContext: BindingPropertyContext? = null, // Parent's context for lazy shard lookup
+    val propertyTypeKey: IrTypeKey? = null, // Type key for looking up shard ownership
   )
 
   private data class Level(
     val node: DependencyGraphNode,
     val propertyNameAllocator: NameAllocator,
+    val bindingPropertyContext: BindingPropertyContext? = null, // Parent's binding context for shard lookup
     val deltaProvided: MutableSet<IrTypeKey> = mutableSetOf(),
     val usedKeys: MutableSet<IrTypeKey> = mutableSetOf(),
     val properties: MutableMap<IrTypeKey, IrProperty> = mutableMapOf(),
@@ -76,6 +79,8 @@ internal class ParentContext(private val metroContext: IrMetroContext) {
         providerLevel.node.typeKey,
         property,
         providerLevel.node.metroGraphOrFail.thisReceiverOrFail,
+        providerLevel.bindingPropertyContext,
+        key,
       )
     }
 
@@ -95,6 +100,8 @@ internal class ParentContext(private val metroContext: IrMetroContext) {
             level.node.typeKey,
             field,
             level.node.metroGraphOrFail.thisReceiverOrFail,
+            level.bindingPropertyContext,
+            key,
           )
         }
       }
@@ -103,9 +110,13 @@ internal class ParentContext(private val metroContext: IrMetroContext) {
     return null
   }
 
-  fun pushParentGraph(node: DependencyGraphNode, fieldNameAllocator: NameAllocator) {
+  fun pushParentGraph(
+    node: DependencyGraphNode,
+    fieldNameAllocator: NameAllocator,
+    bindingPropertyContext: BindingPropertyContext? = null
+  ) {
     val idx = levels.size
-    val level = Level(node, fieldNameAllocator)
+    val level = Level(node, fieldNameAllocator, bindingPropertyContext)
     levels.addLast(level)
     parentScopes.addAll(node.scopes)
 

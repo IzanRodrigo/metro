@@ -874,7 +874,14 @@ internal class IrGraphGenerator(
           val irParam = ctor.regularParameters[i]
 
           val isDynamic = irParam.origin == Origins.DynamicContainerParam
+          val isParentParam = irParam.origin == Origins.GeneratedGraphExtension
           val isBindingContainer = creator.bindingContainersParameterIndices.isSet(i)
+
+          // Skip synthetic parent parameter (for nested subcomponents)
+          if (isParentParam) {
+            continue
+          }
+
           if (isBindsInstance || isBindingContainer || isDynamic) {
 
             if (!isDynamic && param.typeKey in node.dynamicTypeKeys) {
