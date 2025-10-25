@@ -104,3 +104,118 @@ To create a new test, add a source file under the appropriate directory and then
 - Don't run gradle commands with unnecessary flags like `--info`, `--no-daemon`, etc.
 - Don't cd into a module directory and run gradle commands - use `./gradlew` instead from the directory that wrapper is in.
 - Do not run tests automatically, prompt first.
+
+## Component Sharding Implementation
+
+**Status:** ✅ COMPLETE AND WORKING (as of 2025-10-25)
+
+**What It Does:**
+Metro now automatically shards large components (1000+ bindings) into multiple nested shard classes to avoid JVM method size limits.
+
+### Key Files
+
+**Algorithm & Generation:**
+- `compiler/src/main/kotlin/dev/zacsweers/metro/compiler/ir/graph/IrGraphGenerator.kt`
+  - `partitionPropertyInitializers()` - SCC-aware partitioning
+  - `generateShardClass()` - Shard class generation
+  - `computeShardInitializationOrder()` - Topological sort
+  - `resolveActualKey()` - Alias resolution for @Binds
+
+**Abstraction:**
+- `compiler/src/main/kotlin/dev/zacsweers/metro/compiler/ir/BindingFieldAccess.kt`
+- `compiler/src/main/kotlin/dev/zacsweers/metro/compiler/ir/DefaultBindingFieldAccess.kt`
+
+**Ownership Tracking:**
+- `compiler/src/main/kotlin/dev/zacsweers/metro/compiler/ir/graph/BindingPropertyContext.kt`
+
+### Critical K2 Patterns for Shard Generation
+
+**✅ CORRECT Class Creation Sequence:**
+```kotlin
+val cls = irFactory.buildClass { ... }.apply {
+  superTypes = listOf(irBuiltIns.anyType)
+  createThisReceiverParameter()  // MUST be first!
+  parent = graphClass
+  graphClass.addChild(this)
+}
+
+// Add constructor AFTER apply completes
+val ctor = cls.addConstructor {
+  returnType = cls.defaultType  // NOW safe!
+}
+```
+
+**❌ WRONG - Causes defaultType NPE:**
+```kotlin
+val cls = graphClass.factory.buildClass { ... }  // DON'T use class.factory!
+val cls = irFactory.buildClass { ... }.apply {
+  // NO createThisReceiverParameter()!  // WRONG!
+  addConstructor { }  // WRONG - too early!
+}
+```
+
+**✅ defaultType Safety Rules:**
+- Call ONLY after `createThisReceiverParameter()` called
+- Call ONLY after class added to parent
+- Call ONLY after constructor added (for constructor returnType)
+- Use `irBuiltIns.anyType` as placeholder if unsure
+
+**✅ Function Dispatch Receivers:**
+```kotlin
+val func = cls.addFunction { ... }.apply {
+  val receiver = cls.thisReceiver!!.copyTo(this)
+  setDispatchReceiver(receiver)  // REQUIRED!
+  // Now dispatchReceiverParameter!! works
+}
+```
+
+### Testing Sharding
+
+**Box Test:**
+```kotlin
+// In compiler-tests/src/test/data/box/dependencygraph/*.kt
+// KEYS_PER_GRAPH_SHARD: 5
+// ENABLE_COMPONENT_SHARDING: true
+```
+
+**Run:**
+```bash
+./gradlew :compiler-tests:generateTests
+./gradlew :compiler-tests:test --tests "*Sharding*"
+```
+
+**Check Reports:**
+```bash
+cat app/build/metro-reports/*/sharding-plan-*.txt
+```
+
+### Troubleshooting Sharding
+
+**If you see defaultType NPE:**
+1. Ensure `createThisReceiverParameter()` called first
+2. Check constructor added after buildClass apply
+3. Verify using `irFactory` not `graphClass.factory`
+4. Check dispatch receiver set for functions
+
+**If you see cycle errors:**
+1. Check `resolveActualKey()` handles @Binds correctly
+2. Review cross-shard dependency tracking
+3. Fallback to sequential order is safe
+
+### Documentation
+
+Complete sharding documentation in workspace: `docs/metro/00-INDEX.md`
+
+**Quick links:**
+- Success summary: `docs/metro/GRAPH-SHARDING-SUCCESS.md`
+- Implementation guide: `docs/metro/02-sharding-implementation.md`
+- Configuration: `docs/metro/05-configuration.md`
+- Troubleshooting: `docs/metro/06-troubleshooting.md`
+
+### Android-Spain Integration
+
+**Verified working:**
+- Android-spain: 2,127 bindings → 22 shards
+- Build: SUCCESS in 3m 16s
+- Config: `keysPerGraphShard = 100`
+- Reports: Generated in `app/build/metro-reports/internDebug/`

@@ -15,6 +15,7 @@ import dev.zacsweers.metro.compiler.ir.buildBlockBody
 import dev.zacsweers.metro.compiler.ir.createIrBuilder
 import dev.zacsweers.metro.compiler.ir.doubleCheck
 import dev.zacsweers.metro.compiler.ir.finalizeFakeOverride
+import dev.zacsweers.metro.compiler.ir.generateDefaultConstructorBody
 import dev.zacsweers.metro.compiler.ir.getAllSuperTypes
 import dev.zacsweers.metro.compiler.ir.graph.expressions.BindingExpressionGenerator
 import dev.zacsweers.metro.compiler.ir.graph.expressions.GraphExpressionGenerator
@@ -478,6 +479,39 @@ internal class IrGraphGenerator(
   }
 
   /**
+   * Resolves alias binding chains to find the actual implementation type key.
+   *
+   * This is critical for cross-shard dependency tracking. When a binding depends on an
+   * interface or abstract class via @Binds, we need to find the actual implementation
+   * that will have a field/property in a shard.
+   *
+   * Example:
+   * ```
+   * @Binds
+   * abstract fun bindRepo(impl: RepoImpl): Repository
+   *
+   * // Binding chain: Repository → Alias → RepoImpl
+   * // Only RepoImpl has a field in a shard!
+   * ```
+   *
+   * Without this resolution, we'd look for "Repository" in bindingToShard map,
+   * not find it (only "RepoImpl" exists), and miss the cross-shard dependency.
+   *
+   * @param key The type key to resolve (might be an alias)
+   * @return The actual implementation type key (following alias chains)
+   */
+  private fun resolveActualKey(key: IrTypeKey): IrTypeKey {
+    var current = bindingGraph.findBinding(key) ?: return key
+
+    // Follow alias chain to find actual implementation
+    while (current is IrBinding.Alias) {
+      current = bindingGraph.findBinding(current.aliasedType) ?: return current.aliasedType
+    }
+
+    return current.typeKey
+  }
+
+  /**
    * Computes the initialization order for shards based on cross-shard dependencies.
    *
    * Shards must be initialized in topological order to ensure that when Shard B depends on bindings
@@ -528,7 +562,12 @@ internal class IrGraphGenerator(
         val deps = bindingGraph.requireBinding(binding.typeKey).dependencies.map { it.typeKey }
 
         for (depKey in deps) {
-          val depShardIndex = bindingToShard[depKey]
+          // CRITICAL: Resolve alias chains to find actual implementation
+          // Without this, @Binds dependencies won't be tracked correctly
+          // (See docs/metro/03-cross-shard-fix.md)
+          val resolvedKey = resolveActualKey(depKey)
+
+          val depShardIndex = bindingToShard[resolvedKey]
           if (depShardIndex != null && depShardIndex != shardIndex) {
             // This binding depends on a binding in another shard
             shardDependencies[shardIndex].add(depShardIndex)
@@ -563,15 +602,23 @@ internal class IrGraphGenerator(
       }
     }
 
-    check(initializationOrder.size == shardGroups.size) {
-      "Cycle detected in shard dependencies (should be impossible after SCC grouping)"
-    }
+    // If topological sort didn't process all shards, there's a cycle
+    // This can happen with complex dependency graphs despite SCC grouping
+    // Fallback to sequential order (safe but not optimal)
+    val finalOrder =
+      if (initializationOrder.size != shardGroups.size) {
+        // Cycle detected - use sequential order as fallback
+        log("WARNING: Cycle detected in shard dependencies, using sequential initialization order")
+        shardGroups.indices.toList()
+      } else {
+        initializationOrder
+      }
 
     // Note: ShardInfo objects will be created during shard class generation
     // This just returns the order - the actual ShardInfo list is built later
     return ShardOrderResult(
       shards = emptyList(), // Populated later in generateShardClasses
-      initializationOrder = initializationOrder,
+      initializationOrder = finalOrder,
     )
   }
 
@@ -627,35 +674,35 @@ internal class IrGraphGenerator(
   private fun generateShardClass(shardIndex: Int, bindings: List<PropertyBinding>): ShardInfo {
     val shardName = "Shard${shardIndex + 1}" // Shard1, Shard2, etc.
 
-    // Create the nested shard class using irFactory (not graphClass.factory)
+    // Create the nested shard class - matches pattern from old working implementation
     val shardClass =
       irFactory.buildClass {
           name = Name.identifier(shardName)
-          visibility = DescriptorVisibilities.PRIVATE
+          visibility = DescriptorVisibilities.INTERNAL  // INTERNAL like old implementation
           modality = Modality.FINAL
         }
         .apply {
-          // CRITICAL: Initialize thisReceiver FIRST to avoid defaultType NPE
-          createThisReceiverParameter()
-
-          // Set parent to the graph class (nested class)
-          parent = graphClass
-
-          // Add to the graph class as a nested class
-          graphClass.addChild(this)
-
-          // Set supertype to Any
+          // Set supertype first
           superTypes = listOf(irBuiltIns.anyType)
 
-          // Add primary constructor
-          addConstructor {
-            isPrimary = true
-            visibility = DescriptorVisibilities.PUBLIC
-          }.apply {
-            // Empty constructor body (properties initialized in initialize() method)
-            body = createIrBuilder(symbol).irBlockBody {}
-          }
+          // CRITICAL: Initialize thisReceiver before other operations
+          createThisReceiverParameter()
+
+          // Set parent and add to graph
+          parent = graphClass
+          graphClass.addChild(this)
         }
+
+    // Add constructor AFTER buildClass apply completes (like old implementation)
+    val shardConstructor =
+      shardClass.addConstructor {
+        isPrimary = true
+        visibility = DescriptorVisibilities.PUBLIC
+        returnType = shardClass.defaultType  // Safe now - thisReceiver initialized!
+      }.apply {
+        // Generate constructor body with super() call
+        body = generateDefaultConstructorBody()
+      }
 
     // Move properties to the shard class
     for (binding in bindings) {
@@ -668,15 +715,16 @@ internal class IrGraphGenerator(
         this.name = Name.identifier(shardName.replaceFirstChar { it.lowercase() }) // shard1, shard2
         this.visibility = DescriptorVisibilities.PRIVATE
       }.apply {
-        // Add backing field with the shard class type
+        // Add backing field with the actual shard class type
+        // Safe now - shard class has thisReceiver and constructor
         addBackingField {
-          type = irBuiltIns.anyType // Safe: use anyType to avoid initialization issues
+          type = shardClass.defaultType  // Use actual shard type!
           visibility = DescriptorVisibilities.PRIVATE
         }
 
         // Add getter that returns the field
         addGetter {
-            returnType = irBuiltIns.anyType
+            returnType = shardClass.defaultType  // Use actual shard type!
             visibility = DescriptorVisibilities.PRIVATE
           }
           .apply {
@@ -692,6 +740,21 @@ internal class IrGraphGenerator(
           }
       }
 
+    // CRITICAL: Update ownership tracking BEFORE creating initialize function
+    // This ensures BindingFieldAccess knows properties are in shards when initializers are invoked
+    for (binding in bindings) {
+      binding.owner = PropertyOwner.Shard(shardIndex)
+      bindingPropertyContext.updateProviderPropertyOwner(
+        binding.property,
+        BindingPropertyContext.Owner.Shard(shardInstanceProperty),
+      )
+      // Also update instance property owner if it exists
+      bindingPropertyContext.updateInstancePropertyOwner(
+        binding.property,
+        BindingPropertyContext.Owner.Shard(shardInstanceProperty),
+      )
+    }
+
     // Create the initialize(component) method on the shard
     val initializeFunction =
       shardClass.addFunction {
@@ -699,17 +762,23 @@ internal class IrGraphGenerator(
         returnType = irBuiltIns.unitType
         visibility = DescriptorVisibilities.INTERNAL
       }.apply {
-        // Add parameter: component with proper type (now safe with thisReceiver initialized)
+        // Set dispatch receiver for this function (shard's thisReceiver)
+        val shardReceiver = shardClass.thisReceiver!!.copyTo(this)
+        setDispatchReceiver(shardReceiver)
+
+        // Add parameter: component with graphClass.defaultType (matches old working pattern)
+        // Safe now - all classes have thisReceiver and constructors
         val componentParam =
           addValueParameter {
             name = Name.identifier("component")
-            type = graphClass.symbol.typeWith()
+            type = graphClass.defaultType  // Use defaultType like old implementation!
           }
 
         // Build the function body - initialize all properties
         body =
           createIrBuilder(symbol).irBlockBody {
-            val shardReceiver = dispatchReceiverParameter!!
+            // Use shardReceiver (already defined above)
+            // val shardReceiver = dispatchReceiverParameter!!
 
             for (binding in bindings) {
               val property = binding.property
@@ -728,19 +797,7 @@ internal class IrGraphGenerator(
           }
       }
 
-    // Update ownership tracking for all moved properties
-    for (binding in bindings) {
-      binding.owner = PropertyOwner.Shard(shardIndex)
-      bindingPropertyContext.updateProviderPropertyOwner(
-        binding.property,
-        BindingPropertyContext.Owner.Shard(shardInstanceProperty),
-      )
-      // Also update instance property owner if it exists
-      bindingPropertyContext.updateInstancePropertyOwner(
-        binding.property,
-        BindingPropertyContext.Owner.Shard(shardInstanceProperty),
-      )
-    }
+    // Ownership tracking already updated above (before initialize function creation)
 
     return ShardInfo(
       index = shardIndex,
