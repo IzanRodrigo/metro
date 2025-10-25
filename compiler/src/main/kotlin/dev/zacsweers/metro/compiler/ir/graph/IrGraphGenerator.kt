@@ -119,6 +119,9 @@ internal class IrGraphGenerator(
   private val membersInjectorTransformer: MembersInjectorTransformer,
   assistedFactoryTransformer: AssistedFactoryTransformer,
   graphExtensionGenerator: IrGraphExtensionGenerator,
+  // Optional pre-created binding property context for use by graph extensions (subcomponents)
+  // This allows subcomponents to lazily lookup if parent properties are in shards
+  private val bindingPropertyContext: BindingPropertyContext = BindingPropertyContext(),
 ) : IrMetroContext by metroContext {
 
   private var _functionNameAllocatorInitialized = false
@@ -134,8 +137,6 @@ internal class IrGraphGenerator(
       }
       return _functionNameAllocator
     }
-
-  private val bindingPropertyContext = BindingPropertyContext()
 
   /**
    * Cache for lazily-created properties (e.g., multibinding getters). These are created on-demand

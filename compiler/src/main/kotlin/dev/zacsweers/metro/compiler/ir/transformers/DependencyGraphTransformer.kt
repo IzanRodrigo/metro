@@ -22,6 +22,7 @@ import dev.zacsweers.metro.compiler.ir.annotationsIn
 import dev.zacsweers.metro.compiler.ir.createIrBuilder
 import dev.zacsweers.metro.compiler.ir.finalizeFakeOverride
 import dev.zacsweers.metro.compiler.ir.graph.BindingGraphGenerator
+import dev.zacsweers.metro.compiler.ir.graph.BindingPropertyContext
 import dev.zacsweers.metro.compiler.ir.graph.DependencyGraphNode
 import dev.zacsweers.metro.compiler.ir.graph.DependencyGraphNodeCache
 import dev.zacsweers.metro.compiler.ir.graph.IrBinding
@@ -297,6 +298,10 @@ internal class DependencyGraphTransformer(
       propertyNameAllocator.newName(property.name.asString())
     }
 
+    // Create binding property context early so graph extensions can reference it
+    // This allows subcomponents to lazily lookup if parent properties are in shards
+    val currentBindingPropertyContext = BindingPropertyContext()
+
     // Before validating/sealing the parent graph, analyze contributed child graphs to
     // determine any parent-scoped static bindings that are required by children and
     // add synthetic roots for them so they are materialized in the parent.
@@ -356,7 +361,7 @@ internal class DependencyGraphTransformer(
 
       // Transform the contributed graphs
       // Push the parent graph for all contributed graph processing
-      localParentContext.pushParentGraph(node, propertyNameAllocator)
+      localParentContext.pushParentGraph(node, propertyNameAllocator, currentBindingPropertyContext)
 
       // Second pass on graph extensions to actually process them and create GraphExtension bindings
       for ((contributedGraphKey, accessors) in node.graphExtensions) {
@@ -521,6 +526,7 @@ internal class DependencyGraphTransformer(
             membersInjectorTransformer = membersInjectorTransformer,
             assistedFactoryTransformer = assistedFactoryTransformer,
             graphExtensionGenerator = graphExtensionGenerator,
+            bindingPropertyContext = currentBindingPropertyContext,
           )
           .generate()
       }
