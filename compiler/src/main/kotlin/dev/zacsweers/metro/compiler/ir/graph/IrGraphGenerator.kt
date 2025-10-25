@@ -88,6 +88,7 @@ import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.ir.util.copyTo
+import org.jetbrains.kotlin.ir.util.createThisReceiverParameter
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.kotlinFqName
@@ -290,7 +291,7 @@ internal class IrGraphGenerator(
   ): IrProperty {
     return lazyProperties.getOrPut(contextualTypeKey) {
       // Create the property but don't add it to the graph yet
-      graphClass.factory
+      irFactory
         .buildProperty {
           this.name = propertyNameAllocator.newName(binding.nameHint.decapitalizeUS()).asName()
           this.visibility = DescriptorVisibilities.PRIVATE
@@ -626,14 +627,17 @@ internal class IrGraphGenerator(
   private fun generateShardClass(shardIndex: Int, bindings: List<PropertyBinding>): ShardInfo {
     val shardName = "Shard${shardIndex + 1}" // Shard1, Shard2, etc.
 
-    // Create the nested shard class
+    // Create the nested shard class using irFactory (not graphClass.factory)
     val shardClass =
-      graphClass.factory.buildClass {
+      irFactory.buildClass {
           name = Name.identifier(shardName)
           visibility = DescriptorVisibilities.PRIVATE
           modality = Modality.FINAL
         }
         .apply {
+          // CRITICAL: Initialize thisReceiver FIRST to avoid defaultType NPE
+          createThisReceiverParameter()
+
           // Set parent to the graph class (nested class)
           parent = graphClass
 
@@ -671,14 +675,21 @@ internal class IrGraphGenerator(
         }
 
         // Add getter that returns the field
-        addGetter().apply {
-          returnType = irBuiltIns.anyType
-          visibility = DescriptorVisibilities.PRIVATE
-          body =
-            createIrBuilder(symbol).irBlockBody {
-              +irReturn(irGetField(irGet(dispatchReceiverParameter!!), backingField!!))
-            }
-        }
+        addGetter {
+            returnType = irBuiltIns.anyType
+            visibility = DescriptorVisibilities.PRIVATE
+          }
+          .apply {
+            // Set up dispatch receiver for the getter
+            val getterReceiver = graphClass.thisReceiver!!.copyTo(this)
+            setDispatchReceiver(getterReceiver)
+
+            // Create getter body
+            body =
+              createIrBuilder(symbol).irBlockBody {
+                +irReturn(irGetField(irGet(getterReceiver), backingField!!))
+              }
+          }
       }
 
     // Create the initialize(component) method on the shard
@@ -688,12 +699,11 @@ internal class IrGraphGenerator(
         returnType = irBuiltIns.unitType
         visibility = DescriptorVisibilities.INTERNAL
       }.apply {
-        // Add parameter: component with type matching the graph class
-        // Use symbol-based type access for K2 safety (avoids defaultType NPE)
+        // Add parameter: component with proper type (now safe with thisReceiver initialized)
         val componentParam =
           addValueParameter {
             name = Name.identifier("component")
-            type = graphClass.symbol.typeWith() // Symbol-based access (K2-safe)
+            type = graphClass.symbol.typeWith()
           }
 
         // Build the function body - initialize all properties
@@ -1111,7 +1121,7 @@ internal class IrGraphGenerator(
 
             shardInfos.forEach { info ->
               appendLine("Shard ${info.index + 1}:")
-              appendLine("  Class: ${info.shardClass.kotlinFqName}")
+              appendLine("  Class: ${info.shardClass.name}")  // Use name instead of kotlinFqName
               appendLine("  Bindings: ${info.bindings.size}")
               appendLine("  Instance property: ${info.instanceProperty.name}")
               appendLine("  Initialize function: ${info.initializeFunction.name}")
