@@ -88,6 +88,7 @@ import org.jetbrains.kotlin.ir.util.addChild
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.constructors
 import org.jetbrains.kotlin.ir.util.copyTo
+import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.functions
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.util.primaryConstructor
@@ -688,10 +689,11 @@ internal class IrGraphGenerator(
         visibility = DescriptorVisibilities.INTERNAL
       }.apply {
         // Add parameter: component with type matching the graph class
+        // Use graphClass.defaultType since graphClass is fully initialized at this point
         val componentParam =
           addValueParameter {
             name = Name.identifier("component")
-            type = irBuiltIns.anyType // Safe: use anyType
+            type = graphClass.defaultType // Properly typed for binding initializers
           }
 
         // Build the function body - initialize all properties
