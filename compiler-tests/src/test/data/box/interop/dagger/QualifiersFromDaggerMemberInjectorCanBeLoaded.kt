@@ -1,40 +1,39 @@
 // MODULE: lib
-// ENABLE_ANVIL_KSP
+// ENABLE_DAGGER_KSP
 // DISABLE_METRO
 
 // FILE: Dependency.java
 public interface Dependency {
 }
 
-// FILE: ExampleClass.kt
-import javax.inject.Inject
+// FILE: ExampleClass.java
+import javax.inject.Inject;
+import javax.inject.Named;
 
-class ExampleClass {
-  @Inject
-  lateinit var dependency: Dependency
-  lateinit var setterDep: Dependency
-  lateinit var setterDep2: Dependency
-  lateinit var setterDep3: String
+public class ExampleClass {
+  @Inject @Named("dependency") public Dependency dependency;
+  Dependency setterDep = null;
+  Dependency setterDep2 = null;
+  String setterDep3 = null;
 
   // Setter injection
-  @Inject
-  fun setterInject(dep: Dependency) {
-    this.setterDep = dep
+  @Inject public void setterInject(Dependency dep) {
+    this.setterDep = dep;
   }
 
   // Setter injection
-  @Inject
-  fun setterInject2(dep: Dependency, stringDep: String) {
-    this.setterDep2 = dep
-    this.setterDep3 = stringDep
+  @Inject public void setterInject2(Dependency dep, String stringDep) {
+    this.setterDep2 = dep;
+    this.setterDep3 = stringDep;
   }
 }
 
 // MODULE: main(lib)
-// WITH_ANVIL
 // ENABLE_DAGGER_INTEROP
 
 // FILE: DependencyImpl.kt
+import javax.inject.Named
+
 @ContributesBinding(AppScope::class)
 class DependencyImpl @Inject constructor() : Dependency
 
@@ -45,9 +44,12 @@ interface ExampleInjector {
 }
 
 // FILE: ExampleGraph.kt
+import javax.inject.Named
+
 @DependencyGraph(AppScope::class)
 interface ExampleGraph {
   @Provides fun provideString(): String = "Hello"
+  @Binds @Named("dependency") fun Dependency.bind(): Dependency
 }
 
 fun box(): String {
@@ -56,9 +58,8 @@ fun box(): String {
 
   graph.inject(example)
   assertNotNull(example.dependency)
-  // TODO anvil (and anvil-ksp) don't support setter injection
-//  assertNotNull(example.setterDep)
-//  assertNotNull(example.setterDep2)
-//  assertEquals("Hello", example.setterDep3)
+  assertNotNull(example.setterDep)
+  assertNotNull(example.setterDep2)
+  assertEquals("Hello", example.setterDep3)
   return "OK"
 }

@@ -8,9 +8,10 @@ public interface Dependency {
 
 // FILE: ExampleClass.kt
 import javax.inject.Inject
+import javax.inject.Named
 
 class ExampleClass {
-  @Inject
+  @Inject @Named("dependency")
   lateinit var dependency: Dependency
   lateinit var setterDep: Dependency
   lateinit var setterDep2: Dependency
@@ -31,10 +32,11 @@ class ExampleClass {
 }
 
 // MODULE: main(lib)
-// WITH_ANVIL
 // ENABLE_DAGGER_INTEROP
 
 // FILE: DependencyImpl.kt
+import javax.inject.Named
+
 @ContributesBinding(AppScope::class)
 class DependencyImpl @Inject constructor() : Dependency
 
@@ -48,6 +50,7 @@ interface ExampleInjector {
 @DependencyGraph(AppScope::class)
 interface ExampleGraph {
   @Provides fun provideString(): String = "Hello"
+  @Binds @Named("dependency") fun Dependency.bind(): Dependency
 }
 
 fun box(): String {
@@ -56,7 +59,7 @@ fun box(): String {
 
   graph.inject(example)
   assertNotNull(example.dependency)
-  // TODO anvil (and anvil-ksp) don't support setter injection
+  // TODO anvil/anvil-ksp don't support setter injection
 //  assertNotNull(example.setterDep)
 //  assertNotNull(example.setterDep2)
 //  assertEquals("Hello", example.setterDep3)

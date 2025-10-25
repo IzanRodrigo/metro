@@ -119,7 +119,7 @@ internal class InjectConstructorTransformer(
 
     if (factoryCls == null) {
       if (isExternal) {
-        // TODO maybe emit a warning if we do see one even if it's disabled?
+        // Fall back to Dagger if enabled and Metro factory not found
         if (options.enableDaggerRuntimeInterop) {
           val targetConstructor =
             previouslyFoundConstructor
@@ -143,11 +143,18 @@ internal class InjectConstructorTransformer(
           generatedFactories[injectedClassId] = Optional.empty()
           return null
         }
-        reportCompat(
-          declaration,
-          MetroDiagnostics.METRO_ERROR,
-          "Could not find generated factory for '${declaration.kotlinFqName}' in upstream module where it's defined. Run the Metro compiler over that module too, or Dagger if you're using its interop for Java files.",
-        )
+
+        val message = buildString {
+          append(
+            "Could not find generated factory for '${declaration.kotlinFqName}' in the upstream module where it's defined. "
+          )
+          append("Run the Metro compiler over that module too")
+          if (options.enableDaggerRuntimeInterop) {
+            append(" (or Dagger if you're using its interop)")
+          }
+          appendLine(".")
+        }
+        reportCompat(declaration, MetroDiagnostics.METRO_ERROR, message)
         return null
       } else if (doNotErrorOnMissing) {
         // Store a null here because it's absent

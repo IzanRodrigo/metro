@@ -50,7 +50,6 @@ import org.jetbrains.kotlin.ir.types.defaultType
 import org.jetbrains.kotlin.ir.util.companionObject
 import org.jetbrains.kotlin.ir.util.defaultType
 import org.jetbrains.kotlin.ir.util.isObject
-import org.jetbrains.kotlin.ir.util.isStatic
 import org.jetbrains.kotlin.ir.util.kotlinFqName
 import org.jetbrains.kotlin.ir.visitors.IrElementTransformerVoid
 import org.jetbrains.kotlin.ir.util.primaryConstructor
@@ -529,18 +528,7 @@ private constructor(
             // InjectableClass_MembersInjector.create(stringValueProvider,
             // exampleComponentProvider)
             val provider =
-              irInvoke(
-                  dispatchReceiver =
-                    if (injectorCreatorClass.isObject) {
-                      irGetObject(injectorCreatorClass.symbol)
-                    } else {
-                      // It's static from java, dagger interop
-                      check(createFunction.owner.isStatic)
-                      null
-                    },
-                  callee = createFunction,
-                  args = args,
-                )
+              irInvoke(callee = createFunction, args = args)
                 .transformAccessIfNeeded(
                   requested = AccessType.PROVIDER,
                   actual = AccessType.INSTANCE,
