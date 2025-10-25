@@ -689,11 +689,11 @@ internal class IrGraphGenerator(
         visibility = DescriptorVisibilities.INTERNAL
       }.apply {
         // Add parameter: component with type matching the graph class
-        // Use graphClass.defaultType since graphClass is fully initialized at this point
+        // Use symbol-based type access for K2 safety (avoids defaultType NPE)
         val componentParam =
           addValueParameter {
             name = Name.identifier("component")
-            type = graphClass.defaultType // Properly typed for binding initializers
+            type = graphClass.symbol.typeWith() // Symbol-based access (K2-safe)
           }
 
         // Build the function body - initialize all properties
