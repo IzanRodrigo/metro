@@ -33,6 +33,7 @@ import dev.zacsweers.metro.compiler.ir.thisReceiverOrFail
 import dev.zacsweers.metro.compiler.ir.trackFunctionCall
 import dev.zacsweers.metro.compiler.ir.typeAsProviderArgument
 import dev.zacsweers.metro.compiler.proto.InjectConstructorFactoryProto
+import dev.zacsweers.metro.compiler.proto.InjectedClassProto
 import dev.zacsweers.metro.compiler.proto.MetroMetadata
 import dev.zacsweers.metro.compiler.reportCompilerBug
 import java.util.Optional
@@ -269,6 +270,9 @@ internal class InjectConstructorTransformer(
         metroAnnotationsOf(targetConstructor),
       )
 
+    // Write metadata to indicate Metro generated this factory
+    cacheFactoryInMetadata(declaration, factoryCls)
+
     factoryCls.dumpToMetroLog()
 
     // Write metadata to indicate Metro generated this factory
@@ -285,8 +289,20 @@ internal class InjectConstructorTransformer(
     }
     val factory = InjectConstructorFactoryProto(factory_class_name = factoryClass.name.asString())
 
-    // Store the metadata for this class
-    targetClass.metroMetadata = MetroMetadata(inject_constructor_factory = factory)
+    // Check if class also has member injection - if so, include that metadata too
+    val injectedClass =
+      membersInjectorTransformer.getOrGenerateInjector(targetClass)?.let { memberInjectClass ->
+        val functionNames =
+          memberInjectClass.declaredInjectFunctions.keys.map { it.name.asString() }.sorted()
+        InjectedClassProto(
+          member_inject_functions = functionNames,
+          injector_class_name = memberInjectClass.injectorClass.name.asString(),
+        )
+      }
+
+    // Write complete metadata (both factory and injector if applicable)
+    targetClass.metroMetadata =
+      MetroMetadata(inject_constructor_factory = factory, injected_class = injectedClass)
   }
 
   private fun implementFactoryInvokeOrGetBody(

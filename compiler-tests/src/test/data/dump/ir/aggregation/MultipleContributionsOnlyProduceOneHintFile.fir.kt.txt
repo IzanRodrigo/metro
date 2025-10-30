@@ -112,7 +112,7 @@ interface ExampleGraph : $$MetroContributionToAppScope {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : ExampleGraph {
-    private val base1ImplProvider: Provider<Base1Impl>
+    internal val base1ImplProvider: Provider<Base1Impl>
       field = Companion.provider<Provider<Base1Impl>, Base1Impl>(delegate = $$MetroFactory.create())
 
     private constructor() /* primary */ {
@@ -153,13 +153,13 @@ interface ExampleGraph : $$MetroContributionToAppScope {
         return <this>.<get-setOfBase3>()
       }
 
-    private val setOfBase2: Set<Base2>
-      private get(): Set<Base2> {
+    internal val setOfBase2: Set<Base2>
+      internal get(): Set<Base2> {
         return setOf<Base2>(element = <this>.#base1ImplProvider.invoke())
       }
 
-    private val setOfBase3: Set<Base3>
-      private get(): Set<Base3> {
+    internal val setOfBase3: Set<Base3>
+      internal get(): Set<Base3> {
         return setOf<Base3>(element = <this>.#base1ImplProvider.invoke())
       }
 

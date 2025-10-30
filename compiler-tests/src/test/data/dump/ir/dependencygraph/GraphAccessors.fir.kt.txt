@@ -25,16 +25,16 @@ interface ExampleGraph {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : ExampleGraph {
-    private val accessorsInstance: Accessors
+    internal val accessorsInstance: Accessors
       field = accessors
 
-    private val accessorsInstanceProvider: Provider<Accessors>
+    internal val accessorsInstanceProvider: Provider<Accessors>
       field = Companion.invoke<Accessors>(value = <this>.#accessorsInstance)
 
-    private val accessorsGetIntProvider: Provider<Int>
+    internal val accessorsGetIntProvider: Provider<Int>
       field = <this>.#accessorsInstance.<get-intProvider>()
 
-    private val accessorsGetStringProvider: Provider<String>
+    internal val accessorsGetStringProvider: Provider<String>
       field = provider<String>(provider = local fun <anonymous>(): String {
         return <this>.#accessorsInstance.<get-string>()
       }

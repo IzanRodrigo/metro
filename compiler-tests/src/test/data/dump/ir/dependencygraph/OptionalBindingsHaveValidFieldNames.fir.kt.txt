@@ -16,13 +16,13 @@ interface AppGraph {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : AppGraph {
-    private val thisGraphInstance: AppGraph
+    internal val thisGraphInstance: AppGraph
       field = <this>
 
-    private val thisGraphInstanceProvider: Provider<AppGraph>
+    internal val thisGraphInstanceProvider: Provider<AppGraph>
       field = Companion.invoke<AppGraph>(value = <this>.#thisGraphInstance)
 
-    private val stringProvider: Provider<String>
+    internal val stringProvider: Provider<String>
       field = Companion.provider<Provider<String>, String>(delegate = Companion.create(instance = <this>.#thisGraphInstance))
 
     private constructor() /* primary */ {

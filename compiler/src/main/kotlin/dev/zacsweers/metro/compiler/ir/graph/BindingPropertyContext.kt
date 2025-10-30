@@ -6,16 +6,23 @@ import dev.zacsweers.metro.compiler.ir.IrTypeKey
 import org.jetbrains.kotlin.ir.declarations.IrProperty
 
 internal class BindingPropertyContext {
+  /** Property owner - either root component or a specific shard. */
+  sealed interface Owner {
+    data object Root : Owner
+
+    data class Shard(val instanceProperty: IrProperty) : Owner
+  }
+
+  data class PropertyEntry(val property: IrProperty, var owner: Owner = Owner.Root)
+
   // TODO we can end up in awkward situations where we
   //  have the same type keys in both instance and provider fields
   //  this is tricky because depending on the context, it's not valid
   //  to use an instance (for example - you need a provider). How can we
   //  clean this up?
-  // Properties for this graph and other instance params
-  private val instanceProperties = mutableMapOf<IrTypeKey, IrProperty>()
-  // Properties for providers. May include both scoped and unscoped providers as well as bound
-  // instances
-  private val providerProperties = mutableMapOf<IrTypeKey, IrProperty>()
+
+  private val instanceProperties = mutableMapOf<IrTypeKey, PropertyEntry>()
+  private val providerProperties = mutableMapOf<IrTypeKey, PropertyEntry>()
 
   val availableInstanceKeys: Set<IrTypeKey>
     get() = instanceProperties.keys
@@ -25,19 +32,27 @@ internal class BindingPropertyContext {
 
   fun hasKey(key: IrTypeKey): Boolean = key in instanceProperties || key in providerProperties
 
-  fun putInstanceProperty(key: IrTypeKey, property: IrProperty) {
-    instanceProperties[key] = property
+  fun putInstanceProperty(key: IrTypeKey, property: IrProperty, owner: Owner = Owner.Root) {
+    instanceProperties[key] = PropertyEntry(property, owner)
   }
 
-  fun putProviderProperty(key: IrTypeKey, property: IrProperty) {
-    providerProperties[key] = property
+  fun putProviderProperty(key: IrTypeKey, property: IrProperty, owner: Owner = Owner.Root) {
+    providerProperties[key] = PropertyEntry(property, owner)
   }
 
   fun instanceProperty(key: IrTypeKey): IrProperty? {
-    return instanceProperties[key]
+    return instanceProperties[key]?.property
   }
 
   fun providerProperty(key: IrTypeKey): IrProperty? {
+    return providerProperties[key]?.property
+  }
+
+  fun instancePropertyEntry(key: IrTypeKey): PropertyEntry? {
+    return instanceProperties[key]
+  }
+
+  fun providerPropertyEntry(key: IrTypeKey): PropertyEntry? {
     return providerProperties[key]
   }
 

@@ -143,7 +143,7 @@ interface CycleMapGraph {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : CycleMapGraph {
-    private val yProvider: Provider<Y>
+    internal val yProvider: Provider<Y>
       field = DelegateFactory<Y>()
 
     private constructor() /* primary */ {
@@ -157,13 +157,13 @@ interface CycleMapGraph {
       return <this>.#yProvider.invoke()
     }
 
-    private val mapOfStringToX: Provider<Map<String, Provider<X>>>
-      private get(): Provider<Map<String, Provider<X>>> {
+    internal val mapOfStringToX: Provider<Map<String, Provider<X>>>
+      internal get(): Provider<Map<String, Provider<X>>> {
         return Companion.builder<String, X>(size = 1).put(key = "X", providerOfValue = Companion.create(y = <this>.#yProvider)).build()
       }
 
-    private val mapOfStringToY: Provider<Map<String, Provider<Y>>>
-      private get(): Provider<Map<String, Provider<Y>>> {
+    internal val mapOfStringToY: Provider<Map<String, Provider<Y>>>
+      internal get(): Provider<Map<String, Provider<Y>>> {
         return Companion.builder<String, Y>(size = 1).put(key = "Y", providerOfValue = <this>.#yProvider).build()
       }
 
