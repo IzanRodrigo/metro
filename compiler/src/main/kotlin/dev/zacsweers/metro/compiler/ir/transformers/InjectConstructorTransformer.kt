@@ -275,6 +275,9 @@ internal class InjectConstructorTransformer(
 
     factoryCls.dumpToMetroLog()
 
+    // Write metadata to indicate Metro generated this factory
+    cacheFactoryInMetadata(declaration, factoryCls)
+
     val wrapper = ClassFactory.MetroFactory(factoryCls, mirrorFunction.parameters())
     generatedFactories[injectedClassId] = Optional.of(wrapper)
     return wrapper

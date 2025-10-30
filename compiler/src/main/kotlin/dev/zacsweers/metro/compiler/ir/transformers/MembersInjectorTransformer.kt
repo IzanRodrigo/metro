@@ -341,6 +341,11 @@ internal class MembersInjectorTransformer(context: IrMetroContext) : IrMetroCont
 
     injectorClass.dumpToMetroLog()
 
+    // Write metadata to indicate Metro generated this injector
+    val functionNames =
+      memberInjectClass.declaredInjectFunctions.keys.map { it.name.asString() }.sorted()
+    declaration.writeMetadata(injectorClass, functionNames)
+
     return memberInjectClass.also { generatedInjectors[injectedClassId] = Optional.of(it) }
   }
 
