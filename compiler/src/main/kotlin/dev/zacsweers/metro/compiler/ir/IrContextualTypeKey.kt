@@ -15,6 +15,7 @@ import org.jetbrains.kotlin.ir.types.IrType
 import org.jetbrains.kotlin.ir.types.typeOrFail
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.types.typeWithArguments
+import org.jetbrains.kotlin.ir.util.TypeRemapper
 import org.jetbrains.kotlin.ir.util.classId
 import org.jetbrains.kotlin.ir.util.classIdOrFail
 import org.jetbrains.kotlin.ir.util.render
@@ -320,4 +321,30 @@ internal fun WrappedType<IrType>.toIrType(): IrType {
       context.irBuiltIns.mapClass.typeWith(keyIrType, valueIrType)
     }
   }
+}
+
+internal fun WrappedType<IrType>.remapType(remapper: TypeRemapper): WrappedType<IrType> {
+  return when (this) {
+    is WrappedType.Canonical -> WrappedType.Canonical(remapper.remapType(type))
+    is WrappedType.Provider -> {
+      WrappedType.Provider(innerType.remapType(remapper), providerType)
+    }
+    is WrappedType.Lazy -> {
+      WrappedType.Lazy(innerType.remapType(remapper), lazyType)
+    }
+    is WrappedType.Map -> {
+      WrappedType.Map(remapper.remapType(keyType), valueType.remapType(remapper)) {
+        remapper.remapType(type())
+      }
+    }
+  }
+}
+
+internal fun IrContextualTypeKey.remapType(remapper: TypeRemapper): IrContextualTypeKey {
+  return IrContextualTypeKey(
+    typeKey.remapTypes(remapper),
+    wrappedType.remapType(remapper),
+    hasDefault,
+    rawType?.let { remapper.remapType(it) },
+  )
 }

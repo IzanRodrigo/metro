@@ -31,13 +31,13 @@ interface AppGraph {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : AppGraph {
-    private val thisGraphInstance: AppGraph
+    internal val thisGraphInstance: AppGraph
       field = <this>
 
-    private val thisGraphInstanceProvider: Provider<AppGraph>
+    internal val thisGraphInstanceProvider: Provider<AppGraph>
       field = Companion.invoke<AppGraph>(value = <this>.#thisGraphInstance)
 
-    private val provideIntProvider: Provider<Int>
+    internal val provideIntProvider: Provider<Int>
       field = Companion.create(instance = <this>.#thisGraphInstance)
 
     private constructor() /* primary */ {
@@ -52,13 +52,13 @@ interface AppGraph {
       return error(message = "Never called")
     }
 
-    private val bindDoubleProvider: Provider<Double>
-      private get(): Provider<Double> {
+    internal val bindDoubleProvider: Provider<Double>
+      internal get(): Provider<Double> {
         return Companion.create(instance = <this>.#thisGraphInstance, int = <this>.#provideIntProvider)
       }
 
-    private val bindLongProvider: Provider<Long>
-      private get(): Provider<Long> {
+    internal val bindLongProvider: Provider<Long>
+      internal get(): Provider<Long> {
         return Companion.create(instance = <this>.#thisGraphInstance, int = <this>.#provideIntProvider)
       }
 
@@ -77,18 +77,18 @@ interface AppGraph {
         return <this>.<get-setOfLong>()
       }
 
-    private val setOfDouble: Set<Double>
-      private get(): Set<Double> {
+    internal val setOfDouble: Set<Double>
+      internal get(): Set<Double> {
         return setOf<Double>(element = <this>.<get-bindDoubleProvider>().invoke())
       }
 
-    private val setOfInt: Set<Int>
-      private get(): Set<Int> {
+    internal val setOfInt: Set<Int>
+      internal get(): Set<Int> {
         return setOf<Int>(element = <this>.#provideIntProvider.invoke())
       }
 
-    private val setOfLong: Set<Long>
-      private get(): Set<Long> {
+    internal val setOfLong: Set<Long>
+      internal get(): Set<Long> {
         return setOf<Long>(element = <this>.<get-bindLongProvider>().invoke())
       }
 

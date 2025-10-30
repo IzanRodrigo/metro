@@ -13,6 +13,7 @@ import dev.zacsweers.metro.compiler.ir.asMemberOf
 import dev.zacsweers.metro.compiler.ir.deepRemapperFor
 import dev.zacsweers.metro.compiler.ir.parameters.parameters
 import dev.zacsweers.metro.compiler.ir.rawType
+import dev.zacsweers.metro.compiler.ir.remapTypes
 import dev.zacsweers.metro.compiler.ir.reportCompat
 import dev.zacsweers.metro.compiler.ir.requireSimpleType
 import dev.zacsweers.metro.compiler.ir.singleAbstractFunction
@@ -77,6 +78,10 @@ internal class BindingLookup(
     aliasBindingsCache[binding.typeKey] = binding
   }
 
+  fun putBinding(binding: IrBinding.MembersInjected) {
+    membersInjectorBindingsCache[binding.typeKey] = binding
+  }
+
   fun removeProvidedBinding(typeKey: IrTypeKey) {
     providedBindingsCache.remove(typeKey)
   }
@@ -108,8 +113,9 @@ internal class BindingLookup(
             parameters = remappedParameters,
             reportableDeclaration = this,
             function = null,
-            // TODO this isn't actually necessarily true?
-            isFromInjectorFunction = true,
+            // Bindings created here are from class-based lookup, not injector functions
+            // (injector function bindings are cached in BindingGraphGenerator)
+            isFromInjectorFunction = false,
             // Unpack the target class from the type
             targetClassId =
               mappedTypeKey.type

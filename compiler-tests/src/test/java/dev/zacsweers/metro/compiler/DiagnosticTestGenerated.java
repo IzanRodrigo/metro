@@ -635,6 +635,12 @@ public class DiagnosticTestGenerated extends AbstractDiagnosticTest {
       }
 
       @Test
+      @TestMetadata("MemberInjectionQualifiersAreLookedUp.kt")
+      public void testMemberInjectionQualifiersAreLookedUp() {
+        runTest("compiler-tests/src/test/data/diagnostic/interop/dagger/MemberInjectionQualifiersAreLookedUp.kt");
+      }
+
+      @Test
       @TestMetadata("PositionalAnnotationArgsError.kt")
       public void testPositionalAnnotationArgsError() {
         runTest("compiler-tests/src/test/data/diagnostic/interop/dagger/PositionalAnnotationArgsError.kt");

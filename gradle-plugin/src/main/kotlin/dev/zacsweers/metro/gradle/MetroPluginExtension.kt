@@ -115,6 +115,17 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
   public val statementsPerInitFun: Property<Int> =
     objects.property(Int::class.javaObjectType).convention(25)
 
+  /** Enable/disable graph sharding of binding graphs. Enabled by default. */
+  public val enableGraphSharding: Property<Boolean> =
+    objects.property(Boolean::class.javaObjectType).convention(true)
+
+  /**
+   * Maximum number of binding keys per graph shard when sharding is enabled. Default is 2000, must
+   * be > 0.
+   */
+  public val keysPerGraphShard: Property<Int> =
+    objects.property(Int::class.javaObjectType).convention(2000)
+
   @Suppress("DEPRECATION")
   @Deprecated("Use optionalBindingBehavior instead", ReplaceWith("optionalBindingBehavior"))
   public val optionalDependencyBehavior: Property<OptionalDependencyBehavior> =
@@ -276,8 +287,20 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
     }
 
     /** Includes Dagger annotations support. */
-    public fun includeDagger() {
+    public fun includeDagger(includeJavax: Boolean = true, includeJakarta: Boolean = true) {
+      enableDaggerRuntimeInterop.set(true)
       includeDaggerAnnotations.set(true)
+      if (!includeJavax && !includeJakarta) {
+        System.err.println(
+          "At least one of metro.interop.includeDagger.includeJavax or metro.interop.includeDagger.includeJakarta should be true"
+        )
+      }
+      if (includeJavax) {
+        includeJavax()
+      }
+      if (includeJakarta) {
+        includeJakarta()
+      }
     }
 
     /** Includes kotlin-inject annotations support. */
@@ -285,7 +308,7 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
       includeKotlinInjectAnnotations.set(true)
     }
 
-    /** Includes Anvil annotations support. */
+    @Deprecated("Use one of the more specific includeAnvil*() functions instead.")
     @JvmOverloads
     public fun includeAnvil(
       includeDaggerAnvil: Boolean = true,
@@ -303,6 +326,20 @@ constructor(layout: ProjectLayout, objects: ObjectFactory, providers: ProviderFa
         includeKotlinInject()
         includeKotlinInjectAnvilAnnotations.set(true)
       }
+    }
+
+    /** Includes Anvil annotations support for Dagger. */
+    @JvmOverloads
+    public fun includeAnvilForDagger(includeJavax: Boolean = true, includeJakarta: Boolean = true) {
+      enableDaggerAnvilInterop.set(true)
+      includeAnvilAnnotations.set(true)
+      includeDagger(includeJavax, includeJakarta)
+    }
+
+    /** Includes Anvil annotations support for kotlin-inject. */
+    public fun includeAnvilForKotlinInject() {
+      includeKotlinInject()
+      includeKotlinInjectAnvilAnnotations.set(true)
     }
   }
 }

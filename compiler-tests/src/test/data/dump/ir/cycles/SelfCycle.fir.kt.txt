@@ -106,7 +106,7 @@ interface SelfCycleGraph {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : SelfCycleGraph {
-    private val sProvider: Provider<S>
+    internal val sProvider: Provider<S>
       field = DelegateFactory<S>()
 
     private constructor() /* primary */ {

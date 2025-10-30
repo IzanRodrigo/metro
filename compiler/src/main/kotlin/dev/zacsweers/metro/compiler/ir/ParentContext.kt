@@ -187,7 +187,7 @@ internal class ParentContext(private val metroContext: IrMetroContext) {
             key.type.rawType().name.asString().decapitalizeUS().suffixIfNot("Provider").asName()
           )
         // TODO revisit? Can we skip synth accessors? Only if graph has extensions
-        visibility = DescriptorVisibilities.PRIVATE
+        visibility = DescriptorVisibilities.INTERNAL
       }
       .apply {
         parent = graphClass

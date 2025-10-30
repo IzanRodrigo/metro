@@ -12,19 +12,24 @@ import dev.zacsweers.metro.compiler.ir.IrContextualTypeKey
 import dev.zacsweers.metro.compiler.ir.IrMetroContext
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
 import dev.zacsweers.metro.compiler.ir.buildBlockBody
+import dev.zacsweers.metro.compiler.ir.concreteTypeArguments
 import dev.zacsweers.metro.compiler.ir.createIrBuilder
 import dev.zacsweers.metro.compiler.ir.doubleCheck
 import dev.zacsweers.metro.compiler.ir.finalizeFakeOverride
 import dev.zacsweers.metro.compiler.ir.getAllSuperTypes
 import dev.zacsweers.metro.compiler.ir.graph.expressions.BindingExpressionGenerator
 import dev.zacsweers.metro.compiler.ir.graph.expressions.GraphExpressionGenerator
+import dev.zacsweers.metro.compiler.ir.graph.sharding.IrShardGenerator
+import dev.zacsweers.metro.compiler.ir.graph.sharding.PropertyBinding
+import dev.zacsweers.metro.compiler.ir.graph.sharding.ShardingDiagnostics
+import dev.zacsweers.metro.compiler.ir.graph.sharding.ShardingOrchestrator
 import dev.zacsweers.metro.compiler.ir.instanceFactory
 import dev.zacsweers.metro.compiler.ir.irExprBodySafe
 import dev.zacsweers.metro.compiler.ir.irGetProperty
 import dev.zacsweers.metro.compiler.ir.irInvoke
 import dev.zacsweers.metro.compiler.ir.metroGraphOrFail
 import dev.zacsweers.metro.compiler.ir.metroMetadata
-import dev.zacsweers.metro.compiler.ir.parameters.parameters
+import dev.zacsweers.metro.compiler.ir.parameters.remapTypes
 import dev.zacsweers.metro.compiler.ir.parameters.wrapInProvider
 import dev.zacsweers.metro.compiler.ir.rawType
 import dev.zacsweers.metro.compiler.ir.regularParameters
@@ -61,6 +66,7 @@ import org.jetbrains.kotlin.ir.builders.irBlockBody
 import org.jetbrains.kotlin.ir.builders.irCallConstructor
 import org.jetbrains.kotlin.ir.builders.irExprBody
 import org.jetbrains.kotlin.ir.builders.irGet
+import org.jetbrains.kotlin.ir.builders.irGetField
 import org.jetbrains.kotlin.ir.builders.irGetObject
 import org.jetbrains.kotlin.ir.builders.irSetField
 import org.jetbrains.kotlin.ir.declarations.IrClass
@@ -152,6 +158,14 @@ internal class IrGraphGenerator(
       getterPropertyFor = ::getOrCreateLazyProperty,
     )
 
+  private val shardingOrchestrator =
+    ShardingOrchestrator(
+      bindingGraph = bindingGraph,
+      node = node,
+      options = options,
+      log = { message -> log(message) },
+    )
+
   fun IrProperty.withInit(typeKey: IrTypeKey, init: PropertyInitializer): IrProperty = apply {
     // Only necessary for fields
     if (backingField != null) {
@@ -177,13 +191,17 @@ internal class IrGraphGenerator(
   /**
    * Graph extensions may reserve property names for their linking, so if they've done that we use
    * the precomputed property rather than generate a new one.
+   *
+   * Note: Properties use internal visibility (not private) to allow shard classes to access and
+   * initialize them during sharded graph generation. Shards are nested classes that need to set
+   * these properties in their initialize() methods.
    */
   private fun IrClass.getOrCreateBindingProperty(
     key: IrTypeKey,
     name: () -> String,
     type: () -> IrType,
     propertyType: PropertyType,
-    visibility: DescriptorVisibility = DescriptorVisibilities.PRIVATE,
+    visibility: DescriptorVisibility = DescriptorVisibilities.INTERNAL,
   ): IrProperty {
     val property =
       bindingGraph.reservedProperty(key)?.property?.also { addChild(it) }
@@ -211,10 +229,10 @@ internal class IrGraphGenerator(
   ): IrProperty {
     return lazyProperties.getOrPut(contextualTypeKey) {
       // Create the property but don't add it to the graph yet
-      graphClass.factory
+      irFactory
         .buildProperty {
           this.name = propertyNameAllocator.newName(binding.nameHint.decapitalizeUS()).asName()
-          this.visibility = DescriptorVisibilities.PRIVATE
+          this.visibility = DescriptorVisibilities.INTERNAL
         }
         .apply {
           parent = graphClass
@@ -224,7 +242,7 @@ internal class IrGraphGenerator(
           // Add getter with the provided body generator
           addGetter {
               returnType = contextualTypeKey.toIrType()
-              visibility = DescriptorVisibilities.PRIVATE
+              visibility = DescriptorVisibilities.INTERNAL
             }
             .apply {
               val getterReceiver = graphClass.thisReceiver!!.copyTo(this)
@@ -234,6 +252,18 @@ internal class IrGraphGenerator(
             }
         }
     }
+  }
+
+  /**
+   * Converts property initializers to PropertyBinding objects and partitions them into shard
+   * groups. Delegates to ShardingOrchestrator which uses cached topology data from seal().
+   */
+  private fun partitionPropertyInitializers(): List<List<PropertyBinding>> {
+    return shardingOrchestrator.partitionProperties(
+      propertyInitializers,
+      propertiesToTypeKeys,
+      sealResult.topologyData,
+    )
   }
 
   fun generate() =
@@ -557,65 +587,119 @@ internal class IrGraphGenerator(
         }
       }
 
-      // Use chunked inits if the graph is large enough
-      val mustChunkInits =
-        options.chunkFieldInits && propertyInitializers.size > options.statementsPerInitFun
+      // Graph sharding
+      val shardGroups = partitionPropertyInitializers()
 
-      if (mustChunkInits) {
-        // Larger graph, split statements
-        // Chunk our constructor statements and split across multiple init functions
-        val chunks =
-          buildList<InitStatement> {
-              // Add property initializers and interleave setDelegate calls as dependencies are
-              // ready
-              for ((property, init) in propertyInitializers) {
-                val typeKey = propertiesToTypeKeys.getValue(property)
+      if (shardGroups.size > 1) {
+        val shardInfos = IrShardGenerator.generateShards(graphClass, shardGroups)
+        val initOrder =
+          shardingOrchestrator.computeInitializationOrder(shardGroups, sealResult.topologyData)
 
-                // Add this property's initialization
-                add { thisReceiver ->
-                  irSetField(
-                    irGet(thisReceiver),
-                    property.backingField!!,
-                    init(thisReceiver, typeKey),
-                  )
-                }
-              }
+        writeDiagnostic("sharding-plan-${parentTracer.tag}.txt") {
+          ShardingDiagnostics.generateShardingPlanReport(
+            graphClass = graphClass,
+            shardInfos = shardInfos,
+            initOrder = initOrder,
+            totalBindings = propertyInitializers.size,
+            options = options,
+            bindingGraph = bindingGraph,
+          )
+        }
 
-              addDeferredSetDelegateCalls(this)
-            }
-            .chunked(options.statementsPerInitFun)
-
-        val initFunctionsToCall =
-          chunks.map { statementsChunk ->
-            val initName = functionNameAllocator.newName("init")
-            addFunction(initName, irBuiltIns.unitType, visibility = DescriptorVisibilities.PRIVATE)
-              .apply {
-                val localReceiver = thisReceiverParameter.copyTo(this)
-                setDispatchReceiver(localReceiver)
-                buildBlockBody {
-                  for (statement in statementsChunk) {
-                    +statement(localReceiver)
-                  }
-                }
-              }
-          }
+        // Instantiate all shards, then initialize in dependency order
         constructorStatements += buildList {
-          for (initFunction in initFunctionsToCall) {
+          // Instantiate all shards
+          for (info in shardInfos) {
             add { dispatchReceiver ->
-              irInvoke(dispatchReceiver = irGet(dispatchReceiver), callee = initFunction.symbol)
+              irSetField(
+                irGet(dispatchReceiver),
+                info.instanceProperty.backingField!!,
+                irCallConstructor(info.shardClass.primaryConstructor!!.symbol, emptyList()),
+              )
             }
           }
+
+          // Initialize shards in dependency order
+          for (shardIndex in initOrder) {
+            val info = shardInfos[shardIndex]
+            add { dispatchReceiver ->
+              irInvoke(
+                dispatchReceiver =
+                  irGetField(irGet(dispatchReceiver), info.instanceProperty.backingField!!),
+                callee = info.initializeFunction.symbol,
+                args = listOf(irGet(dispatchReceiver)),
+              )
+            }
+          }
+
+          // Add deferred setDelegate calls after all shards are initialized
+          addDeferredSetDelegateCalls(this)
         }
       } else {
-        // Small graph, just do it in the constructor
-        // Assign those initializers directly to their properties and mark them as final
-        for ((property, init) in propertyInitializers) {
-          property.initFinal {
-            val typeKey = propertiesToTypeKeys.getValue(property)
-            init(thisReceiverParameter, typeKey)
+        // No sharding needed - use the original chunked init logic
+        val mustChunkInits =
+          options.chunkFieldInits && propertyInitializers.size > options.statementsPerInitFun
+
+        if (mustChunkInits) {
+          // Larger graph, split statements
+          // Chunk our constructor statements and split across multiple init functions
+          val chunks =
+            buildList<InitStatement> {
+                // Add property initializers and interleave setDelegate calls as dependencies are
+                // ready
+                for ((property, init) in propertyInitializers) {
+                  val typeKey = propertiesToTypeKeys.getValue(property)
+
+                  // Add this property's initialization
+                  add { thisReceiver ->
+                    irSetField(
+                      irGet(thisReceiver),
+                      property.backingField!!,
+                      init(thisReceiver, typeKey),
+                    )
+                  }
+                }
+
+                addDeferredSetDelegateCalls(this)
+              }
+              .chunked(options.statementsPerInitFun)
+
+          val initFunctionsToCall =
+            chunks.map { statementsChunk ->
+              val initName = functionNameAllocator.newName("init")
+              addFunction(
+                  initName,
+                  irBuiltIns.unitType,
+                  visibility = DescriptorVisibilities.PRIVATE,
+                )
+                .apply {
+                  val localReceiver = thisReceiverParameter.copyTo(this)
+                  setDispatchReceiver(localReceiver)
+                  buildBlockBody {
+                    for (statement in statementsChunk) {
+                      +statement(localReceiver)
+                    }
+                  }
+                }
+            }
+          constructorStatements += buildList {
+            for (initFunction in initFunctionsToCall) {
+              add { dispatchReceiver ->
+                irInvoke(dispatchReceiver = irGet(dispatchReceiver), callee = initFunction.symbol)
+              }
+            }
           }
+        } else {
+          // Small graph, just do it in the constructor
+          // Assign those initializers directly to their properties and mark them as final
+          for ((property, init) in propertyInitializers) {
+            property.initFinal {
+              val typeKey = propertiesToTypeKeys.getValue(property)
+              init(thisReceiverParameter, typeKey)
+            }
+          }
+          addDeferredSetDelegateCalls(constructorStatements)
         }
-        addDeferredSetDelegateCalls(constructorStatements)
       }
 
       // Add extra constructor statements
@@ -666,7 +750,7 @@ internal class IrGraphGenerator(
   ): IrProperty =
     addProperty {
         this.name = name.removePrefix("$$").decapitalizeUS().asName()
-        this.visibility = DescriptorVisibilities.PRIVATE
+        this.visibility = DescriptorVisibilities.INTERNAL
       }
       .apply { this.addBackingField { this.type = typeKey.type } }
       .initFinal { initializerExpression() }
@@ -745,8 +829,8 @@ internal class IrGraphGenerator(
               for ((function, unmappedParams) in generatedInjector.declaredInjectFunctions) {
                 val parameters =
                   if (typeKey.hasTypeArgs) {
-                    val remapper = function.typeRemapperFor(wrappedType.type)
-                    function.parameters(remapper)
+                    val remapper = clazz.typeRemapperFor(wrappedType.type)
+                    unmappedParams.remapTypes(remapper)
                   } else {
                     unmappedParams
                   }
@@ -754,12 +838,12 @@ internal class IrGraphGenerator(
                 trackFunctionCall(this@apply, function)
                 +irInvoke(
                   callee = function.symbol,
+                  typeArgs =
+                    targetParam.type.requireSimpleType(targetParam).concreteTypeArguments(),
                   args =
                     buildList {
                       add(irGet(targetParam))
-                      // Always drop the first parameter when calling inject, as the first is the
-                      // instance param
-                      for (parameter in parameters.regularParameters.drop(1)) {
+                      for (parameter in parameters.regularParameters) {
                         val paramBinding = bindingGraph.requireBinding(parameter.contextualTypeKey)
                         add(
                           typeAsProviderArgument(

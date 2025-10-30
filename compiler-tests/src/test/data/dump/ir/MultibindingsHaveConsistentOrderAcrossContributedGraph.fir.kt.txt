@@ -128,10 +128,10 @@ interface ExampleGraph : $$MetroContributionToAppScope {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : ExampleGraph {
-    private val thisGraphInstance: ExampleGraph
+    internal val thisGraphInstance: ExampleGraph
       field = <this>
 
-    private val exampleGraphProvider: Provider<ExampleGraph>
+    internal val exampleGraphProvider: Provider<ExampleGraph>
       field = Companion.invoke<ExampleGraph>(value = <this>.#thisGraphInstance)
 
     @DependencyGraph(scope = Unit::class)
@@ -142,8 +142,8 @@ interface ExampleGraph : $$MetroContributionToAppScope {
 
       }
 
-      private val setOfTask: Set<Task>
-        private get(): Set<Task> {
+      internal val setOfTask: Set<Task>
+        internal get(): Set<Task> {
           return buildSet<Task>(capacity = 4, builderAction = local fun MutableSet<Task>.<anonymous>() {
             $receiver.add(element = Companion.create(instance = <this>).invoke())
             $receiver.add(element = Companion.create(instance = <this>).invoke())
@@ -184,8 +184,8 @@ interface ExampleGraph : $$MetroContributionToAppScope {
         return error(message = "Never called")
       }
 
-    private val setOfTask: Set<Task>
-      private get(): Set<Task> {
+    internal val setOfTask: Set<Task>
+      internal get(): Set<Task> {
         return buildSet<Task>(capacity = 4, builderAction = local fun MutableSet<Task>.<anonymous>() {
           $receiver.add(element = Companion.create(instance = <this>.#thisGraphInstance).invoke())
           $receiver.add(element = Companion.create(instance = <this>.#thisGraphInstance).invoke())

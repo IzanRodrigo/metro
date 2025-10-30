@@ -18,10 +18,10 @@ interface AppGraph : $$MetroContributionToAppScope {
 
   @Deprecated(message = "This synthesized declaration should not be used directly", level = DeprecationLevel.HIDDEN)
   class $$MetroGraph : AppGraph {
-    private val thisGraphInstance: AppGraph
+    internal val thisGraphInstance: AppGraph
       field = <this>
 
-    private val appGraphProvider: Provider<AppGraph>
+    internal val appGraphProvider: Provider<AppGraph>
       field = Companion.invoke<AppGraph>(value = <this>.#thisGraphInstance)
 
     @DependencyGraph(scope = String::class)

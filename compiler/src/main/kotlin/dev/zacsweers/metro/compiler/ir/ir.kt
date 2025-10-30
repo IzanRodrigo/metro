@@ -121,6 +121,7 @@ import org.jetbrains.kotlin.ir.types.makeNotNull
 import org.jetbrains.kotlin.ir.types.mergeNullability
 import org.jetbrains.kotlin.ir.types.removeAnnotations
 import org.jetbrains.kotlin.ir.types.typeOrFail
+import org.jetbrains.kotlin.ir.types.typeOrNull
 import org.jetbrains.kotlin.ir.types.typeWith
 import org.jetbrains.kotlin.ir.types.typeWithArguments
 import org.jetbrains.kotlin.ir.util.SYNTHETIC_OFFSET
@@ -1797,3 +1798,9 @@ internal fun IrClass.staticIshDeclarationContainerOrNull(): IrClass? {
  */
 internal val IrFunction.isStaticIsh: Boolean
   get() = parent is IrClass && (dispatchReceiverParameter == null || parentAsClass.isObject)
+
+/**
+ * Gets the concrete type arguments of this simple type, ignoring star projections. It allows
+ * injecting wildcards. e.g: `fun inject(who: BasePresenter<*>)`
+ */
+internal fun IrSimpleType.concreteTypeArguments() = arguments.mapNotNull { it.typeOrNull }

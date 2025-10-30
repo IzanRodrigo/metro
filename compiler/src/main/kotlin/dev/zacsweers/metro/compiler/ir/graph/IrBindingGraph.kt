@@ -9,6 +9,7 @@ import dev.zacsweers.metro.compiler.expectAs
 import dev.zacsweers.metro.compiler.fir.MetroDiagnostics
 import dev.zacsweers.metro.compiler.graph.MissingBindingHints
 import dev.zacsweers.metro.compiler.graph.MutableBindingGraph
+import dev.zacsweers.metro.compiler.graph.TopoSortResult
 import dev.zacsweers.metro.compiler.ir.IrAnnotation
 import dev.zacsweers.metro.compiler.ir.IrContextualTypeKey
 import dev.zacsweers.metro.compiler.ir.IrContributionData
@@ -224,13 +225,14 @@ internal class IrBindingGraph(
     val deferredTypes: Set<IrTypeKey>,
     val reachableKeys: Set<IrTypeKey>,
     val hasErrors: Boolean,
+    val topologyData: TopoSortResult<IrTypeKey>? = null,
   )
 
   data class GraphError(val declaration: IrDeclaration?, val message: String)
 
   fun seal(parentTracer: Tracer, onError: (List<GraphError>) -> Unit): BindingGraphResult =
     context(metroContext) {
-      val (sortedKeys, deferredTypes, reachableKeys) =
+      val topologyResult =
         parentTracer.traceNested("seal graph") { tracer ->
           val roots = buildMap {
             putAll(accessors)
@@ -258,8 +260,12 @@ internal class IrBindingGraph(
           )
         }
 
+      val sortedKeys = topologyResult.sortedKeys
+      val deferredTypes = topologyResult.deferredTypes
+      val reachableKeys = topologyResult.reachableKeys
+
       if (hasErrors) {
-        return BindingGraphResult(emptyList(), emptySet(), emptySet(), true)
+        return BindingGraphResult(emptyList(), emptySet(), emptySet(), true, null)
       }
 
       writeDiagnostic("keys-validated-${parentTracer.tag}.txt") {
@@ -284,7 +290,7 @@ internal class IrBindingGraph(
           "Found absent bindings in the binding graph: ${dumpGraph("Absent bindings", short = true)}"
         }
       }
-      return BindingGraphResult(sortedKeys, deferredTypes, reachableKeys, false)
+      return BindingGraphResult(sortedKeys, deferredTypes, reachableKeys, false, topologyResult)
     }
 
   fun reportDuplicateBinding(

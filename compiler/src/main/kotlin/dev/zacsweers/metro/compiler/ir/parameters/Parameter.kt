@@ -18,6 +18,7 @@ import dev.zacsweers.metro.compiler.ir.hasMetroDefault
 import dev.zacsweers.metro.compiler.ir.qualifierAnnotation
 import dev.zacsweers.metro.compiler.ir.rawType
 import dev.zacsweers.metro.compiler.ir.regularParameters
+import dev.zacsweers.metro.compiler.ir.remapType
 import dev.zacsweers.metro.compiler.letIf
 import dev.zacsweers.metro.compiler.memoize
 import dev.zacsweers.metro.compiler.reportCompilerBug
@@ -412,3 +413,6 @@ internal fun IrFunction.memberInjectParameters(
     ir = this,
   )
 }
+
+internal fun Parameter.remapTypes(remapper: TypeRemapper): Parameter =
+  copy(contextualTypeKey = contextualTypeKey.remapType(remapper))
