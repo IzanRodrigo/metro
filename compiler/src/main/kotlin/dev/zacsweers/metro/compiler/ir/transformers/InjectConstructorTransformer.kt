@@ -270,9 +270,6 @@ internal class InjectConstructorTransformer(
         metroAnnotationsOf(targetConstructor),
       )
 
-    // Write metadata to indicate Metro generated this factory
-    cacheFactoryInMetadata(declaration, factoryCls)
-
     factoryCls.dumpToMetroLog()
 
     // Write metadata to indicate Metro generated this factory

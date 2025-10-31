@@ -1065,12 +1065,6 @@ public class BoxTestGenerated extends AbstractBoxTest {
       }
 
       @Test
-      @TestMetadata("GenericMemberInjectionWithWildcard.kt")
-      public void testGenericMemberInjectionWithWildcard() {
-        runTest("compiler-tests/src/test/data/box/inject/member/GenericMemberInjectionWithWildcard.kt");
-      }
-
-      @Test
       @TestMetadata("GenericMemberInjection.kt")
       public void testGenericMemberInjection() {
         runTest("compiler-tests/src/test/data/box/inject/member/GenericMemberInjection.kt");
@@ -1086,6 +1080,12 @@ public class BoxTestGenerated extends AbstractBoxTest {
       @TestMetadata("GenericMemberInjectionWithDeepAncesors.kt")
       public void testGenericMemberInjectionWithDeepAncesors() {
         runTest("compiler-tests/src/test/data/box/inject/member/GenericMemberInjectionWithDeepAncesors.kt");
+      }
+
+      @Test
+      @TestMetadata("GenericMemberInjectionWithWildcard.kt")
+      public void testGenericMemberInjectionWithWildcard() {
+        runTest("compiler-tests/src/test/data/box/inject/member/GenericMemberInjectionWithWildcard.kt");
       }
 
       @Test
