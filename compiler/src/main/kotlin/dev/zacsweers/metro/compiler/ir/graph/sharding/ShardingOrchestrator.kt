@@ -7,7 +7,6 @@ import dev.zacsweers.metro.compiler.graph.Component
 import dev.zacsweers.metro.compiler.graph.GraphTopology
 import dev.zacsweers.metro.compiler.ir.IrTypeKey
 import dev.zacsweers.metro.compiler.ir.graph.DependencyGraphNode
-import dev.zacsweers.metro.compiler.isInvisibleGeneratedGraph
 import java.util.SortedSet
 
 /**
@@ -39,8 +38,7 @@ internal class ShardingOrchestrator(
     if (
       adjacencyKeys.isEmpty() ||
         !options.enableGraphSharding ||
-        adjacencyKeys.size <= maxPerShard ||
-        node.sourceGraph.origin.isInvisibleGeneratedGraph
+        adjacencyKeys.size <= maxPerShard
     )
       return null
 
