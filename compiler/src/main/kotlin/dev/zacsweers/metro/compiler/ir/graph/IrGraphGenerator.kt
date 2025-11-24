@@ -158,6 +158,8 @@ internal class IrGraphGenerator(
       getterPropertyFor = ::getOrCreateLazyProperty,
     )
 
+  private val graphMetadataReporter = GraphMetadataReporter(this)
+
   fun IrProperty.withInit(typeKey: IrTypeKey, init: PropertyInitializer): IrProperty = apply {
     // Only necessary for fields
     if (backingField != null) {
@@ -708,6 +710,7 @@ internal class IrGraphGenerator(
         parentTracer.traceNested("Generate Metro metadata") {
           // Finally, generate metadata
           val graphProto = node.toProto(bindingGraph = bindingGraph)
+          graphMetadataReporter.write(node, bindingGraph)
           val metroMetadata = MetroMetadata(METRO_VERSION, dependency_graph = graphProto)
 
           writeDiagnostic({

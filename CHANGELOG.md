@@ -5,6 +5,9 @@ Changelog
 --------------
 
 - **Fix**: Catch more `IrErrorType` error types cases and report context/advice where possible.
+- [gradle] Add `generateMetroGraphMetadata` task that writes a merged JSON dump of all binding graphs in the project. This can be chained from the `GenerateGraphMetadataTask` for further processing.
+- [gradle] Add `MetroArtifacts` API for accessing Metro reports and graph metadata directories.
+- [gradle] Mark `metro.reportsDestination` as delicate/opt-in.
 
 0.7.7
 -----
